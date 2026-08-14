@@ -305,6 +305,16 @@ bundle)
   q "SELECT pgit.bundle(ARRAY['$(lit "$ref")'], $hv)"
   ;;
 
+clone)
+  allow "--branch" "$@"
+  f=$(positional "$@" | head -1)
+  [ -n "$f" ] || die "clone needs a bundle file"
+  br=main; prev=""
+  for a in "$@"; do [ "$prev" = "--branch" ] && br="$a"; prev="$a"; done
+  n=$(qf "$f" "SELECT pgit.clone_from(:'b'::jsonb, '$(lit "$br")');") || exit 1
+  echo "cloned $br, created $n table(s)"
+  ;;
+
 fetch)
   allow "" "$@"
   mapfile -t args < <(positional "$@")

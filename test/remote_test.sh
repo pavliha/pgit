@@ -11,7 +11,7 @@ nok(){ N=$((N+1)); FAILED=1; printf 'not ok %d - %s\n' "$N" "$1"; }
 is(){ if [ "$2" = "$3" ]; then ok "$1"; else nok "$1 (want '$3', got '$2')"; fi; }
 qo(){ psql "$O" -X -q -At -c "$1" 2>&1; }
 qc(){ psql "$C" -X -q -At -c "$1" 2>&1; }
-runb(){ { printf '\\set b `cat %s`\n' "$2"; echo "$3"; } | psql "$1" -X -q -At 2>&1; }
+runb(){ { echo "SET client_min_messages=warning;"; printf '\\set b `cat %s`\n' "$2"; echo "$3"; } | psql "$1" -X -q -At 2>&1 | grep -v '^SET$'; }
 
 for d in pgit_origin pgit_clone; do
   psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS $d" -c "CREATE DATABASE $d" >/dev/null 2>&1
@@ -93,7 +93,29 @@ OUT=$(runb "$B" /tmp/pgit_bad.json "SELECT pgit.unbundle(:'b'::jsonb);")
 is "remote: a tampered bundle is rejected by content hash" \
    "$(printf '%s' "$OUT" | grep -c 'does not hash to its content')" "1"
 
-for d in pgit_origin pgit_clone pgit_bad; do psql "$ADMIN" -X -q -c "DROP DATABASE $d" >/dev/null; done
+psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_virgin" -c "CREATE DATABASE pgit_virgin" >/dev/null 2>&1
+V="postgresql://postgres:pgit@localhost:5460/pgit_virgin"
+psql "$V" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null 2>&1
+qv(){ psql "$V" -X -q -At -c "$1" 2>&1; }
+
+is "clone: the target starts with no tables of its own" "$(qv "SELECT to_regclass('t') IS NULL")" "t"
+
+qo "SELECT pgit.bundle(ARRAY['main'])" > /tmp/pgit_b4.json
+MADE=$(runb "$V" /tmp/pgit_b4.json "SELECT pgit.clone_from(:'b'::jsonb);")
+is "clone: one command created the table from the recorded shape" "$MADE" "1"
+is "clone: the table is tracked" "$(qv "SELECT count(*) FROM pgit.tracked")" "1"
+is "clone: HEAD is on the cloned branch" "$(qv "SELECT pgit.head()")" "main"
+is "clone: every row arrived" "$(qv "SELECT count(*) FROM t")" "300"
+is "clone: the materialised table hashes to exactly what the cloned commit records" \
+   "$(qv "SELECT encode(pgit.write_tree('t'),'hex')")" \
+   "$(qo "SELECT encode(x.root_hash,'hex') FROM pgit.trees x WHERE x.commit_sha=pgit.resolve('main') AND x.tbl='t'")"
+is "clone: fsck is clean" "$(qv "SELECT count(*) FROM pgit.fsck()")" "0"
+is "clone: the working tree is not dirty" "$(qv "SELECT pgit.is_dirty()")" "f"
+OUT=$(runb "$V" /tmp/pgit_b4.json "SELECT pgit.clone_from(:'b'::jsonb);")
+is "clone: cloning over an existing history is refused" \
+   "$(printf '%s' "$OUT" | grep -c 'needs an empty history')" "1"
+
+for d in pgit_origin pgit_clone pgit_bad pgit_virgin; do psql "$ADMIN" -X -q -c "DROP DATABASE $d" >/dev/null; done
 rm -f /tmp/pgit_b*.json
 
 echo

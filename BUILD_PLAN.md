@@ -483,6 +483,22 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   the same cause, in a codebase where I had already written the rule down. plpgsql resolves
   ambiguity in favour of an error, which is the merciful outcome; the rule needs to be *prefix every
   local*, not *remember to check*.
+- **clone as one command** — 9 more checks in the remote suite (380 total across five suites).
+  The gap was that `pgit.schemas` recorded column names and types but **not the primary key**, so a
+  receiving database could not build the table. `pk_cols` is now recorded, travels in the bundle, and
+  `pgit.clone_from` creates each missing table from the recorded shape, tracks it, sets the branch and
+  materialises the data.
+  Tested against a database with **no DDL of its own**: it asserts `to_regclass('t') IS NULL` first,
+  then that one call created the table, tracked it, moved HEAD, brought all 300 rows, and that the
+  materialised table **hashes to exactly what the cloned commit records**. Cloning over an existing
+  history is refused.
+  Honest limitation: the recorded shape is what canonical hashing needs — column names, types, primary
+  key. Clone does **not** reproduce foreign keys, defaults, checks or secondary indexes, so it builds
+  a table that holds the data and hashes identically, not a faithful DDL copy. For a tool where
+  migrations own DDL that is the right boundary, but it should be read as "clone the history", not
+  "clone the schema".
+  Also fixed a real annoyance found by the test: `pgit.track` was emitting `DROP TRIGGER IF EXISTS`
+  notices on every call, so any script using it filled the console with noise. Silenced at source.
 - **tooling** — the progress log above lost 11 entries to silent failure. They were appended with a
   Python `str.replace()` anchored on text that did not exist, and `replace()` returns the original
   string on no match, so every one reported success and wrote nothing. The `## Blocked` section

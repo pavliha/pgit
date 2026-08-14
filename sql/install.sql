@@ -388,7 +388,7 @@ DROP FUNCTION IF EXISTS pgit.track(regclass);
 DROP FUNCTION IF EXISTS pgit.untrack(regclass);
 
 CREATE OR REPLACE FUNCTION pgit.track(target regclass) RETURNS void
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET client_min_messages = warning AS $$
 DECLARE
   cols text[] := pgit.pk_columns(target);
 BEGIN
@@ -430,7 +430,7 @@ BEGIN
 END $$;
 
 CREATE OR REPLACE FUNCTION pgit.untrack(target regclass) RETURNS void
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET client_min_messages = warning AS $$
 BEGIN
   EXECUTE format('DROP TRIGGER IF EXISTS pgit_journal_ins ON %s', target::text);
   EXECUTE format('DROP TRIGGER IF EXISTS pgit_journal_upd ON %s', target::text);
@@ -1526,10 +1526,12 @@ LANGUAGE sql STABLE AS $$
   SELECT pgit.hash(pgit.schema_columns(target)::text)
 $$;
 
+ALTER TABLE pgit.schemas ADD COLUMN IF NOT EXISTS pk_cols text[];
+
 CREATE OR REPLACE FUNCTION pgit.record_schemas(new_sha bytea) RETURNS void
 LANGUAGE sql AS $$
-  INSERT INTO pgit.schemas (commit_sha, tbl, fingerprint, columns)
-  SELECT new_sha, x.tbl::text, pgit.schema_fingerprint(x.tbl), pgit.schema_columns(x.tbl)
+  INSERT INTO pgit.schemas (commit_sha, tbl, fingerprint, columns, pk_cols)
+  SELECT new_sha, x.tbl::text, pgit.schema_fingerprint(x.tbl), pgit.schema_columns(x.tbl), x.pk_cols
   FROM pgit.tracked x
   ON CONFLICT DO NOTHING
 $$;
@@ -2676,7 +2678,8 @@ BEGIN
               FROM pgit.trees t WHERE t.commit_sha = ANY (send)),
     'schemas', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
                   'commit', encode(x.commit_sha, 'hex'), 'tbl', x.tbl,
-                  'fp', encode(x.fingerprint, 'hex'), 'cols', x.columns)), '[]'::jsonb)
+                  'fp', encode(x.fingerprint, 'hex'), 'cols', x.columns,
+                  'pk', x.pk_cols)), '[]'::jsonb)
                 FROM pgit.schemas x WHERE x.commit_sha = ANY (send)),
     'nodes', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
                 'hash', encode(n.hash, 'hex'), 'level', n.level,
@@ -2727,8 +2730,10 @@ BEGIN
   FROM jsonb_array_elements(b -> 'trees') x
   ON CONFLICT DO NOTHING;
 
-  INSERT INTO pgit.schemas (commit_sha, tbl, fingerprint, columns)
-  SELECT decode(x ->> 'commit', 'hex'), x ->> 'tbl', decode(x ->> 'fp', 'hex'), x -> 'cols'
+  INSERT INTO pgit.schemas (commit_sha, tbl, fingerprint, columns, pk_cols)
+  SELECT decode(x ->> 'commit', 'hex'), x ->> 'tbl', decode(x ->> 'fp', 'hex'), x -> 'cols',
+         CASE WHEN x -> 'pk' IS NULL OR x -> 'pk' = 'null'::jsonb THEN NULL
+              ELSE ARRAY(SELECT jsonb_array_elements_text(x -> 'pk')) END
   FROM jsonb_array_elements(b -> 'schemas') x
   ON CONFLICT DO NOTHING;
 
@@ -3044,4 +3049,65 @@ BEGIN
 
   PERFORM pgit.gc_nodes();
   RETURN n;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.create_from_schema(sha bytea, target_tbl text) RETURNS void
+LANGUAGE plpgsql SET client_min_messages = warning AS $$
+DECLARE
+  sc   record;
+  cols text;
+BEGIN
+  SELECT * INTO sc FROM pgit.schemas x WHERE x.commit_sha = sha AND x.tbl = target_tbl;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'pgit: commit % records no shape for %', encode(sha, 'hex'), target_tbl;
+  END IF;
+
+  IF sc.pk_cols IS NULL THEN
+    RAISE EXCEPTION 'pgit: the recorded shape for % has no primary key, cannot create it', target_tbl;
+  END IF;
+
+  SELECT string_agg(format('%I %s', e ->> 'name', e ->> 'type'), ', ' ORDER BY e ->> 'name')
+  INTO cols FROM jsonb_array_elements(sc.columns) e;
+
+  EXECUTE format('CREATE TABLE %I (%s, PRIMARY KEY (%s))',
+                 target_tbl, cols,
+                 (SELECT string_agg(quote_ident(c), ', ') FROM unnest(sc.pk_cols) c));
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.clone_from(b jsonb, branch text DEFAULT 'main') RETURNS int
+LANGUAGE plpgsql SET client_min_messages = warning AS $$
+DECLARE
+  tip  bytea;
+  t    record;
+  made int := 0;
+BEGIN
+  IF EXISTS (SELECT 1 FROM pgit.commits) THEN
+    RAISE EXCEPTION 'pgit: clone needs an empty history, use fetch or receive instead';
+  END IF;
+
+  PERFORM pgit.unbundle(b);
+
+  tip := decode(b -> 'refs' ->> branch, 'hex');
+  IF tip IS NULL THEN
+    RAISE EXCEPTION 'pgit: the bundle carries no branch called %', branch;
+  END IF;
+
+  FOR t IN SELECT x.tbl FROM pgit.schemas x WHERE x.commit_sha = tip LOOP
+    IF to_regclass(t.tbl) IS NULL THEN
+      PERFORM pgit.create_from_schema(tip, t.tbl);
+      made := made + 1;
+    END IF;
+    PERFORM pgit.track(t.tbl::regclass);
+  END LOOP;
+
+  INSERT INTO pgit.refs (name, sha) VALUES (branch, tip)
+  ON CONFLICT (name) DO UPDATE SET sha = EXCLUDED.sha;
+  UPDATE pgit.meta SET value = branch WHERE key = 'head';
+
+  INSERT INTO pgit.reflog (ref, old_sha, new_sha, action, actor)
+  VALUES (branch, NULL, tip, 'clone', pgit.actor());
+
+  PERFORM pgit.reset(encode(tip, 'hex'), 'hard');
+  RETURN made;
 END $$;
