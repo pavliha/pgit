@@ -4,11 +4,7 @@ set -uo pipefail
 ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
 DSN="${PGIT_KILL_DSN:-postgresql://postgres:pgit@localhost:5460/pgit_kill}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
-N=0; FAILED=0
-
-ok()  { N=$((N+1)); printf 'ok %d - %s\n' "$N" "$1"; }
-nok() { N=$((N+1)); FAILED=1; printf 'not ok %d - %s\n' "$N" "$1"; }
-is()  { if [ "$2" = "$3" ]; then ok "$1"; else nok "$1 (want '$3', got '$2')"; fi; }
+. "$(dirname "$0")/lib.sh"
 q()   { psql "$DSN" -X -q -At -c "$1"; }
 
 psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_kill" -c "CREATE DATABASE pgit_kill" >/dev/null
@@ -80,6 +76,4 @@ is "AC-REPLAY-11: the recovery commit produced a correct tree" \
 
 psql "$ADMIN" -X -q -c "DROP DATABASE pgit_kill" >/dev/null
 
-echo
-[ $FAILED -eq 0 ] && echo "KILL GREEN ($N checks)" || echo "KILL RED"
-exit $FAILED
+suite_end KILL 9

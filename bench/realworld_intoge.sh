@@ -11,11 +11,7 @@ ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
 DSN="${PGIT_REAL_DSN:-postgresql://postgres:pgit@localhost:5460/pgit_intoge}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DUMP="${DUMP:-}"
-N=0; FAILED=0
-
-ok(){ N=$((N+1)); printf 'ok %d - %s\n' "$N" "$1"; }
-nok(){ N=$((N+1)); FAILED=1; printf 'not ok %d - %s\n' "$N" "$1"; }
-is(){ if [ "$2" = "$3" ]; then ok "$1"; else nok "$1 (want '$3', got '$2')"; fi; }
+. "$(dirname "$0")/../test/lib.sh"
 q(){ psql "$DSN" -X -q -At -c "$1" 2>&1; }
 qs(){ psql "$DSN" -X -q -At -v ON_ERROR_STOP=1 -c "$1" 2>&1; }
 
@@ -170,6 +166,4 @@ SIZE=$(q "SELECT pg_size_pretty(pg_total_relation_size('pgit.nodes'))")
 TBL=$(q "SELECT pg_size_pretty(sum(pg_total_relation_size(relid))::bigint) FROM pg_stat_user_tables WHERE relname NOT LIKE 'pgit%'")
 echo "# node store $SIZE against $TBL of application tables"
 
-echo
-[ $FAILED -eq 0 ] && echo "REALWORLD GREEN ($N checks)" || echo "REALWORLD RED"
-exit $FAILED
+suite_end REALWORLD 19

@@ -5,12 +5,7 @@ ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
 export PGIT_DSN="${PGIT_CLI_DSN:-postgresql://postgres:pgit@localhost:5460/pgit_cli}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PGIT="$DIR/bin/pgit"
-N=0; FAILED=0
-
-ok()  { N=$((N+1)); printf 'ok %d - %s\n' "$N" "$1"; }
-nok() { N=$((N+1)); FAILED=1; printf 'not ok %d - %s\n' "$N" "$1"; }
-is()  { if [ "$2" = "$3" ]; then ok "$1"; else nok "$1 (want '$3', got '$2')"; fi; }
-like(){ if [[ "$2" =~ $3 ]]; then ok "$1"; else nok "$1 (got '$2')"; fi; }
+. "$(dirname "$0")/lib.sh"
 
 psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_cli" -c "CREATE DATABASE pgit_cli" >/dev/null
 psql "$PGIT_DSN" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null
@@ -153,7 +148,4 @@ is "AC-CLI-03: an octopus merge with a strategy option exits 129" "$rc" "129"
 
 psql "$ADMIN" -X -q -c "DROP DATABASE pgit_cli" >/dev/null
 
-echo
-echo "cli: $((N - (FAILED == 1 ? 1 : 0)))/$N checks"
-[ $FAILED -eq 0 ] && echo "CLI GREEN" || echo "CLI RED"
-exit $FAILED
+suite_end CLI 40

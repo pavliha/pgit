@@ -4,11 +4,7 @@ set -uo pipefail
 ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 U="postgresql://pgit_app:app@localhost:5460/pgit_rds"
-N=0; FAILED=0
-
-ok()  { N=$((N+1)); printf 'ok %d - %s\n' "$N" "$1"; }
-nok() { N=$((N+1)); FAILED=1; printf 'not ok %d - %s\n' "$N" "$1"; }
-is()  { if [ "$2" = "$3" ]; then ok "$1"; else nok "$1 (want '$3', got '$2')"; fi; }
+. "$(dirname "$0")/lib.sh"
 q()   { psql "$U" -X -q -At -c "$1" 2>&1; }
 
 psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_rds" >/dev/null 2>&1
@@ -62,6 +58,4 @@ is "AC-PORT-02: foreign keys stay enforced on the fallback replay path" \
 
 psql "$ADMIN" -X -q -c "DROP DATABASE pgit_rds" -c "DROP ROLE pgit_app" >/dev/null
 
-echo
-[ $FAILED -eq 0 ] && echo "RDS GREEN ($N checks)" || echo "RDS RED"
-exit $FAILED
+suite_end RDS 12

@@ -5,10 +5,7 @@ ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 O="postgresql://postgres:pgit@localhost:5460/pgit_origin"
 C="postgresql://postgres:pgit@localhost:5460/pgit_clone"
-N=0; FAILED=0
-ok(){ N=$((N+1)); printf 'ok %d - %s\n' "$N" "$1"; }
-nok(){ N=$((N+1)); FAILED=1; printf 'not ok %d - %s\n' "$N" "$1"; }
-is(){ if [ "$2" = "$3" ]; then ok "$1"; else nok "$1 (want '$3', got '$2')"; fi; }
+. "$(dirname "$0")/lib.sh"
 qo(){ psql "$O" -X -q -At -c "$1" 2>&1; }
 qc(){ psql "$C" -X -q -At -c "$1" 2>&1; }
 runb(){ { echo "SET client_min_messages=warning;"; printf '\\set b `cat %s`\n' "$2"; echo "$3"; } | psql "$1" -X -q -At 2>&1 | grep -v '^SET$'; }
@@ -152,6 +149,4 @@ is "octopus: both branches' rows survived the transfer" \
 for d in pgit_origin pgit_clone pgit_bad pgit_virgin pgit_oct; do psql "$ADMIN" -X -q -c "DROP DATABASE $d" >/dev/null; done
 rm -f /tmp/pgit_b*.json
 
-echo
-[ $FAILED -eq 0 ] && echo "REMOTE GREEN ($N checks)" || echo "REMOTE RED"
-exit $FAILED
+suite_end REMOTE 27

@@ -1,8 +1,23 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-DSN="${PGIT_DSN:-postgresql://postgres:pgit@localhost:5460/pgit_test}"
-DIR="$(dirname "$0")"
+ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Every other suite builds its own database; this one used to run against
+# whatever pgit_test happened to hold. A leftover benchmark fixture — a tracked
+# 1M row table with 10,000 commits — turned a single merge into 25 minutes,
+# because merge covers every tracked table. Results must not depend on history.
+if [ -z "${PGIT_DSN:-}" ]; then
+  DSN="postgresql://postgres:pgit@localhost:5460/pgit_pgtap"
+  psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_pgtap" -c "CREATE DATABASE pgit_pgtap" >/dev/null
+  psql "$DSN" -X -q -v ON_ERROR_STOP=1 -f "$DIR/../sql/install.sql" >/dev/null
+  psql "$DSN" -X -q -c "CREATE EXTENSION IF NOT EXISTS pgtap" >/dev/null
+  OWNED=1
+else
+  DSN="$PGIT_DSN"
+  OWNED=0
+fi
 TOTAL_OK=0
 TOTAL_BAD=0
 FAILED=0
@@ -32,7 +47,12 @@ for f in "$DIR"/*.sql; do
   fi
 done
 
+[ "$OWNED" = 1 ] && psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_pgtap" >/dev/null
+
 echo
-echo "passed: $TOTAL_OK   failed: $TOTAL_BAD"
-[ $FAILED -eq 0 ] && echo "SUITE GREEN" || echo "SUITE RED"
+if [ "$TOTAL_OK" -lt 300 ]; then
+  echo "PGTAP RED — only $TOTAL_OK assertions ran, the suite is far smaller than expected"
+  exit 1
+fi
+[ $FAILED -eq 0 ] && echo "PGTAP GREEN ($TOTAL_OK checks)" || echo "PGTAP RED ($TOTAL_BAD of $((TOTAL_OK + TOTAL_BAD)) failed)"
 exit $FAILED

@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same image the suites use locally: postgres 18 plus pgtap. Building
+      # it here rather than using a stock service container keeps CI and a
+      # developer's machine on one definition.
+      - name: Start postgres with pgTAP
+        run: docker compose up -d --build --wait
+
+      - name: Install pgit
+        run: make install
+
+      # A fresh database every time, so a forward reference or a duplicate
+      # definition in install.sql cannot be masked by an incremental install.
+      - name: Run every suite
+        run: ./test/all.sh
+
+      - name: Show server log on failure
+        if: failure()
+        run: docker compose logs --tail=100 db

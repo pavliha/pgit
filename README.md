@@ -105,10 +105,18 @@ O(history between them) and not O(table size).
 ## Run the tests
 
 ```bash
-make up        # postgres 18 + pgTAP on port 5460, isolated
-make test      # every suite: pgTAP, CLI, crash-safety, non-superuser, remote
-make bench     # the numbers in PERF.md
+make up            # postgres 18 + pgTAP on port 5460, isolated
+make test          # every suite, one total — about 90 seconds
+make test-fast     # the pgTAP assertions alone
+make test-only SUITE=remote
+make bench         # the numbers in PERF.md
+
+DUMP=/path/to/app.dump make test   # also run the real application schema suite
 ```
+
+Each run builds its own database and installs `sql/install.sql` into it, so every run
+also proves the installer from scratch — a forward reference or a duplicate definition
+cannot hide behind an incremental install. CI runs the same script on the same image.
 
 ## Scope, permanently
 
