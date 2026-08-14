@@ -2420,6 +2420,8 @@ BEGIN
     cur := pgit.resolve(pgit.head());
   ELSIF EXISTS (SELECT 1 FROM pgit.refs r WHERE r.name = base) THEN
     cur := pgit.resolve(base);
+  ELSIF EXISTS (SELECT 1 FROM pgit.tags t WHERE t.name = base) THEN
+    SELECT t.sha INTO cur FROM pgit.tags t WHERE t.name = base;
   ELSIF base ~ '^[0-9a-fA-F]{4,64}$' THEN
     SELECT c.sha INTO cur FROM pgit.commits c
     WHERE encode(c.sha, 'hex') LIKE lower(base) || '%';
@@ -2781,5 +2783,265 @@ BEGIN
     END IF;
   END LOOP;
 
+  RETURN n;
+END $$;
+
+CREATE TABLE IF NOT EXISTS pgit.tags (
+  name    text PRIMARY KEY,
+  sha     bytea       NOT NULL,
+  tagger  text,
+  message text,
+  at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION pgit.tag(tag_name text, spec text DEFAULT 'HEAD',
+                                    msg text DEFAULT NULL, force boolean DEFAULT false)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+  target bytea := pgit.rev(spec);
+BEGIN
+  IF target IS NULL THEN RAISE EXCEPTION 'pgit: cannot resolve %', spec; END IF;
+
+  IF EXISTS (SELECT 1 FROM pgit.tags t WHERE t.name = tag_name) AND NOT force THEN
+    RAISE EXCEPTION 'pgit: tag % already exists', tag_name;
+  END IF;
+
+  INSERT INTO pgit.tags (name, sha, tagger, message)
+  VALUES (tag_name, target, pgit.actor(), msg)
+  ON CONFLICT (name) DO UPDATE SET sha = EXCLUDED.sha, message = EXCLUDED.message;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.tag_delete(tag_name text) RETURNS void
+LANGUAGE sql AS $$ DELETE FROM pgit.tags WHERE name = tag_name $$;
+
+CREATE OR REPLACE FUNCTION pgit.restore(spec text, pathspec text) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  target bytea := pgit.rev(spec);
+  want   text  := NULLIF(split_part(split_part(pathspec, ':', 1), '.', 1), '');
+  row_k  text  := NULLIF(split_part(pathspec, ':', 2), '');
+  r      record;
+  d      record;
+  troot  bytea;
+  guard  jsonb;
+  n      int := 0;
+BEGIN
+  IF want IS NULL THEN RAISE EXCEPTION 'pgit: restore needs a pathspec naming a table'; END IF;
+
+  guard := pgit.replay_begin();
+  SET CONSTRAINTS ALL DEFERRED;
+
+  FOR r IN SELECT x.tbl FROM pgit.tracked x WHERE x.tbl::text = want LOOP
+    SELECT y.root_hash INTO troot FROM pgit.trees y
+    WHERE y.commit_sha = target AND y.tbl = r.tbl::text;
+
+    FOR d IN SELECT * FROM pgit.diff_tree(pgit.write_tree(r.tbl), troot) LOOP
+      CONTINUE WHEN row_k IS NOT NULL
+                AND NOT pgit.row_matches(r.tbl::text, COALESCE(d.after, d.before), row_k);
+      IF d.op = 'DELETE' THEN
+        PERFORM pgit.apply_row(r.tbl, 'delete', d.before);
+      ELSE
+        PERFORM pgit.apply_row(r.tbl, 'upsert', d.after);
+      END IF;
+      n := n + 1;
+    END LOOP;
+  END LOOP;
+
+  SET CONSTRAINTS ALL IMMEDIATE;
+  PERFORM pgit.replay_end(guard);
+  RETURN n;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.stash_push(msg text DEFAULT 'stash') RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  branch text  := pgit.head();
+  parent bytea := pgit.resolve(branch);
+  snap   bytea;
+  slot   text;
+BEGIN
+  IF NOT pgit.is_dirty() THEN
+    RAISE EXCEPTION 'pgit: nothing to stash, the working tree is clean';
+  END IF;
+
+  snap := pgit.commit(msg, pgit.actor());
+  slot := 'stash/' || nextval('pgit.merge_seq');
+
+  INSERT INTO pgit.refs (name, sha) VALUES (slot, snap);
+  UPDATE pgit.refs SET sha = parent WHERE name = branch;
+  INSERT INTO pgit.reflog (ref, old_sha, new_sha, action, actor)
+  VALUES (branch, snap, parent, 'stash', pgit.actor());
+
+  PERFORM pgit.reset(encode(parent, 'hex'), 'hard');
+  RETURN slot;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.stash_list() RETURNS TABLE (slot text, sha bytea, message text)
+LANGUAGE sql STABLE AS $$
+  SELECT r.name, r.sha, c.message
+  FROM pgit.refs r JOIN pgit.commits c ON c.sha = r.sha
+  WHERE r.name LIKE 'stash/%' ORDER BY r.name
+$$;
+
+DROP FUNCTION IF EXISTS pgit.stash_pop(text);
+
+CREATE OR REPLACE FUNCTION pgit.stash_pop(want_slot text DEFAULT NULL) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  pick   text;
+  snap   bytea;
+  parent bytea;
+  r      record;
+  guard  jsonb;
+  n      int := 0;
+  aroot  bytea; broot bytea;
+BEGIN
+  SELECT s.slot INTO pick FROM pgit.stash_list() s
+  WHERE want_slot IS NULL OR s.slot = want_slot
+  ORDER BY s.slot DESC LIMIT 1;
+
+  IF pick IS NULL THEN RAISE EXCEPTION 'pgit: no stash to pop'; END IF;
+
+  snap := pgit.resolve(pick);
+  SELECT c.parent_sha INTO parent FROM pgit.commits c WHERE c.sha = snap;
+
+  guard := pgit.replay_begin();
+  SET CONSTRAINTS ALL DEFERRED;
+
+  FOR r IN SELECT x.tbl FROM pgit.tracked x LOOP
+    SELECT y.root_hash INTO aroot FROM pgit.trees y WHERE y.commit_sha = parent AND y.tbl = r.tbl::text;
+    SELECT y.root_hash INTO broot FROM pgit.trees y WHERE y.commit_sha = snap   AND y.tbl = r.tbl::text;
+    n := n + pgit.apply_tree_diff(r.tbl, aroot, broot);
+  END LOOP;
+
+  SET CONSTRAINTS ALL IMMEDIATE;
+  PERFORM pgit.replay_end(guard);
+
+  DELETE FROM pgit.refs WHERE name = pick;
+  RETURN n;
+END $$;
+
+CREATE TABLE IF NOT EXISTS pgit.bisect (
+  id      int PRIMARY KEY DEFAULT 1,
+  good    bytea NOT NULL,
+  bad     bytea NOT NULL,
+  CONSTRAINT bisect_single CHECK (id = 1)
+);
+
+CREATE OR REPLACE FUNCTION pgit.bisect_start(good_spec text, bad_spec text) RETURNS bytea
+LANGUAGE plpgsql AS $$
+BEGIN
+  DELETE FROM pgit.bisect;
+  INSERT INTO pgit.bisect (id, good, bad) VALUES (1, pgit.rev(good_spec), pgit.rev(bad_spec));
+  RETURN pgit.bisect_next();
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.bisect_range() RETURNS TABLE (sha bytea, ord int)
+LANGUAGE sql STABLE AS $$
+  WITH b AS (SELECT * FROM pgit.bisect),
+  span AS (
+    SELECT l.sha, l.depth FROM b, pgit.log((SELECT bad FROM b)) l
+    WHERE l.sha <> (SELECT good FROM b)
+      AND NOT EXISTS (SELECT 1 FROM pgit.ancestors((SELECT good FROM b)) a WHERE a.a = l.sha)
+  )
+  SELECT span.sha, row_number() OVER (ORDER BY span.depth DESC)::int FROM span
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.bisect_next() RETURNS bytea
+LANGUAGE plpgsql AS $$
+DECLARE
+  n   int;
+  pick bytea;
+BEGIN
+  SELECT count(*) INTO n FROM pgit.bisect_range();
+  IF n = 0 THEN RETURN NULL; END IF;
+
+  SELECT r.sha INTO pick FROM pgit.bisect_range() r WHERE r.ord = greatest(1, (n + 1) / 2);
+  PERFORM pgit.reset(encode(pick, 'hex'), 'hard');
+  RETURN pick;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.bisect_good(spec text DEFAULT 'HEAD') RETURNS bytea
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE pgit.bisect SET good = pgit.rev(spec);
+  RETURN pgit.bisect_next();
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.bisect_bad(spec text DEFAULT 'HEAD') RETURNS bytea
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE pgit.bisect SET bad = pgit.rev(spec);
+  RETURN pgit.bisect_next();
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.bisect_reset() RETURNS void
+LANGUAGE sql AS $$ DELETE FROM pgit.bisect $$;
+
+CREATE OR REPLACE FUNCTION pgit.gc_nodes() RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  n int;
+BEGIN
+  CREATE TEMP TABLE IF NOT EXISTS pgit_keep (h bytea PRIMARY KEY) ON COMMIT DROP;
+  TRUNCATE pgit_keep;
+
+  INSERT INTO pgit_keep
+  SELECT DISTINCT r.h FROM pgit.reachable_nodes(
+    (SELECT COALESCE(array_agg(DISTINCT t.root_hash), '{}'::bytea[]) FROM pgit.trees t)) r
+  ON CONFLICT DO NOTHING;
+
+  LOOP
+    INSERT INTO pgit_keep
+    SELECT DISTINCT n2.base_hash FROM pgit.nodes n2
+    JOIN pgit_keep k ON k.h = n2.hash
+    WHERE n2.base_hash IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM pgit_keep k2 WHERE k2.h = n2.base_hash)
+    ON CONFLICT DO NOTHING;
+    EXIT WHEN NOT FOUND;
+  END LOOP;
+
+  DELETE FROM pgit.nodes WHERE hash NOT IN (SELECT h FROM pgit_keep);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.prune(before_at timestamptz) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  r      record;
+  cutoff bytea;
+  n      int := 0;
+BEGIN
+  CREATE TEMP TABLE IF NOT EXISTS pgit_alive (sha bytea PRIMARY KEY) ON COMMIT DROP;
+  TRUNCATE pgit_alive;
+
+  FOR r IN SELECT name, sha FROM pgit.refs UNION SELECT name, sha FROM pgit.tags LOOP
+    INSERT INTO pgit_alive
+    SELECT l.sha FROM pgit.log(r.sha) l WHERE l.at >= before_at
+    ON CONFLICT DO NOTHING;
+
+    SELECT l.sha INTO cutoff FROM pgit.log(r.sha) l
+    WHERE l.at >= before_at ORDER BY l.depth DESC LIMIT 1;
+
+    IF cutoff IS NOT NULL THEN
+      UPDATE pgit.commits SET parent_sha = NULL, parent2_sha = NULL WHERE sha = cutoff;
+    ELSE
+      INSERT INTO pgit_alive VALUES (r.sha) ON CONFLICT DO NOTHING;
+      UPDATE pgit.commits SET parent_sha = NULL, parent2_sha = NULL WHERE sha = r.sha;
+    END IF;
+  END LOOP;
+
+  DELETE FROM pgit.reflog   WHERE new_sha NOT IN (SELECT sha FROM pgit_alive);
+  DELETE FROM pgit.trees    WHERE commit_sha NOT IN (SELECT sha FROM pgit_alive);
+  DELETE FROM pgit.schemas  WHERE commit_sha NOT IN (SELECT sha FROM pgit_alive);
+  UPDATE pgit.changes SET commit_sha = NULL
+   WHERE commit_sha IS NOT NULL AND commit_sha NOT IN (SELECT sha FROM pgit_alive);
+  DELETE FROM pgit.changes  WHERE commit_sha IS NULL;
+  DELETE FROM pgit.commits  WHERE sha NOT IN (SELECT sha FROM pgit_alive);
+  GET DIAGNOSTICS n = ROW_COUNT;
+
+  PERFORM pgit.gc_nodes();
   RETURN n;
 END $$;

@@ -461,6 +461,28 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   Not built: `clone` does not create tables from the recorded schema, so the receiving database needs
   its own DDL first. That is arguably right for a database tool, where migrations own DDL, but it
   means `clone` is `receive` plus your own `CREATE TABLE` rather than one command.
+- **tags, restore, stash, bisect, prune** — 20 assertions (371 total across five suites).
+  **`tag`** is a separate table rather than a ref, with annotated message and tagger, and `pgit.rev`
+  resolves tag names — so `pgit show v1.0` works. Re-tagging is refused without `-f`.
+  **`restore`** brings a table or a **single row** back from any revision without moving the branch,
+  which is the operation people actually want from a database ("put products back to Tuesday").
+  Asserted that restoring row 5 leaves row 6's independent change alone.
+  **`stash`** is a commit on an anonymous `stash/N` ref: commit, point the branch back, hard-reset.
+  Pop applies the stash's diff *against its own parent*, so it is a patch rather than a snapshot
+  overwrite. Reuses `commit`, `reset` and `apply_tree_diff` entirely — no new machinery.
+  **`bisect`** narrows over the ancestry between good and bad, checking out the midpoint each step.
+  The test builds ten commits where a value goes wrong at the sixth and asserts the search
+  **converges on c6** — a bisect that always answered "the tip" would fail it.
+  **`prune`** truncates history before a cutoff, re-roots the boundary commit, and then `gc_nodes`
+  deletes every node unreachable from a surviving tree — following **delta base chains** so a kept
+  node's base is never collected out from under it. The decisive assertion is that **`fsck` is clean
+  after pruning** and the surviving tip still hashes to the live table: proof that nothing reachable
+  was collected.
+  The parameter-shadowing trap bit **twice more** — `slot` against `stash_list()`'s column, then
+  `sha` against `refs.sha` in an `INSERT … VALUES`. That is the third and fourth time tonight from
+  the same cause, in a codebase where I had already written the rule down. plpgsql resolves
+  ambiguity in favour of an error, which is the merciful outcome; the rule needs to be *prefix every
+  local*, not *remember to check*.
 - **tooling** — the progress log above lost 11 entries to silent failure. They were appended with a
   Python `str.replace()` anchored on text that did not exist, and `replace()` returns the original
   string on no match, so every one reported success and wrote nothing. The `## Blocked` section

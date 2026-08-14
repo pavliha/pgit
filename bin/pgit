@@ -217,6 +217,64 @@ merge)
   fi
   ;;
 
+tag)
+  allow "-d -f" "$@"
+  mapfile -t args < <(positional "$@")
+  if [[ " $* " == *" -d "* ]]; then
+    [ -n "${args[0]:-}" ] || die "tag -d needs a name"
+    q "SELECT pgit.tag_delete('$(lit "${args[0]}")')" >/dev/null && echo "deleted tag ${args[0]}"
+  elif [ -n "${args[0]:-}" ]; then
+    f=false; [[ " $* " == *" -f "* ]] && f=true
+    q "SELECT pgit.tag('$(lit "${args[0]}")','$(lit "${args[1]:-HEAD}")',NULL,$f)" >/dev/null \
+      && echo "tagged ${args[0]}"
+  else
+    q "SELECT name || E'\t' || pgit.short_sha(sha) || COALESCE(E'\t' || message,'') FROM pgit.tags ORDER BY name"
+  fi
+  ;;
+
+restore)
+  allow "" "$@"
+  rev=$(positional "$@" | head -1)
+  ps=$(pathspec_of "$@")
+  [ -n "$rev" ] && [ -n "$ps" ] || die "restore needs <revision> -- <table[:key]>"
+  n=$(q "SELECT pgit.restore('$(lit "$rev")','$(lit "$ps")')") || exit 1
+  echo "restored $n row(s) from $rev"
+  ;;
+
+stash)
+  allow "" "$@"
+  sub=$(positional "$@" | head -1)
+  case "${sub:-push}" in
+    push) echo "saved $(q "SELECT pgit.stash_push('stash')")" ;;
+    pop)  echo "applied $(q "SELECT pgit.stash_pop()") change(s)" ;;
+    list) q "SELECT slot || E'\t' || message FROM pgit.stash_list()" ;;
+    *)    die "stash takes push, pop or list" ;;
+  esac
+  ;;
+
+bisect)
+  allow "" "$@"
+  mapfile -t args < <(positional "$@")
+  case "${args[0]:-}" in
+    start) [ -n "${args[1]:-}" ] && [ -n "${args[2]:-}" ] || die "bisect start needs <good> <bad>"
+           echo "testing $(q "SELECT pgit.short_sha(pgit.bisect_start('$(lit "${args[1]}")','$(lit "${args[2]}")'))")" ;;
+    good)  echo "testing $(q "SELECT COALESCE(pgit.short_sha(pgit.bisect_good()),'done')")" ;;
+    bad)   echo "testing $(q "SELECT COALESCE(pgit.short_sha(pgit.bisect_bad()),'done')")" ;;
+    reset) q "SELECT pgit.bisect_reset()" >/dev/null && echo "bisect reset" ;;
+    *)     q "SELECT 'good ' || pgit.short_sha(good) || E'\nbad  ' || pgit.short_sha(bad) FROM pgit.bisect" ;;
+  esac
+  ;;
+
+prune)
+  allow "--before" "$@"
+  before=""
+  prev=""
+  for a in "$@"; do [ "$prev" = "--before" ] && before="$a"; prev="$a"; done
+  [ -n "$before" ] || die "prune needs --before <timestamp>"
+  n=$(q "SELECT pgit.prune('$(lit "$before")'::timestamptz)") || exit 1
+  echo "pruned $n commit(s) and collected unreachable nodes"
+  ;;
+
 remote)
   allow "" "$@"
   mapfile -t args < <(positional "$@")
