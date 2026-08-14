@@ -4,14 +4,19 @@ Git semantics over data in **stock PostgreSQL**, as a plain SQL plugin. No forke
 extension, no managed service. `commit`, `log`, `diff`, `blame`, `revert`, `branch`, `merge`,
 `rebase`, `cherry-pick` — with git's flag names and git's diff performance.
 
-**Status: pre-alpha, but the whole verb set works and is measured.** 434 checks green from an empty
-database (346 pgTAP + 40 CLI + 9 crash-safety + 12 non-superuser portability + 27 remote and clone).
+**Status: pre-alpha, but the whole verb set works and is measured.** 530 checks green from an empty
+database in about 90 seconds — 423 pgTAP, 40 CLI, 9 crash-safety, 12 non-superuser portability,
+27 remote and clone, and 19 against a real 63-table application schema.
 
 **Runs on managed Postgres.** Every verb is exercised as a plain `LOGIN` role with no superuser
 rights — strictly fewer privileges than the RDS master user gets — so RDS, Neon and Supabase are
-covered by construction. There is no C extension to install and no `pgcrypto` dependency. On a 1M-row table a commit touching 10 rows takes
-**25 ms**, and diffing 10 changed rows **10,000 commits apart** takes **163 ms** — the same as one
-commit apart.
+covered by construction. There is no C extension to install and no `pgcrypto` dependency.
+
+Diffing 10 changed rows **10,000 commits apart** takes **163 ms** — the same as one commit apart,
+which is the property the whole design exists for. Commit cost depends on *where* the changed rows
+are, not only how many: on a 1M-row table, 10 adjacent rows commit in **25 ms**, while 5,000 rows
+scattered across the table cost **13 s**, bounded by one full rebuild. `PERF.md` has the shape
+table; quoting only the adjacent figure would be quoting the best case.
 
 Two things to know before using it, both in `PERF.md`. Journalling costs about **10× the write it
 records** — that one is an open decision in `BUILD_PLAN.md`. And history costs storage, but far less
