@@ -669,7 +669,8 @@ rows, pgit 152,068.
 | | git | pgit, as first measured | pgit, current | |
 | --- | --- | --- | --- | --- |
 | mean commit over 30 | **492 ms** | 13,383 ms — 27× | 1,801 ms | 3.7× |
-| diff across all 30 commits | **391 ms** | 60,940 ms — 156× | 51,746 ms | 132× |
+| diff across all 30 commits, no `gc` | **391 ms** | 60,940 ms — 156× | 7,633 ms | 19× |
+| diff across all 30 commits, after `gc` | **391 ms** | never completed | 12,008 ms | **31×** |
 | store, loose | 316 MB | 1,742 MB | 2,030 MB | |
 | store, after gc | **10 MB** | — never completed | see below | |
 | gc | 11 s | 33 min, killed | see below | |
@@ -691,8 +692,12 @@ whole 2 GB IMDb node store — both tables, 359,549 nodes — while git's 10 MB 
 alone. They are not the same scope and putting them in one row is how three of today's wrong numbers
 were produced. The whole-store figures are in "gc was quadratic in the number of node groups" above.
 
-The diff row is the one still worth attacking: 51,746 ms is measured, but it predates nothing — the
-7.4× images fix is already in it. It is the largest remaining gap in this table.
+The diff row is the one still worth attacking, but it is 31× and not the 132× this table carried
+until today. That figure was a packed store resolved through character-offset deltas — the worst
+available combination — and it survived in the docs because nothing re-ran it after the leaf-pair
+and byte-offset fixes landed. Like for like, both sides garbage collected, it is 391 ms against
+12.0 s. The remaining cost is the tree descent, not delta application: without `gc` the same diff is
+7.6 s, so deltas account for 4.4 s of it and the descent for the rest.
 
 **What does hold is the scaling property the design was chosen for.** Diff cost tracks the size of
 the difference, not the history between two commits: 10 rows 10,000 commits apart costs 163 ms, the

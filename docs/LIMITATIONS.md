@@ -62,8 +62,9 @@ Below roughly 50 MB git wins on constants — it hashes and zlib-compresses a by
 canonicalises every changed row and writes nodes durably under MVCC with WAL. Above it pgit wins on
 complexity, and the gap grows linearly.
 
-**Diff is the exception and is genuinely slower**: 391 ms against 35.8 s over the same 30 commits.
-That is the largest open gap in the project, and the cost is delta application, not the descent.
+**Diff is the exception and is genuinely slower**: 391 ms against 12.0 s over the same 30 commits,
+both sides garbage collected — **31×**. Without `gc` on either side it is 7.6 s. That is the largest
+open gap in the project, and most of what remains is the tree descent rather than delta application.
 
 > [!note]
 > This section said "it is not as fast as git, and will not be" for weeks. That was a 27× gap
