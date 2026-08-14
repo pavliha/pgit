@@ -357,6 +357,50 @@ remaining gap.
 Mean commit cost in one long transaction also grew from **16 ms at 500 commits to 34 ms at 10,000**,
 as `pgit.changes` accumulated 100,000 rows and the node table grew. Roughly 2× for 20× the commits.
 
+## Profiling the commit path, and what it says about the binary node format
+
+`pg_stat_statements` with `track = all`, one commit of 5,000 scattered rows in a 1.7M row table.
+Every earlier guess about this was wrong — sha256, the canonical expressions, triple evaluation of
+`canon_numeric`, PL/pgSQL set-returning functions and row-image fetching were each measured and each
+eliminated. What the profile actually found:
+
+| finding | effect |
+| --- | --- |
+| the splice widened the touched region by one chunk either side | 11,308 chunks rebuilt to change 5,000 rows |
+| `pgit.setting('chunk_target')` read per row | 872,204 queries in one commit, for a constant |
+| the canonical row expression rebuilt from the catalogue per region | 10,073 calls |
+
+Boundaries are `is_boundary(key)`, so only an inserted or deleted key can move one — the widening is
+unnecessary for pure updates. Removing it and hoisting the chunk target:
+
+| | |
+| --- | --- |
+| 5,000 scattered rows, at the start of this work | 13,383 ms |
+| after the sparse rebuild path | 9,291 ms |
+| after dropping the widening | 4,743 ms |
+| **measured again on a clean fixture** | **4,049 ms — 3.3× faster** |
+| full rebuild of 1.7M rows, chunk target hoisted | 17,665 → 15,223 ms |
+
+**What is left, and the honest ceiling.** 4,023 ms of the remaining 4,743 is a single statement that
+expands every entry of every touched chunk and re-aggregates it. That is the packed binary node
+format this document has listed as the outstanding gap. Measured on a real leaf — 674 entries,
+59 kB of jsonb — over 5,000 rebuilds:
+
+| | |
+| --- | --- |
+| expand + re-aggregate, plus hashing from the expansion | 3,912 ms |
+| `array_position` + `overlay` the hash + `jsonb_set` the entry | **1,537 ms** |
+
+So the binary format is worth about **2.5× on that statement, and roughly 2× on the commit** — not
+the order of magnitude it might promise. The floor is memcpy: rebuilding a 59 kB node to change one
+row copies 59 kB whatever the encoding, and 5,000 touched chunks is ~300 MB of copying per commit.
+
+**Smaller chunks do not help, re-confirmed after the algorithm changed.** Node size drives the
+copying, so a smaller target looks like the obvious answer. It is not, and the earlier finding still
+holds: at 1.7M rows, a 5,000 row scattered commit costs 4,049 ms at target 64, 4,448 ms at 32 and
+5,462 ms at 16, with the node store growing from 209 MB to 241 MB. More, smaller nodes cost more
+tree levels and more nodes to write than they save in bytes copied.
+
 ## Measured against git, on the same data
 
 The claim "git's diff performance" was in the README for weeks. It is wrong, and this is by how much.
