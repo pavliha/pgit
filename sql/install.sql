@@ -2583,3 +2583,203 @@ LANGUAGE sql STABLE AS $$
   WHERE n.level > 0
     AND NOT EXISTS (SELECT 1 FROM pgit.nodes c WHERE c.hash = decode(x ->> 'h', 'hex'))
 $$;
+
+CREATE TABLE IF NOT EXISTS pgit.remotes (
+  name text PRIMARY KEY,
+  url  text NOT NULL
+);
+
+CREATE OR REPLACE FUNCTION pgit.remote_add(remote_name text, remote_url text) RETURNS void
+LANGUAGE sql AS $$
+  INSERT INTO pgit.remotes (name, url) VALUES (remote_name, remote_url)
+  ON CONFLICT (name) DO UPDATE SET url = EXCLUDED.url
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.reachable_nodes(roots bytea[]) RETURNS TABLE (h bytea)
+LANGUAGE sql STABLE AS $$
+  WITH RECURSIVE w AS (
+    SELECT r AS h FROM unnest(roots) r WHERE r IS NOT NULL
+    UNION
+    SELECT decode(x ->> 'h', 'hex')
+    FROM w
+    JOIN pgit.nodes n ON n.hash = w.h
+    CROSS JOIN LATERAL jsonb_array_elements(pgit.entries_of(n.hash)) x
+    WHERE n.level > 0
+  )
+  SELECT w.h FROM w WHERE EXISTS (SELECT 1 FROM pgit.nodes n WHERE n.hash = w.h)
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.commits_to_send(ref_names text[], have bytea[])
+RETURNS TABLE (sha bytea)
+LANGUAGE sql STABLE AS $$
+  WITH RECURSIVE tips AS (
+    SELECT r.sha FROM pgit.refs r WHERE r.name = ANY (ref_names)
+  ),
+  w AS (
+    SELECT t.sha, c.parent_sha, c.parent2_sha
+    FROM tips t JOIN pgit.commits c ON c.sha = t.sha
+    WHERE NOT (t.sha = ANY (have))
+    UNION
+    SELECT c.sha, c.parent_sha, c.parent2_sha
+    FROM w
+    JOIN pgit.commits c ON c.sha IN (w.parent_sha, w.parent2_sha)
+    WHERE NOT (c.sha = ANY (have))
+  )
+  SELECT DISTINCT w.sha FROM w
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.have() RETURNS bytea[]
+LANGUAGE sql STABLE AS $$
+  SELECT COALESCE(array_agg(c.sha), '{}'::bytea[]) FROM pgit.commits c
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.bundle(ref_names text[], have bytea[] DEFAULT '{}'::bytea[])
+RETURNS jsonb
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  send    bytea[];
+  keep    bytea[];
+  skip    bytea[];
+  result  jsonb;
+BEGIN
+  SELECT COALESCE(array_agg(x.sha), '{}'::bytea[]) INTO send
+  FROM pgit.commits_to_send(ref_names, have) x;
+
+  IF array_length(send, 1) IS NULL THEN
+    RETURN jsonb_build_object('refs', (
+      SELECT COALESCE(jsonb_object_agg(r.name, encode(r.sha, 'hex')), '{}'::jsonb)
+      FROM pgit.refs r WHERE r.name = ANY (ref_names)),
+      'commits', '[]'::jsonb, 'trees', '[]'::jsonb,
+      'schemas', '[]'::jsonb, 'nodes', '[]'::jsonb);
+  END IF;
+
+  SELECT COALESCE(array_agg(DISTINCT t.root_hash), '{}'::bytea[]) INTO keep
+  FROM pgit.trees t WHERE t.commit_sha = ANY (send);
+
+  SELECT COALESCE(array_agg(DISTINCT t.root_hash), '{}'::bytea[]) INTO skip
+  FROM pgit.trees t WHERE t.commit_sha = ANY (have);
+
+  SELECT jsonb_build_object(
+    'refs', (SELECT COALESCE(jsonb_object_agg(r.name, encode(r.sha, 'hex')), '{}'::jsonb)
+             FROM pgit.refs r WHERE r.name = ANY (ref_names)),
+    'commits', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                  'sha', encode(c.sha, 'hex'),
+                  'parent', encode(c.parent_sha, 'hex'),
+                  'parent2', encode(c.parent2_sha, 'hex'),
+                  'author', c.author, 'message', c.message, 'at', c.at)), '[]'::jsonb)
+                FROM pgit.commits c WHERE c.sha = ANY (send)),
+    'trees', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                'commit', encode(t.commit_sha, 'hex'), 'tbl', t.tbl,
+                'root', encode(t.root_hash, 'hex'))), '[]'::jsonb)
+              FROM pgit.trees t WHERE t.commit_sha = ANY (send)),
+    'schemas', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                  'commit', encode(x.commit_sha, 'hex'), 'tbl', x.tbl,
+                  'fp', encode(x.fingerprint, 'hex'), 'cols', x.columns)), '[]'::jsonb)
+                FROM pgit.schemas x WHERE x.commit_sha = ANY (send)),
+    'nodes', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                'hash', encode(n.hash, 'hex'), 'level', n.level,
+                'entries', pgit.entries_of(n.hash))), '[]'::jsonb)
+              FROM pgit.nodes n
+              WHERE n.hash IN (SELECT r.h FROM pgit.reachable_nodes(keep) r)
+                AND n.hash NOT IN (SELECT r.h FROM pgit.reachable_nodes(skip) r))
+  ) INTO result;
+
+  RETURN result;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.unbundle(b jsonb) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  e      jsonb;
+  n      int := 0;
+  h      bytea;
+  calc   bytea;
+BEGIN
+  FOR e IN SELECT jsonb_array_elements(b -> 'nodes') LOOP
+    h := decode(e ->> 'hash', 'hex');
+
+    SELECT pgit.hash((
+      SELECT COALESCE(string_agg(decode(x ->> 'h', 'hex'), ''::bytea ORDER BY x ->> 'k'), ''::bytea)
+      FROM jsonb_array_elements(e -> 'entries') x)) INTO calc;
+
+    IF calc <> h THEN
+      RAISE EXCEPTION 'pgit: bundle node % does not hash to its content, refusing', e ->> 'hash';
+    END IF;
+
+    INSERT INTO pgit.nodes (hash, level, entries)
+    VALUES (h, (e ->> 'level')::int, e -> 'entries')
+    ON CONFLICT (hash) DO NOTHING;
+    n := n + 1;
+  END LOOP;
+
+  INSERT INTO pgit.commits (sha, parent_sha, parent2_sha, author, message, at)
+  SELECT decode(x ->> 'sha', 'hex'), decode(x ->> 'parent', 'hex'),
+         decode(x ->> 'parent2', 'hex'), x ->> 'author', x ->> 'message',
+         (x ->> 'at')::timestamptz
+  FROM jsonb_array_elements(b -> 'commits') x
+  ORDER BY (x ->> 'at')::timestamptz
+  ON CONFLICT (sha) DO NOTHING;
+
+  INSERT INTO pgit.trees (commit_sha, tbl, root_hash)
+  SELECT decode(x ->> 'commit', 'hex'), x ->> 'tbl', decode(x ->> 'root', 'hex')
+  FROM jsonb_array_elements(b -> 'trees') x
+  ON CONFLICT DO NOTHING;
+
+  INSERT INTO pgit.schemas (commit_sha, tbl, fingerprint, columns)
+  SELECT decode(x ->> 'commit', 'hex'), x ->> 'tbl', decode(x ->> 'fp', 'hex'), x -> 'cols'
+  FROM jsonb_array_elements(b -> 'schemas') x
+  ON CONFLICT DO NOTHING;
+
+  RETURN n;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.fetch(remote_name text, b jsonb) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  e jsonb;
+  k text;
+  n int;
+BEGIN
+  n := pgit.unbundle(b);
+
+  FOR k IN SELECT jsonb_object_keys(b -> 'refs') LOOP
+    INSERT INTO pgit.refs (name, sha)
+    VALUES ('remotes/' || remote_name || '/' || k, decode(b -> 'refs' ->> k, 'hex'))
+    ON CONFLICT (name) DO UPDATE SET sha = EXCLUDED.sha;
+  END LOOP;
+
+  RETURN n;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.receive(b jsonb, force boolean DEFAULT false) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  k       text;
+  incoming bytea;
+  cur      bytea;
+  n        int;
+BEGIN
+  n := pgit.unbundle(b);
+
+  FOR k IN SELECT jsonb_object_keys(b -> 'refs') LOOP
+    incoming := decode(b -> 'refs' ->> k, 'hex');
+    cur := pgit.resolve(k);
+
+    IF cur IS NOT NULL AND NOT force
+       AND NOT EXISTS (SELECT 1 FROM pgit.ancestors(incoming) a WHERE a.a = cur) THEN
+      RAISE EXCEPTION 'pgit: push to % is not a fast forward, it would drop commits', k;
+    END IF;
+
+    IF cur IS NULL THEN
+      INSERT INTO pgit.refs (name, sha) VALUES (k, incoming);
+      INSERT INTO pgit.reflog (ref, old_sha, new_sha, action, actor)
+      VALUES (k, NULL, incoming, 'receive', pgit.actor());
+    ELSE
+      UPDATE pgit.refs SET sha = incoming WHERE name = k;
+      INSERT INTO pgit.reflog (ref, old_sha, new_sha, action, actor)
+      VALUES (k, cur, incoming, 'receive', pgit.actor());
+    END IF;
+  END LOOP;
+
+  RETURN n;
+END $$;

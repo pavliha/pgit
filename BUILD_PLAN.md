@@ -440,6 +440,27 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   it does too — `apply_diff` was split into `apply_tree_diff` taking roots directly, and reset
   computes the live root with `write_tree`. Pinned by an assertion in the SQL suite as well as the
   CLI one.
+- **remotes** — 13 checks in `test/remote_test.sh` across **two real databases** (351 total across
+  five suites). History moves as a **bundle**: a single self-contained jsonb value carrying commits,
+  trees, schemas and fully-materialised nodes. No `dblink`, no `postgres_fdw`, no network coupling —
+  which is what keeps the RDS story intact and makes the whole thing testable locally.
+  `pgit.bundle(refs, have)` does real **negotiation**: commits are walked back only to what the
+  receiver already has, and nodes reachable from the receiver's existing trees are excluded. Measured
+  in the test: a full pack is 15 nodes, the incremental after one commit is **3**.
+  Two properties are worth more than the rest. **The clone's tree hashes identically to origin's** —
+  content addressing means the transfer is verifiably exact rather than merely plausible. And
+  `unbundle` **recomputes every node's hash from its content and refuses on mismatch**, so a tampered
+  or corrupted pack cannot enter the object store; the test tampers with a node and asserts the
+  rejection.
+  `fetch` updates `remotes/<name>/*` only and never touches local branches; `receive` updates local
+  branches with a **fast-forward check** that `--force` overrides. Both are asserted.
+  Three harness bugs cost most of the time, all mine: a shell-built `bytea[]` literal that mangled
+  the escaping, `array_agg` returning NULL rather than an empty array for a fresh clone, and the one
+  worth remembering — **psql does not interpolate `:'var'` in `-c` strings**, only in `-f` or stdin
+  input, so every bundle transfer silently did nothing while reporting success.
+  Not built: `clone` does not create tables from the recorded schema, so the receiving database needs
+  its own DDL first. That is arguably right for a database tool, where migrations own DDL, but it
+  means `clone` is `receive` plus your own `CREATE TABLE` rather than one command.
 - **tooling** — the progress log above lost 11 entries to silent failure. They were appended with a
   Python `str.replace()` anchored on text that did not exist, and `replace()` returns the original
   string on no match, so every one reported success and wrote nothing. The `## Blocked` section

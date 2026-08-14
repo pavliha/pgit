@@ -22,6 +22,7 @@ test: install
 	@./test/cli_test.sh
 	@./test/kill_test.sh
 	@./test/rds_test.sh
+	@./test/remote_test.sh
 
 reset: down up install
 

@@ -6,6 +6,7 @@ DSN="${PGIT_DSN:-postgresql://postgres:pgit@localhost:5460/pgit_test}"
 die()   { echo "pgit: $*" >&2; exit 129; }
 q()     { psql "$DSN" -X -q -At -F $'\t' -v ON_ERROR_STOP=1 -c "$1"; }
 lit()   { printf "%s" "$1" | sed "s/'/''/g"; }
+qf()    { { printf '\\set b `cat %s`\n' "$1"; echo "$2"; } | psql "$DSN" -X -q -At -v ON_ERROR_STOP=1; }
 
 allow() {
   local allowed=" $1 "
@@ -214,6 +215,53 @@ merge)
   if [ "$n" = "0" ]; then echo "merged $name"; else
     echo "$n conflict(s); resolve with 'pgit resolve', then 'pgit merge --continue'"; exit 1
   fi
+  ;;
+
+remote)
+  allow "" "$@"
+  mapfile -t args < <(positional "$@")
+  if [ "${args[0]:-}" = "add" ]; then
+    [ -n "${args[1]:-}" ] && [ -n "${args[2]:-}" ] || die "remote add needs <name> <url>"
+    q "SELECT pgit.remote_add('$(lit "${args[1]}")','$(lit "${args[2]}")')" >/dev/null
+    echo "added remote ${args[1]}"
+  else
+    q "SELECT name || E'\t' || url FROM pgit.remotes ORDER BY name"
+  fi
+  ;;
+
+have)
+  allow "" "$@"
+  q "SELECT COALESCE(jsonb_agg(encode(sha,'hex'))::text,'[]') FROM pgit.commits"
+  ;;
+
+bundle)
+  allow "--have" "$@"
+  ref=$(positional "$@" | head -1)
+  [ -n "$ref" ] || die "bundle needs a ref"
+  hv="'{}'::bytea[]"
+  prev=""
+  for a in "$@"; do
+    [ "$prev" = "--have" ] && hv="COALESCE((SELECT array_agg(decode(x,'hex')) FROM jsonb_array_elements_text(\$\$$(cat "$a")\$\$::jsonb) x),'{}'::bytea[])"
+    prev="$a"
+  done
+  q "SELECT pgit.bundle(ARRAY['$(lit "$ref")'], $hv)"
+  ;;
+
+fetch)
+  allow "" "$@"
+  mapfile -t args < <(positional "$@")
+  [ -n "${args[0]:-}" ] && [ -n "${args[1]:-}" ] || die "fetch needs <remote> <bundle-file>"
+  n=$(qf "${args[1]}" "SELECT pgit.fetch('$(lit "${args[0]}")', :'b'::jsonb);") || exit 1
+  echo "fetched $n object(s) into remotes/${args[0]}/*"
+  ;;
+
+receive)
+  allow "--force" "$@"
+  f=$(positional "$@" | head -1)
+  [ -n "$f" ] || die "receive needs a bundle file"
+  force=false; [[ " $* " == *" --force "* ]] && force=true
+  n=$(qf "$f" "SELECT pgit.receive(:'b'::jsonb, $force);") || exit 1
+  echo "received $n object(s)"
   ;;
 
 fsck)

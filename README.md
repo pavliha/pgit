@@ -4,8 +4,8 @@ Git semantics over data in **stock PostgreSQL**, as a plain SQL plugin. No forke
 extension, no managed service. `commit`, `log`, `diff`, `blame`, `revert`, `branch`, `merge`,
 `rebase`, `cherry-pick` — with git's flag names and git's diff performance.
 
-**Status: pre-alpha, but the whole verb set works and is measured.** 338 checks green from an empty
-database (291 pgTAP + 26 CLI + 9 crash-safety + 12 non-superuser portability).
+**Status: pre-alpha, but the whole verb set works and is measured.** 351 checks green from an empty
+database (291 pgTAP + 26 CLI + 9 crash-safety + 12 non-superuser portability + 13 remote transfer).
 
 **Runs on managed Postgres.** Every verb is exercised as a plain `LOGIN` role with no superuser
 rights — strictly fewer privileges than the RDS master user gets — so RDS, Neon and Supabase are
@@ -36,6 +36,11 @@ pgit reset HEAD~1 --hard        # or --soft
 pgit reflog
 pgit fsck                       # verify every hash, ref, chain and tree
 pgit gc                         # pack node versions as deltas
+
+pgit remote add origin <url>    # history moves between databases as bundles
+pgit bundle main > pack.json    # or: --have have.json for an incremental pack
+pgit fetch origin pack.json     # updates remotes/origin/* only, never your branches
+pgit receive pack.json          # updates local branches, fast-forward enforced
 pgit cherry-pick <sha>
 pgit revert <sha>
 ```
