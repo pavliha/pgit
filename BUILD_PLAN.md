@@ -406,6 +406,21 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   is synthetic. Conflicts *within* the virtual base take the first base's side, which is a heuristic
   and is documented as one. More than two bases still refuses loudly.
   Still absent, deliberately: octopus merges, `subtree`, `rerere`, and rename detection in merge.
+- **rename detection in merge** — 9 assertions (268 pgTAP + 19 CLI + 9 kill + 12 RDS = 308). The
+  row analogue of git's file-rename detection: **a primary-key change is journalled as a delete plus
+  an insert**, so if the other branch edited that row you previously got a spurious delete-versus-
+  modify conflict *and* silently lost the edit. `pgit.rename_pairs` pairs deleted keys with inserted
+  ones by `pgit.row_similarity` over non-key columns — mutual-best-match, one-to-one, default
+  threshold 0.5, the same shape as git's `-M`. `merge_plan` is now a wrapper over `merge_plan_raw`
+  that rewrites those conflicts into a three-way merge **at the new key**.
+  Tested in both directions, which matters more than the happy path: a key change with an otherwise
+  untouched row scores similarity 1.0 and merges cleanly, carrying the other branch's edit onto the
+  renamed row; a delete-plus-insert of *dissimilar* content is **not** mistaken for a rename and
+  still surfaces as a real conflict; and raising the threshold above 1.0 finds nothing, proving the
+  threshold is actually honoured rather than decorative.
+  `pgit.rename_pairs` is public, so wiring `-M` into `diff` later is a small change. Still absent by
+  choice: octopus merges, `subtree`, `rerere`, and **table**-level rename detection (a table renamed
+  by DDL is currently refused by the schema-fingerprint guard rather than followed).
 - **tooling** — the progress log above lost 11 entries to silent failure. They were appended with a
   Python `str.replace()` anchored on text that did not exist, and `replace()` returns the original
   string on no match, so every one reported success and wrote nothing. The `## Blocked` section

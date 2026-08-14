@@ -4,8 +4,8 @@ Git semantics over data in **stock PostgreSQL**, as a plain SQL plugin. No forke
 extension, no managed service. `commit`, `log`, `diff`, `blame`, `revert`, `branch`, `merge`,
 `rebase`, `cherry-pick` — with git's flag names and git's diff performance.
 
-**Status: pre-alpha, but the whole verb set works and is measured.** 299 checks green from an empty
-database (259 pgTAP + 19 CLI + 9 crash-safety + 12 non-superuser portability).
+**Status: pre-alpha, but the whole verb set works and is measured.** 308 checks green from an empty
+database (268 pgTAP + 19 CLI + 9 crash-safety + 12 non-superuser portability).
 
 **Runs on managed Postgres.** Every verb is exercised as a plain `LOGIN` role with no superuser
 rights — strictly fewer privileges than the RDS master user gets — so RDS, Neon and Supabase are

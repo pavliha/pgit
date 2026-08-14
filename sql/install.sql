@@ -1186,7 +1186,7 @@ BEGIN
   RETURN pgit.virtual_merge(arr[1], arr[2]);
 END $$;
 
-CREATE OR REPLACE FUNCTION pgit.merge_plan(base_sha bytea, our_sha bytea, their_sha bytea)
+CREATE OR REPLACE FUNCTION pgit.merge_plan_raw(base_sha bytea, our_sha bytea, their_sha bytea)
 RETURNS TABLE (tbl text, k text, action text, merged jsonb, conflict_col text)
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
@@ -2256,4 +2256,112 @@ BEGIN
   ON CONFLICT DO NOTHING;
 
   RETURN vb;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.row_similarity(a jsonb, b jsonb, pk text[]) RETURNS numeric
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT CASE WHEN count(*) = 0 THEN 0
+              ELSE count(*) FILTER (WHERE a -> k IS NOT DISTINCT FROM b -> k)::numeric / count(*) END
+  FROM jsonb_object_keys(COALESCE(a, '{}'::jsonb)) k
+  WHERE NOT (k = ANY (pk))
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.rename_pairs(
+  base_root bytea, side_root bytea, pk text[], threshold numeric DEFAULT 0.5
+) RETURNS TABLE (old_k text, new_k text, sim numeric)
+LANGUAGE sql STABLE AS $$
+  WITH d AS (SELECT * FROM pgit.diff_tree(base_root, side_root)),
+  del AS (SELECT x.k, x.before AS img FROM d x WHERE x.op = 'DELETE'),
+  ins AS (SELECT x.k, x.after  AS img FROM d x WHERE x.op = 'INSERT'),
+  cand AS (
+    SELECT del.k AS ok, ins.k AS nk, pgit.row_similarity(del.img, ins.img, pk) AS s
+    FROM del CROSS JOIN ins
+  ),
+  ranked AS (
+    SELECT c.*,
+           row_number() OVER (PARTITION BY c.ok ORDER BY c.s DESC, c.nk) AS r1,
+           row_number() OVER (PARTITION BY c.nk ORDER BY c.s DESC, c.ok) AS r2
+    FROM cand c WHERE c.s >= threshold
+  )
+  SELECT r.ok, r.nk, r.s FROM ranked r WHERE r.r1 = 1 AND r.r2 = 1
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.three_way_row(bimg jsonb, oimg jsonb, timg jsonb, pk text[])
+RETURNS jsonb
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+  out_img jsonb := oimg;
+  col text;
+  bv jsonb; ov jsonb; tv jsonb;
+BEGIN
+  FOR col IN SELECT jsonb_object_keys(COALESCE(bimg, oimg)) LOOP
+    CONTINUE WHEN col = ANY (pk);
+    bv := bimg -> col; ov := oimg -> col; tv := timg -> col;
+    IF ov IS NOT DISTINCT FROM tv THEN CONTINUE;
+    ELSIF ov IS NOT DISTINCT FROM bv THEN
+      out_img := jsonb_set(out_img, ARRAY[col], COALESCE(tv, 'null'::jsonb));
+    ELSIF tv IS NOT DISTINCT FROM bv THEN CONTINUE;
+    ELSE RETURN NULL;
+    END IF;
+  END LOOP;
+  RETURN out_img;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.merge_plan(base_sha bytea, our_sha bytea, their_sha bytea)
+RETURNS TABLE (tbl text, k text, action text, merged jsonb, conflict_col text)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  r      record;
+  broot  bytea; oroot bytea; troot bytea;
+  pk     text[];
+  bimg   jsonb; oimg jsonb; timg jsonb; other jsonb;
+  nk     text;
+  fixed  jsonb;
+  cur    text := NULL;
+BEGIN
+  FOR r IN SELECT * FROM pgit.merge_plan_raw(base_sha, our_sha, their_sha) LOOP
+    IF r.action <> 'conflict' OR r.conflict_col IS NOT NULL THEN
+      tbl := r.tbl; k := r.k; action := r.action; merged := r.merged; conflict_col := r.conflict_col;
+      RETURN NEXT; CONTINUE;
+    END IF;
+
+    IF cur IS DISTINCT FROM r.tbl THEN
+      cur := r.tbl;
+      SELECT x.root_hash INTO broot FROM pgit.trees x WHERE x.commit_sha = base_sha  AND x.tbl = cur;
+      SELECT x.root_hash INTO oroot FROM pgit.trees x WHERE x.commit_sha = our_sha   AND x.tbl = cur;
+      SELECT x.root_hash INTO troot FROM pgit.trees x WHERE x.commit_sha = their_sha AND x.tbl = cur;
+      pk := pgit.pk_columns(cur::regclass);
+    END IF;
+
+    SELECT l.v INTO bimg FROM pgit.lookup(broot, r.k) l;
+    SELECT l.v INTO oimg FROM pgit.lookup(oroot, r.k) l;
+    SELECT l.v INTO timg FROM pgit.lookup(troot, r.k) l;
+
+    nk := NULL;
+    IF oimg IS NULL AND timg IS NOT NULL THEN
+      SELECT p.new_k INTO nk FROM pgit.rename_pairs(broot, oroot, pk) p WHERE p.old_k = r.k;
+      IF nk IS NOT NULL THEN SELECT l.v INTO other FROM pgit.lookup(oroot, nk) l; END IF;
+    ELSIF timg IS NULL AND oimg IS NOT NULL THEN
+      SELECT p.new_k INTO nk FROM pgit.rename_pairs(broot, troot, pk) p WHERE p.old_k = r.k;
+      IF nk IS NOT NULL THEN
+        SELECT l.v INTO other FROM pgit.lookup(troot, nk) l;
+        timg := oimg; oimg := other; other := timg;
+      END IF;
+    END IF;
+
+    IF nk IS NULL THEN
+      tbl := r.tbl; k := r.k; action := r.action; merged := r.merged; conflict_col := r.conflict_col;
+      RETURN NEXT; CONTINUE;
+    END IF;
+
+    fixed := pgit.three_way_row(bimg, other, CASE WHEN oimg IS NULL THEN timg ELSE oimg END, pk);
+
+    tbl := r.tbl; k := nk;
+    IF fixed IS NULL THEN
+      action := 'conflict'; merged := NULL; conflict_col := NULL;
+    ELSE
+      action := 'upsert'; merged := fixed; conflict_col := NULL;
+    END IF;
+    RETURN NEXT;
+  END LOOP;
 END $$;
