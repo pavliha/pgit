@@ -246,29 +246,137 @@ BEGIN
   RETURN lo;
 END $$;
 
-CREATE OR REPLACE FUNCTION pgit.make_delta(base jsonb, target jsonb) RETURNS jsonb
+DO $$
+DECLARE r record;
+BEGIN
+  FOR r IN SELECT n.hash, n.delta, n.base_hash FROM pgit.nodes n
+           WHERE n.entries IS NULL AND n.delta ? 'p' LOOP
+    UPDATE pgit.nodes t
+    SET entries = (substr(b.txt, 1, (r.delta ->> 'p')::int) || (r.delta ->> 'm')
+                   || right(b.txt, (r.delta ->> 's')::int))::jsonb,
+        delta = NULL, base_hash = NULL
+    FROM (SELECT x.entries::text AS txt FROM pgit.nodes x WHERE x.hash = r.base_hash) b
+    WHERE t.hash = r.hash;
+  END LOOP;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.coalesce_ops(ops jsonb) RETURNS jsonb
 LANGUAGE plpgsql IMMUTABLE AS $$
 DECLARE
-  a text := base::text;
-  b text := target::text;
-  p int;
-  sfx int;
+  out_ops jsonb := '[]'::jsonb;
+  last_op jsonb;
+  e       jsonb;
 BEGIN
-  p := pgit.common_prefix(a, b);
-  sfx := pgit.common_suffix(a, b, least(length(a), length(b)) - p);
+  FOR e IN SELECT jsonb_array_elements(ops) LOOP
+    IF last_op IS NULL THEN
+      last_op := e;
+    ELSIF last_op ? 'i' AND e ? 'i' THEN
+      last_op := jsonb_build_object('i', (last_op ->> 'i') || (e ->> 'i'));
+    ELSIF last_op ? 'c' AND e ? 'c'
+      AND (last_op -> 'c' ->> 0)::int + (last_op -> 'c' ->> 1)::int = (e -> 'c' ->> 0)::int THEN
+      last_op := jsonb_build_object('c', jsonb_build_array(
+        (last_op -> 'c' ->> 0)::int,
+        (last_op -> 'c' ->> 1)::int + (e -> 'c' ->> 1)::int));
+    ELSE
+      out_ops := out_ops || last_op;
+      last_op := e;
+    END IF;
+  END LOOP;
 
-  RETURN jsonb_build_object(
-    'p', p,
-    's', sfx,
-    'm', substr(b, p + 1, length(b) - p - sfx));
+  IF last_op IS NOT NULL THEN out_ops := out_ops || last_op; END IF;
+  RETURN out_ops;
 END $$;
 
 CREATE OR REPLACE FUNCTION pgit.apply_delta_txt(base text, d jsonb) RETURNS text
-LANGUAGE sql IMMUTABLE AS $$
-  SELECT substr(base, 1, (d ->> 'p')::int)
-      || (d ->> 'm')
-      || right(base, (d ->> 's')::int)
-$$;
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+  parts text[] := '{}';
+  e     jsonb;
+BEGIN
+  FOR e IN SELECT jsonb_array_elements(d) LOOP
+    parts := parts || CASE WHEN e ? 'c'
+      THEN substr(base, (e -> 'c' ->> 0)::int, (e -> 'c' ->> 1)::int)
+      ELSE (e ->> 'i') END;
+  END LOOP;
+
+  RETURN array_to_string(parts, '');
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.make_delta(base jsonb, target jsonb) RETURNS jsonb
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+  bt      text := base::text;
+  tt      text := target::text;
+  ops     jsonb := '[]'::jsonb;
+  r       record;
+  p       int;
+  s       int;
+  n       int;
+  sep_pos int;
+  first   boolean := true;
+BEGIN
+  IF base IS NULL OR target IS NULL OR jsonb_array_length(base) = 0 THEN
+    RETURN jsonb_build_array(jsonb_build_object('i', tt));
+  END IF;
+
+  ops := ops || jsonb_build_object('c', jsonb_build_array(1, 1));
+
+  FOR r IN
+    WITH b AS (
+      SELECT x.ord, x.e ->> 'k' AS k, x.e::text AS t
+      FROM jsonb_array_elements(base) WITH ORDINALITY x(e, ord)
+    ),
+    bo AS (
+      SELECT b.k, b.t,
+             (2 + COALESCE(sum(length(b.t) + 2) OVER (
+                   ORDER BY b.ord ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                   EXCLUDE CURRENT ROW), 0))::int AS pos,
+             (b.ord = count(*) OVER ()) AS is_last
+      FROM b
+    ),
+    tg AS (
+      SELECT y.ord, y.e ->> 'k' AS k, y.e::text AS t
+      FROM jsonb_array_elements(target) WITH ORDINALITY y(e, ord)
+    )
+    SELECT tg.ord, tg.t AS want, bo.pos, bo.t AS have, bo.is_last
+    FROM tg LEFT JOIN bo ON bo.k = tg.k
+    ORDER BY tg.ord
+  LOOP
+    IF NOT first THEN
+      ops := ops || CASE WHEN sep_pos IS NOT NULL
+        THEN jsonb_build_object('c', jsonb_build_array(sep_pos, 2))
+        ELSE jsonb_build_object('i', ', ') END;
+    END IF;
+    first := false;
+
+    sep_pos := CASE WHEN r.have IS NOT NULL AND NOT r.is_last
+                    THEN r.pos + length(r.have) END;
+
+    IF r.have IS NULL THEN
+      ops := ops || jsonb_build_object('i', r.want);
+    ELSIF r.have = r.want THEN
+      ops := ops || jsonb_build_object('c', jsonb_build_array(r.pos, length(r.have)));
+    ELSE
+      p := pgit.common_prefix(r.have, r.want);
+      s := pgit.common_suffix(r.have, r.want, least(length(r.have), length(r.want)) - p);
+      n := length(r.want) - p - s;
+
+      IF p > 0 THEN ops := ops || jsonb_build_object('c', jsonb_build_array(r.pos, p)); END IF;
+      IF n > 0 THEN ops := ops || jsonb_build_object('i', substr(r.want, p + 1, n)); END IF;
+      IF s > 0 THEN
+        ops := ops || jsonb_build_object('c', jsonb_build_array(r.pos + length(r.have) - s, s));
+      END IF;
+    END IF;
+  END LOOP;
+
+  ops := pgit.coalesce_ops(ops || jsonb_build_object('c', jsonb_build_array(length(bt), 1)));
+
+  IF pgit.apply_delta_txt(bt, ops) <> tt THEN
+    RETURN jsonb_build_array(jsonb_build_object('i', tt));
+  END IF;
+
+  RETURN ops;
+END $$;
 
 CREATE OR REPLACE FUNCTION pgit.apply_delta(base jsonb, d jsonb) RETURNS jsonb
 LANGUAGE sql IMMUTABLE AS $$
@@ -278,7 +386,7 @@ $$;
 CREATE OR REPLACE FUNCTION pgit.entries_of(h bytea) RETURNS jsonb
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
-  chain bytea[] := '{}';
+  chain jsonb[] := '{}';
   cur   bytea   := h;
   acc   jsonb;
   txt   text;
@@ -287,10 +395,11 @@ DECLARE
   i     int;
 BEGIN
   LOOP
-    SELECT n.entries, n.base_hash INTO acc, nxt FROM pgit.nodes n WHERE n.hash = cur;
+    SELECT n.entries, n.base_hash, n.delta INTO acc, nxt, dl
+    FROM pgit.nodes n WHERE n.hash = cur;
     IF NOT FOUND THEN RETURN NULL; END IF;
     EXIT WHEN acc IS NOT NULL;
-    chain := chain || cur;
+    chain := chain || dl;
     cur := nxt;
   END LOOP;
 
@@ -299,8 +408,7 @@ BEGIN
   txt := acc::text;
 
   FOR i IN REVERSE array_length(chain, 1)..1 LOOP
-    SELECT n.delta INTO dl FROM pgit.nodes n WHERE n.hash = chain[i];
-    txt := pgit.apply_delta_txt(txt, dl);
+    txt := pgit.apply_delta_txt(txt, chain[i]);
   END LOOP;
 
   RETURN txt::jsonb;
@@ -834,11 +942,22 @@ LANGUAGE sql STABLE AS $$
   WHERE n.hash = h
 $$;
 
-CREATE OR REPLACE FUNCTION pgit.all_columns(tbl regclass) RETURNS text[]
+DROP FUNCTION IF EXISTS pgit.all_columns(regclass);
+
+CREATE OR REPLACE FUNCTION pgit.writable_columns(tbl regclass) RETURNS text[]
 LANGUAGE sql STABLE AS $$
   SELECT array_agg(a.attname ORDER BY a.attnum)
   FROM pg_attribute a
   WHERE a.attrelid = tbl AND a.attnum > 0 AND NOT a.attisdropped
+    AND a.attgenerated = ''
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.has_identity(tbl regclass) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM pg_attribute a
+    WHERE a.attrelid = tbl AND a.attnum > 0 AND NOT a.attisdropped
+      AND a.attidentity = 'a')
 $$;
 
 DROP FUNCTION IF EXISTS pgit.apply_diff(regclass, bytea, bytea);
@@ -968,30 +1087,6 @@ BEGIN
   RETURN applied;
 END $$;
 
-CREATE OR REPLACE FUNCTION pgit.blame(tbl_name text, key_value text)
-RETURNS TABLE (col text, commit_sha bytea, actor text, at timestamptz, value jsonb)
-LANGUAGE sql STABLE AS $$
-  WITH touching AS (
-    SELECT c.id, c.op, c.before, c.after, c.commit_sha, c.actor, c.at
-    FROM pgit.changes c
-    WHERE c.tbl = tbl_name
-      AND pgit.row_matches(tbl_name, COALESCE(c.after, c.before), key_value)
-  ),
-  cols AS (
-    SELECT DISTINCT j.key AS col
-    FROM touching t, LATERAL jsonb_object_keys(COALESCE(t.after, t.before)) AS j(key)
-  ),
-  attributed AS (
-    SELECT cols.col, t.id, t.commit_sha, t.actor, t.at, t.after -> cols.col AS value
-    FROM cols CROSS JOIN touching t
-    WHERE t.op = 'INSERT'
-       OR COALESCE(t.before -> cols.col, 'null'::jsonb)
-          IS DISTINCT FROM COALESCE(t.after -> cols.col, 'null'::jsonb)
-  )
-  SELECT DISTINCT ON (a.col) a.col, a.commit_sha, a.actor, a.at, a.value
-  FROM attributed a
-  ORDER BY a.col, a.id DESC
-$$;
 
 CREATE OR REPLACE FUNCTION pgit.short_sha(v bytea) RETURNS text
 LANGUAGE sql IMMUTABLE AS $$
@@ -1173,6 +1268,35 @@ LANGUAGE sql STABLE AS $$
   SELECT w.sha FROM w
 $$;
 
+CREATE OR REPLACE FUNCTION pgit.blame(tbl_name text, key_value text)
+RETURNS TABLE (col text, commit_sha bytea, actor text, at timestamptz, value jsonb)
+LANGUAGE sql STABLE AS $$
+  WITH reachable AS (
+    SELECT x.a FROM pgit.ancestors(pgit.resolve(pgit.head())) x
+  ),
+  touching AS (
+    SELECT c.id, c.op, c.before, c.after, c.commit_sha, c.actor, c.at
+    FROM pgit.changes c
+    WHERE c.tbl = tbl_name
+      AND (c.commit_sha IS NULL OR c.commit_sha IN (SELECT r.a FROM reachable r))
+      AND pgit.row_matches(tbl_name, COALESCE(c.after, c.before), key_value)
+  ),
+  cols AS (
+    SELECT DISTINCT j.key AS col
+    FROM touching t, LATERAL jsonb_object_keys(COALESCE(t.after, t.before)) AS j(key)
+  ),
+  attributed AS (
+    SELECT cols.col, t.id, t.commit_sha, t.actor, t.at, t.after -> cols.col AS value
+    FROM cols CROSS JOIN touching t
+    WHERE t.op = 'INSERT'
+       OR COALESCE(t.before -> cols.col, 'null'::jsonb)
+          IS DISTINCT FROM COALESCE(t.after -> cols.col, 'null'::jsonb)
+  )
+  SELECT DISTINCT ON (a.col) a.col, a.commit_sha, a.actor, a.at, a.value
+  FROM attributed a
+  ORDER BY a.col, a.id DESC
+$$;
+
 CREATE OR REPLACE FUNCTION pgit.merge_base(a_sha bytea, b_sha bytea) RETURNS bytea
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -1286,8 +1410,10 @@ CREATE OR REPLACE FUNCTION pgit.apply_row(target regclass, action text, img json
 LANGUAGE plpgsql AS $$
 DECLARE
   pk       text[] := pgit.pk_columns(target);
-  cols     text[] := pgit.all_columns(target);
+  cols     text[] := pgit.writable_columns(target);
   pk_pred  text; set_cols text; set_vals text;
+  override text := CASE WHEN pgit.has_identity(target) THEN ' OVERRIDING SYSTEM VALUE' ELSE '' END;
+  upd_assign text;
   touched  int;
 BEGIN
   SELECT string_agg(format('t.%I = s.%I', c, c), ' AND ') INTO pk_pred FROM unnest(pk) c;
@@ -1300,13 +1426,23 @@ BEGIN
     RETURN;
   END IF;
 
-  EXECUTE format('UPDATE %s t SET (%s) = (%s) FROM jsonb_populate_record(NULL::%s, $1) s WHERE %s',
-                 target::text, set_cols, set_vals, target::text, pk_pred) USING img;
+  -- The key columns are already matched in the WHERE clause, so assigning them is
+  -- pointless, and an identity key cannot be assigned at all.
+  SELECT string_agg(format('%I = s.%I', c, c), ', ') INTO upd_assign
+  FROM unnest(cols) c WHERE NOT (c = ANY (pk));
+
+  IF upd_assign IS NULL THEN
+    EXECUTE format('SELECT 1 FROM %s t, jsonb_populate_record(NULL::%s, $1) s WHERE %s',
+                   target::text, target::text, pk_pred) USING img;
+  ELSE
+    EXECUTE format('UPDATE %s t SET %s FROM jsonb_populate_record(NULL::%s, $1) s WHERE %s',
+                   target::text, upd_assign, target::text, pk_pred) USING img;
+  END IF;
   GET DIAGNOSTICS touched = ROW_COUNT;
 
   IF touched = 0 THEN
-    EXECUTE format('INSERT INTO %s SELECT * FROM jsonb_populate_record(NULL::%s, $1)',
-                   target::text, target::text) USING img;
+    EXECUTE format('INSERT INTO %s (%s)%s SELECT %s FROM jsonb_populate_record(NULL::%s, $1) s',
+                   target::text, set_cols, override, set_vals, target::text) USING img;
   END IF;
 END $$;
 
@@ -1822,6 +1958,14 @@ BEGIN
     FROM pgit_old o WHERE o.rn NOT IN (SELECT rn FROM pgit_hit)
     UNION ALL
     SELECT key_bytes, hash, NULL::jsonb FROM pgit_new;
+
+  -- pgit.build_up stops at the first level holding a single node, so a table that
+  -- fits in one chunk has that leaf as its root. Building level 1 unconditionally
+  -- here would wrap it and give the same content a different root hash.
+  IF (SELECT count(*) FROM pgit_lvl) = 1
+     AND NOT EXISTS (SELECT 1 FROM pgit_l1 p WHERE p.rn NOT IN (SELECT rn FROM pgit_l1hit)) THEN
+    RETURN (SELECT hash FROM pgit_lvl);
+  END IF;
 
   PERFORM pgit.build_one_level(1);
 

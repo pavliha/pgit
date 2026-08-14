@@ -192,12 +192,44 @@ its logical content; the delta is purely a storage form. `pgit.unpack()` reverse
 
 Measured on 20k rows and 300 commits, with `VACUUM FULL` so the on-disk numbers are real.
 
-**The delta format was rewritten from a relational rebuild to byte splices**, and it is the
-difference between the feature being usable and not. The first version applied a delta by expanding
-the entries to rows, anti-joining, and re-aggregating with a sort — O(chunk) relational work *per
-hop*. The second stores each delta as `(prefix_len, suffix_len, middle)` against the serialised
-node and applies it with `substr` and `||`, which are memcpy inside Postgres. A chain now splices
-text through every hop and parses jsonb **once at the end** instead of rebuilding at each step.
+**The delta format has been rewritten twice.** The first version applied a delta by expanding the
+entries to rows, anti-joining, and re-aggregating with a sort — O(chunk) relational work *per hop*.
+The second stored each delta as `(prefix_len, suffix_len, middle)` against the serialised node and
+applied it with `substr` and `||`, which are memcpy inside Postgres: a chain splices text through
+every hop and parses jsonb **once at the end** instead of rebuilding at each step.
+
+The third is **git's format — a copy/insert op list** — because one splice has a failure mode that
+matters. A single `(prefix, suffix, middle)` can only describe *one* contiguous changed region, so
+two rows changed at opposite ends of a chunk force the middle to span everything between them. Git
+does not have this problem because a packfile delta is a sequence of instructions: copy N bytes from
+the base at offset O, or insert these literal bytes.
+
+`pgit.make_delta` now aligns base and target entries by key and, per target entry, emits either a
+copy of that entry's byte range in the base or — when the entry changed — a prefix copy, an insert
+of the differing middle, and a suffix copy. Adjacent copies that are contiguous in the base coalesce,
+so a run of unchanged entries collapses to a single op. Applying is still pure memcpy.
+
+Measured on the **same 424 consecutive node-version pairs**, from a workload that changes two
+unrelated rows per commit — the case one splice cannot express:
+
+| | one splice | op list |
+| --- | --- | --- |
+| pairs whose delta beats the full node | 370 of 424 | **424 of 424** |
+| total delta bytes over all pairs | 646 kB | **150 kB** |
+| mean leaf delta, against a 9,057 B node | 3,398 B — 37% | **541 B — 6%** |
+
+End to end on that fixture at depth 50: **2,506 kB → 473 kB, 81% off**, averaging 3.6 ops and 361
+bytes per delta with no fallbacks. Under one splice the same fixture packed only 118 of 424 versions
+and came out 1.6% smaller, because most candidate deltas failed the "is this smaller than the node"
+check outright.
+
+Two things this cost, both recorded because they were nearly invisible. The first version emitted the
+array separator as a copy from a **fixed** base offset, so no two copies were ever contiguous, nothing
+coalesced, and a 123-entry leaf produced 247 ops and a delta *larger* than the node — it packed the
+same node count while saving nothing. The separator has to be copied from the position following its
+own entry. And every delta is now verified against its target at construction time, falling back to a
+whole-node insert if it would not reconstruct exactly, so correctness does not depend on the offset
+arithmetic being right.
 
 | max_depth | node storage | diff, relational delta | diff, byte splice |
 | --- | --- | --- | --- |
@@ -214,6 +246,38 @@ Depth 16 is available for 64% at roughly 2× reads.
 
 Run-to-run variance on these timings is around 25% — the depth-0 baseline measured 167 ms and 213 ms
 on two runs — so only the large gaps here are meaningful.
+
+### At 1M rows and 10,000 commits — the number the README used to get wrong
+
+The 20k figures above are a fixture. This is the real one: a 1M-row table, 10,000 commits each
+touching the same ten rows, `VACUUM FULL` between every measurement.
+
+| | node store | × the table | off | 
+| --- | --- | --- | --- |
+| no repack | 487 MB | 4.5× | — |
+| **`gc` at the default depth 4** | **197 MB** | **1.8×** | **60%** |
+| `gc --depth 16` | 146 MB | 1.3× | 70% |
+| `gc --depth 50` | 131 MB | 1.2× | 73% |
+| `gc --depth 200` | 126 MB | 1.2× | 74% |
+
+**"10,000 commits grew the node store to 5× the table" was a pre-`gc` number**, and it was the
+headline in the README for weeks. Packed, the same history is 1.2–1.8×, and the curve has plateaued
+by depth 50 — the residual 126 MB is essentially one full snapshot of a 108 MB table, which is the
+floor any content-addressed store has. Storage is not the open problem it was recorded as; the open
+problem is **retention policy**, which is a different question.
+
+Read cost is what limits depth, not storage. On the old one-splice format, measured cleanly: 169 ms
+at depth 4, 428 ms at 16, 411 ms at 50, and 6,225 ms at 200 — so depth 50 is the last free stop and
+200 is a cliff. The op-list format's depth-16-and-beyond timings were taken while other work shared
+the machine and are not trustworthy; the sizes in the table are unaffected by that, timings are not.
+
+> [!warning]
+> **Do not hold a transaction open while a storage benchmark runs.** An at-scale re-run of the table
+> below reported the node store *growing* under repack. It had not: live data was 92 MB of entries
+> plus 15 MB of deltas, and the TOAST table was 953 MB of tuples `VACUUM FULL` was not allowed to
+> remove, because progress was being polled with `SELECT pg_sleep(300)` — a five-minute snapshot that
+> holds back the vacuum horizon for the whole database. Poll with short queries, or watch the output
+> file and touch nothing.
 
 **This did not require C.** The bottleneck was never the language, it was using jsonb as the node
 format on the hot path. Byte-level delta application was available in plain SQL as soon as the delta

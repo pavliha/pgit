@@ -13,10 +13,11 @@ covered by construction. There is no C extension to install and no `pgcrypto` de
 **25 ms**, and diffing 10 changed rows **10,000 commits apart** takes **163 ms** — the same as one
 commit apart.
 
-Two things to know before using it, both in `PERF.md`: journalling costs about **10× the write it
-records**, and 10,000 commits grew the node store to **5× the size of the table** — history costs
-storage, and it grows with commit count rather than data size. Neither is hidden; both are open
-decisions in `BUILD_PLAN.md`.
+Two things to know before using it, both in `PERF.md`. Journalling costs about **10× the write it
+records** — that one is an open decision in `BUILD_PLAN.md`. And history costs storage, but far less
+than it first appears: on a 1M-row table, 10,000 commits leave the node store at 4.5× the table
+**until you run `pgit gc`**, which takes it to **1.8×** at the default depth and **1.2×** at
+`--depth 50`. Delta compression removes 74% of it. The number to quote is the packed one.
 
 ```
 pgit status

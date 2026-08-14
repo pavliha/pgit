@@ -110,10 +110,14 @@ engineering.
   have `blame` and the revert guard read it from the parent tree, (b) journal only changed columns,
   or (c) decide 2× was the wrong number for a journal that stores full row images.
   **Not moving the target unilaterally.**
-- **Storage retention needs a decision.** Ten thousand commits grew `pgit.nodes` to **540 MB against
-  a 107 MB table**, and none of it is collectable — every commit is reachable from `main`. Storage
-  scales with **commit count**, not data size, because each commit rewrites a leaf node carrying the
-  full row images of its whole chunk.
+- **Storage retention needs a decision — but the premise it was written on was wrong.** This item
+  used to read "540 MB against a 107 MB table, none of it collectable". That was a **pre-`gc`**
+  number. Measured properly at 1M rows and 10,000 commits: 487 MB unpacked, **197 MB (1.8×) after
+  `gc` at the default depth**, 131 MB (1.2×) at depth 50, and the curve is flat past that — the
+  residual is one full snapshot, which is the floor. Delta compression already solved the storage
+  problem; see `PERF.md`.
+  What is left is the actual policy question, unchanged by any of this: **how much history should a
+  database keep, and who decides?** `prune --before` exists and works. Nobody has chosen a default.
   Two things were measured and both killed the obvious fixes. **Separating blobs from trees,
   git-style, makes it 1.7× worse** — chunk-level compression beats per-row storage, because pglz
   compresses a whole chunk as one unit while individual row blobs fall below the TOAST threshold.
@@ -562,6 +566,50 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   octopus: the earlier `receive --force` test leaves origin's live table out of step with its ref, so
   `checkout` refused. The setup block was swallowing stderr with `2>&1 >/dev/null`, so a hard error
   read as a wrong answer. Those blocks now run with `ON_ERROR_STOP=1` and only stdout suppressed.
+
+- **delta compression rewritten to git's copy/insert op list** — 16 pgTAP assertions. A single
+  `(prefix, suffix, middle)` splice can only describe one contiguous changed region, so two rows
+  changed at opposite ends of a chunk forced the middle to span everything between them. Measured on
+  the **same 424 node-version pairs**: one splice beat the full node on 370 of them for 646 kB total;
+  the op list beats it on **424 of 424 for 150 kB**, and the mean leaf delta drops from 3,398 B to
+  541 B against a 9,057 B node. End to end, 2,506 kB → 473 kB. Full numbers in `PERF.md`.
+  The first attempt emitted the array separator as a copy from a **fixed** base offset, so no two
+  copies were ever contiguous, nothing coalesced, and a 123-entry leaf produced 247 ops and a delta
+  *larger* than the node — while packing exactly the same node count, so it looked like it worked.
+  Every delta is now checked against its target at construction and falls back to a whole-node insert
+  if it would not reconstruct, so correctness never rests on the offset arithmetic.
+
+- **run pgit against a real application database, not a fixture** — `bench/realworld_intoge.sh`,
+  19 checks against a restored 63-table e-commerce schema: 21 custom enum types, `jsonb`, `numeric`,
+  `date`, `timestamptz`, real foreign keys, Georgian and Russian text. It tracks every table with a
+  primary key, commits a baseline, then runs workflows the application would actually perform — a
+  10% price rise on a branch, a translation pass on main, a merge, a genuine two-sided price conflict
+  with resolution, and a merge that would dangle a real `ON DELETE RESTRICT` foreign key.
+  **It found three real bugs that 380 synthetic assertions had not.** Each has its own regression
+  test, and each was confirmed to fail without its fix:
+  1. **The incremental tree and a full rebuild disagreed on the root hash when a table shrank to a
+     single chunk.** `build_up` stops at the first level holding one node, so a one-chunk table's root
+     *is* its leaf; the incremental path built level 1 unconditionally and returned a node wrapping
+     that leaf. Same rows, same per-key hashes, different root — which breaks the one invariant the
+     whole design rests on, since two databases holding identical content would disagree and `fsck`
+     would call both of them healthy. Found because a cascading delete shrank a locale table.
+     `test/incremental_04_collapse.sql`, 8 assertions.
+  2. **`apply_row` could not write a table with a `GENERATED ALWAYS AS` column**, which is every
+     checkout, merge, revert, rebase and reset on such a table. `all_columns` is now
+     `writable_columns` and excludes generated columns; identity keys are handled too — they are
+     omitted from the `SET` list, since the key is already matched in the `WHERE`, and inserted with
+     `OVERRIDING SYSTEM VALUE`. `test/replay_06_unwritable_columns.sql`, 10 assertions.
+  3. **`blame` ignored branch topology.** It scanned `pgit.changes` globally, so a row edited or
+     deleted on a branch you are not on was attributed on yours — a row deleted on an unmerged branch
+     blamed to all-null values. Now restricted to commits reachable from HEAD plus uncommitted rows.
+     `test/blame_02_branch_scope.sql`, 7 assertions.
+  Two things about the harness itself. Its first run reported four passes that were **vacuous** —
+  `pgit.track(r.relname)` failed because `relname` is `name` and there is no implicit cast to `text`,
+  the error was swallowed by a `>/dev/null`, and every later assertion compared zero against zero. It
+  now refuses to run if tracking produced no tables. And two "failures" were the harness being wrong,
+  not pgit: Postgres words a RESTRICT violation as `violates RESTRICT setting of foreign key
+  constraint`, not `violates foreign key`, and `blame.actor` is who changed the row, not who authored
+  the commit.
 
 ## Reference
 
