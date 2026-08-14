@@ -23,9 +23,9 @@ covered by construction. There is no C extension to install and no `pgcrypto` de
 
 Diffing 10 changed rows **10,000 commits apart** takes **163 ms** — the same as one commit apart,
 which is the property the whole design exists for. Commit cost depends on *where* the changed rows
-are, not only how many: on a 1M-row table, 10 adjacent rows commit in **25 ms**, while 5,000 rows
-scattered across the table cost **13 s**, bounded by one full rebuild. `PERF.md` has the shape
-table; quoting only the adjacent figure would be quoting the best case.
+are, not only how many: on a 1.7M-row table, 500 scattered rows commit in **336 ms** and 5,000 in
+**1.6 s**, against **12 s** to build the whole tree from nothing. `PERF.md` has the shape table;
+quoting only the best case would be quoting the best case.
 
 Two things to know before using it, both in `PERF.md`. Journalling costs about **10× the write it
 records** — that one is an open decision in `BUILD_PLAN.md`. And history costs storage, but far less

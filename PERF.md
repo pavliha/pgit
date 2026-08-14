@@ -357,6 +357,39 @@ remaining gap.
 Mean commit cost in one long transaction also grew from **16 ms at 500 commits to 34 ms at 10,000**,
 as `pgit.changes` accumulated 100,000 rows and the node table grew. Roughly 2× for 20× the commits.
 
+## The packed node format
+
+A node used to be a jsonb array of `{k, h, v}`. It is now three columns: `keys text[]`, `hashes
+bytea` — the child hashes packed at a 32 byte stride, in key order — and `entries jsonb` holding
+only the row images. `hashes` is exactly the pre-image of the node's own hash, so `pgit.hash(hashes)`
+is the node hash and every existing hash value is unchanged.
+
+That makes the operations that dominated a commit into whole-value C calls rather than one SQL row
+per entry: `array_position` finds an entry, `overlay` replaces its 32 bytes, `jsonb_set` replaces its
+image, and rehashing is a single `pgit.hash`.
+
+| 1.7M rows | jsonb nodes | packed nodes |
+| --- | --- | --- |
+| first commit (full build) | 15,223 ms | **12,060 ms** |
+| 500 scattered rows | 1,381 ms | **336 ms** |
+| 5,000 scattered rows | 4,049 ms | **1,596 ms** |
+| node store | 209 MB | **120 MB** |
+
+**It is smaller as well as faster**, which was not obvious in advance: an entry used to carry its hash
+as 64 hex characters and its key as a jsonb string, and the packed vectors replace both at 32 raw
+bytes plus one array element. An intermediate version that added the vectors *alongside* the existing
+jsonb was 47% larger — the win only appears once the duplication is removed.
+
+Against where this work started, a 5,000 row scattered commit has gone **13,383 ms → 1,596 ms, 8.4×**,
+and the gap to git on the same workload from 27× to about 3×.
+
+Two consequences worth recording. `repack` groups node versions by their first key, which used to be
+read out of the entries array and is now `keys[1]`. And `make_delta` used to align entries by their
+`k` field; with images-only entries it aligns by position instead, which is exact for two versions of
+a chunk whose membership has not changed, and degrades to a larger delta — never a wrong one, since
+every delta is verified against its target — when it has. Missing the second of those made deltas
+18× larger than the nodes they replaced, and the existing delta tests caught it.
+
 ## Profiling the commit path, and what it says about the binary node format
 
 `pg_stat_statements` with `track = all`, one commit of 5,000 scattered rows in a 1.7M row table.

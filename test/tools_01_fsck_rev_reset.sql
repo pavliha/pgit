@@ -62,7 +62,9 @@ SELECT pgit.unpack();
 CREATE TEMP TABLE victim AS
   SELECT hash, entries FROM pgit.nodes WHERE level = 0 AND entries IS NOT NULL LIMIT 1;
 
-UPDATE pgit.nodes SET entries = jsonb_set(entries, '{0,h}', '"deadbeef"'::jsonb)
+-- A node's identity is its packed child hashes; corrupting one is what fsck has
+-- to catch. It used to live as hex inside the entries array.
+UPDATE pgit.nodes SET hashes = overlay(hashes placing '\xdeadbeef'::bytea from 1 for 4)
 WHERE hash = (SELECT hash FROM victim);
 
 SELECT is(
