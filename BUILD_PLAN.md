@@ -140,6 +140,20 @@ engineering.
 - **The conflict guard is O(table) per revert.** `pgit.live_hash` computes `row_hashes` over the whole
   table for each key it checks. Correct but wasteful; it should become a keyed lookup before the
   perf gates.
+- **Git verbs deliberately not built, with the reason.** The inventory is now closed except these,
+  and each is a judgement rather than a backlog item.
+  - **Octopus merges** (>2 parents) — applies, and is the only one of these worth building. It needs
+    `pgit.commits.parent` to become a parents array, which ripples through `ancestors`, `merge_base`,
+    the bundle format and `fsck`. Left undone because the schema change wants a decision, not because
+    it is hard. A three-way branch merge is expressible today as two sequential merges.
+  - **`subtree`, `submodule`** — no analogue. Both compose *repositories*; there is one database and
+    one history here, and a nested history would be a second `pgit` schema with its own refs, which is
+    just two databases and a bundle.
+  - **Signed commits** — needs key management, a trust model and a verification story that none of the
+    rest of this has. Real work, not a missing function.
+  - **`filter-branch`** — rewrites every commit after a point. `prune` already truncates history; the
+    remaining use (scrubbing a column out of the past) means recomputing every tree from the rewrite
+    point forward, and offering that without a tested rollback would be irresponsible.
 
 ## Progress log
 
@@ -504,6 +518,27 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   string on no match, so every one reported success and wrote nothing. The `## Blocked` section
   referenced from "Next" was never created either. Reconstructed from the session transcript.
   **Use a tool that fails loudly, or assert the match count — never a silent string replace.**
+- **notes, rerere and table rename detection** — the three items from the missing-functionality
+  inventory that genuinely apply to a row-oriented system. 16 pgTAP assertions, 10 CLI checks.
+  `pgit.notes` attaches text to a commit sha; `pgit notes add|show|rm|list`.
+  `rerere` records `(tbl, base, ours, theirs) → resolution` on `merge --continue` and replays it
+  automatically the next time the identical conflict appears, so a repeated branch merge stops asking.
+  The test proves this is not vacuous: it asserts the `used` counter incremented before checking the
+  conflict count dropped to zero — otherwise "no conflicts" could just mean the second merge differed.
+  `pgit rerere status|forget`.
+  **Table rename detection uses tree similarity, not shape.** Comparing column names and types
+  false-positives constantly — `(id int, v text)` is every other table. It matches by content
+  instead: Dice coefficient over `(key, row hash)` leaf pairs, threshold 0.5, best match per dropped
+  table. Identical roots score 1.0 without descending. A rename plus an edit of 2 of 10 rows scores
+  exactly 0.8 and is reported as `similar`; a drop and an unrelated add sharing no rows is not
+  reported at all. `pgit renames <a> <b>`.
+  Two things worth recording. The first draft joined on `root_hash = root_hash`, which made the
+  `'similar'` arm of its own CASE unreachable — it could only ever detect a rename with no edits,
+  while the column claimed otherwise. Dead code that lies in a report is worse than a missing feature.
+  And the outcome is still **detection, not following**: `assert_same_schema` refuses the replay, but
+  now names both tables and the match percentage instead of blaming a shape change. Following a rename
+  through a merge means mapping the old name to the new one across the diff, conflict and journal
+  paths; that is a project, not an afternoon, and is deliberately not attempted.
 
 ## Reference
 

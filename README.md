@@ -4,8 +4,8 @@ Git semantics over data in **stock PostgreSQL**, as a plain SQL plugin. No forke
 extension, no managed service. `commit`, `log`, `diff`, `blame`, `revert`, `branch`, `merge`,
 `rebase`, `cherry-pick` — with git's flag names and git's diff performance.
 
-**Status: pre-alpha, but the whole verb set works and is measured.** 380 checks green from an empty
-database (311 pgTAP + 26 CLI + 9 crash-safety + 12 non-superuser portability + 22 remote and clone).
+**Status: pre-alpha, but the whole verb set works and is measured.** 406 checks green from an empty
+database (327 pgTAP + 36 CLI + 9 crash-safety + 12 non-superuser portability + 22 remote and clone).
 
 **Runs on managed Postgres.** Every verb is exercised as a plain `LOGIN` role with no superuser
 rights — strictly fewer privileges than the RDS master user gets — so RDS, Neon and Supabase are
@@ -30,6 +30,8 @@ pgit merge main                 # -X ours | -X theirs | -s ours
 pgit conflicts                  # base/ours/theirs per conflict, queryable
 pgit resolve products 42 theirs # or ours | base | delete
 pgit merge --continue           # or --abort
+pgit rerere status              # the same conflict resolves itself next time
+pgit renames <a> <b>            # a renamed table, matched by content not by shape
 pgit rebase main
 pgit diff                       # working tree against HEAD
 pgit reset HEAD~1 --hard        # or --soft
@@ -44,6 +46,7 @@ pgit fetch origin pack.json     # updates remotes/origin/* only, never your bran
 pgit receive pack.json          # updates local branches, fast-forward enforced
 
 pgit tag v1.0 HEAD~2            # tags resolve as revisions
+pgit notes add HEAD -m "..."    # or: notes show | notes rm | notes list
 pgit restore HEAD~3 -- products:42   # one row, or a whole table, without moving the branch
 pgit stash / stash pop / stash list
 pgit bisect start <good> <bad>  # then: bisect good | bisect bad
@@ -101,7 +104,7 @@ O(history between them) and not O(table size).
 
 ```bash
 make up        # postgres 18 + pgTAP on port 5460, isolated
-make test      # 230 pgTAP assertions + 15 CLI + 9 crash-safety checks
+make test      # every suite: pgTAP, CLI, crash-safety, non-superuser, remote
 make bench     # the numbers in PERF.md
 ```
 

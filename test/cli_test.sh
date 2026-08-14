@@ -102,6 +102,30 @@ is "AC-CLI-01: reset --hard restored the working tree" \
 
 like "AC-CLI-01: show accepts a revision expression" "$("$PGIT" show HEAD~1 | head -1)" 'INSERT|UPDATE|DELETE'
 
+"$PGIT" notes add HEAD -m "checked against the ledger" >/dev/null
+is "AC-CLI-01: notes show reads back what notes add wrote" \
+   "$("$PGIT" notes show HEAD)" "checked against the ledger"
+like "AC-CLI-01: notes list shows the note against a short sha" \
+     "$("$PGIT" notes list | head -1)" '^[0-9a-f]{7}	checked against the ledger$'
+"$PGIT" notes rm HEAD >/dev/null
+"$PGIT" notes show HEAD >/dev/null 2>&1; rc=$?
+is "AC-CLI-03: notes show exits 129 once the note is gone" "$rc" "129"
+"$PGIT" notes add HEAD >/dev/null 2>&1; rc=$?
+is "AC-CLI-03: notes add without -m exits 129" "$rc" "129"
+
+like "AC-CLI-01: rerere status shows the resolution the earlier merge taught it" \
+     "$("$PGIT" rerere status | head -1)" '^m	theirs	[0-9]+ use\(s\)$'
+like "AC-CLI-01: rerere forget clears the recorded resolutions" \
+     "$("$PGIT" rerere forget)" '^forgot 1 recorded resolution\(s\)$'
+is "AC-CLI-01: rerere status is empty after forget" "$("$PGIT" rerere status)" ""
+
+is "AC-CLI-01: renames reports nothing between two commits that renamed nothing" \
+   "$("$PGIT" renames HEAD~1 HEAD)" ""
+"$PGIT" renames HEAD >/dev/null 2>&1; rc=$?
+is "AC-CLI-03: renames with one revision exits 129" "$rc" "129"
+"$PGIT" notes list --graph >/dev/null 2>&1; rc=$?
+is "AC-CLI-03: an unsupported flag on notes exits 129" "$rc" "129"
+
 psql "$ADMIN" -X -q -c "DROP DATABASE pgit_cli" >/dev/null
 
 echo

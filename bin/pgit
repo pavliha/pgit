@@ -332,6 +332,49 @@ receive)
   echo "received $n object(s)"
   ;;
 
+notes)
+  allow "-m" "$@"
+  mapfile -t args < <(positional "$@")
+  msg=""
+  prev=""
+  for a in "$@"; do [ "$prev" = "-m" ] && msg="$a"; prev="$a"; done
+  case "${args[0]:-show}" in
+    add)  rev="${args[1]:-HEAD}"
+          [ -n "$msg" ] || die "notes add needs -m <text>"
+          q "SELECT pgit.note_add('$(lit "$rev")','$(lit "$msg")')" >/dev/null || exit 1
+          echo "noted $(q "SELECT pgit.short_sha(pgit.rev('$(lit "$rev")'))")" ;;
+    show) rev="${args[1]:-HEAD}"
+          out=$(q "SELECT COALESCE(pgit.note_show('$(lit "$rev")'),'')") || exit 1
+          [ -n "$out" ] || die "no note on $rev"
+          echo "$out" ;;
+    rm)   rev="${args[1]:-HEAD}"
+          q "SELECT pgit.note_delete('$(lit "$rev")')" >/dev/null || exit 1
+          echo "removed note on $rev" ;;
+    list) q "SELECT pgit.short_sha(commit_sha) || E'\t' || note FROM pgit.notes ORDER BY at DESC" ;;
+    *)    die "notes takes add, show, rm or list" ;;
+  esac
+  ;;
+
+rerere)
+  allow "" "$@"
+  sub=$(positional "$@" | head -1)
+  case "${sub:-status}" in
+    status) q "SELECT tbl || E'\t' || resolution_kind || E'\t' || used || ' use(s)' FROM pgit.rerere ORDER BY at DESC" ;;
+    forget) n=$(q "WITH d AS (DELETE FROM pgit.rerere RETURNING 1) SELECT count(*) FROM d")
+            echo "forgot $n recorded resolution(s)" ;;
+    *)      die "rerere takes status or forget" ;;
+  esac
+  ;;
+
+renames)
+  allow "" "$@"
+  mapfile -t args < <(positional "$@")
+  [ -n "${args[0]:-}" ] && [ -n "${args[1]:-}" ] || die "renames needs <a> <b>"
+  q "SELECT old_tbl || E'\t' || new_tbl || E'\t' || kind || E'\t' || round(similarity * 100) || '%'
+     FROM pgit.table_renames(pgit.rev('$(lit "${args[0]}")'), pgit.rev('$(lit "${args[1]}")'))
+     ORDER BY similarity DESC, old_tbl" || exit 1
+  ;;
+
 fsck)
   allow "" "$@"
   out=$(q "SELECT problem || E'\t' || detail FROM pgit.fsck()")

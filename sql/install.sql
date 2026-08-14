@@ -1331,6 +1331,11 @@ BEGIN
 
   n := pgit.record_conflicts(mid, base, ours, theirs);
 
+  IF n > 0 THEN
+    PERFORM pgit.rerere_apply(mid);
+    SELECT count(*) INTO n FROM pgit.conflicts WHERE merge_id = mid AND NOT resolved;
+  END IF;
+
   IF n > 0 AND opt IN ('ours', 'theirs') THEN
     PERFORM pgit.resolve_all(mid, opt);
     n := 0;
@@ -1540,6 +1545,7 @@ CREATE OR REPLACE FUNCTION pgit.assert_same_schema(a_sha bytea, b_sha bytea) RET
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
   bad record;
+  ren record;
 BEGIN
   SELECT sa.tbl, sa.columns AS acols, sb.columns AS bcols
   INTO bad
@@ -1551,6 +1557,14 @@ BEGIN
   IF bad.tbl IS NOT NULL THEN
     RAISE EXCEPTION 'pgit: table % has a different shape in the two commits, refusing to replay across a schema change (% versus %)',
       bad.tbl, bad.acols::text, bad.bcols::text;
+  END IF;
+
+  SELECT * INTO ren FROM pgit.table_renames(a_sha, b_sha) r
+  ORDER BY r.similarity DESC, r.old_tbl LIMIT 1;
+
+  IF FOUND THEN
+    RAISE EXCEPTION 'pgit: % looks renamed to % between these commits (% match, % of rows in common); following a table rename through a replay is not supported, rename it back or replay table by table',
+      ren.old_tbl, ren.new_tbl, ren.kind, round(ren.similarity * 100) || '%';
   END IF;
 END $$;
 
@@ -2198,6 +2212,8 @@ BEGIN
   PERFORM pgit.record_schemas(new_sha);
   UPDATE pgit.changes SET commit_sha = new_sha WHERE commit_sha IS NULL;
   PERFORM pgit.advance_ref(m.branch, m.ours_sha, new_sha);
+
+  PERFORM pgit.rerere_learn(mid);
 
   DELETE FROM pgit.conflicts WHERE merge_id = mid;
   DELETE FROM pgit.merges WHERE id = mid;
@@ -3111,3 +3127,121 @@ BEGIN
   PERFORM pgit.reset(encode(tip, 'hex'), 'hard');
   RETURN made;
 END $$;
+
+CREATE TABLE IF NOT EXISTS pgit.notes (
+  commit_sha bytea PRIMARY KEY,
+  note       text        NOT NULL,
+  author     text,
+  at         timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION pgit.note_add(spec text, body text) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+  target bytea := pgit.rev(spec);
+BEGIN
+  IF target IS NULL THEN RAISE EXCEPTION 'pgit: cannot resolve %', spec; END IF;
+  INSERT INTO pgit.notes (commit_sha, note, author) VALUES (target, body, pgit.actor())
+  ON CONFLICT (commit_sha) DO UPDATE SET note = EXCLUDED.note, at = now();
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.note_show(spec text) RETURNS text
+LANGUAGE sql STABLE AS $$
+  SELECT n.note FROM pgit.notes n WHERE n.commit_sha = pgit.rev(spec)
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.note_delete(spec text) RETURNS void
+LANGUAGE sql AS $$ DELETE FROM pgit.notes WHERE commit_sha = pgit.rev(spec) $$;
+
+CREATE TABLE IF NOT EXISTS pgit.rerere (
+  signature       bytea PRIMARY KEY,
+  tbl             text  NOT NULL,
+  resolution_kind text  NOT NULL,
+  resolution      jsonb,
+  used            int   NOT NULL DEFAULT 0,
+  at              timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION pgit.rerere_signature(t text, b jsonb, o jsonb, th jsonb) RETURNS bytea
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT pgit.hash(t || '|' || COALESCE(b::text,'~') || '|' ||
+                   COALESCE(o::text,'~') || '|' || COALESCE(th::text,'~'))
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.rerere_learn(mid bigint) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  n int := 0;
+  c record;
+BEGIN
+  FOR c IN SELECT * FROM pgit.conflicts x WHERE x.merge_id = mid AND x.resolved LOOP
+    INSERT INTO pgit.rerere (signature, tbl, resolution_kind, resolution)
+    VALUES (pgit.rerere_signature(c.tbl, c.base, c.ours, c.theirs),
+            c.tbl, c.resolution_kind, c.resolution)
+    ON CONFLICT (signature) DO UPDATE
+      SET resolution_kind = EXCLUDED.resolution_kind, resolution = EXCLUDED.resolution;
+    n := n + 1;
+  END LOOP;
+  RETURN n;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.rerere_apply(mid bigint) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  n int := 0;
+  c record;
+  r record;
+BEGIN
+  FOR c IN SELECT * FROM pgit.conflicts x WHERE x.merge_id = mid AND NOT x.resolved LOOP
+    SELECT * INTO r FROM pgit.rerere y
+    WHERE y.signature = pgit.rerere_signature(c.tbl, c.base, c.ours, c.theirs);
+
+    IF FOUND THEN
+      UPDATE pgit.conflicts
+      SET resolution_kind = r.resolution_kind, resolution = r.resolution, resolved = true
+      WHERE id = c.id;
+      UPDATE pgit.rerere SET used = used + 1 WHERE signature = r.signature;
+      n := n + 1;
+    END IF;
+  END LOOP;
+  RETURN n;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.tree_similarity(a bytea, b bytea) RETURNS numeric
+LANGUAGE sql STABLE AS $$
+  WITH la AS (SELECT k, rh FROM pgit.leaves(a)),
+       lb AS (SELECT k, rh FROM pgit.leaves(b)),
+       shared AS (SELECT count(*) AS c FROM la JOIN lb USING (k, rh)),
+       total  AS (SELECT (SELECT count(*) FROM la) + (SELECT count(*) FROM lb) AS c)
+  SELECT CASE WHEN total.c = 0 THEN 0
+              ELSE round((2.0 * shared.c) / total.c, 4) END
+  FROM shared, total
+$$;
+
+DROP FUNCTION IF EXISTS pgit.table_renames(bytea, bytea);
+CREATE OR REPLACE FUNCTION pgit.table_renames(a_sha bytea, b_sha bytea, threshold numeric DEFAULT 0.5)
+RETURNS TABLE (old_tbl text, new_tbl text, kind text, similarity numeric)
+LANGUAGE sql STABLE AS $$
+  WITH gone AS (
+    SELECT x.tbl, x.root_hash FROM pgit.trees x WHERE x.commit_sha = a_sha
+      AND x.tbl NOT IN (SELECT y.tbl FROM pgit.trees y WHERE y.commit_sha = b_sha)
+  ),
+  fresh AS (
+    SELECT x.tbl, x.root_hash FROM pgit.trees x WHERE x.commit_sha = b_sha
+      AND x.tbl NOT IN (SELECT y.tbl FROM pgit.trees y WHERE y.commit_sha = a_sha)
+  ),
+  scored AS (
+    SELECT g.tbl AS old_tbl, f.tbl AS new_tbl,
+           CASE WHEN g.root_hash = f.root_hash THEN 1.0
+                ELSE pgit.tree_similarity(g.root_hash, f.root_hash) END AS sim
+    FROM gone g CROSS JOIN fresh f
+  ),
+  best AS (
+    SELECT DISTINCT ON (s.old_tbl) s.old_tbl, s.new_tbl, s.sim
+    FROM scored s WHERE s.sim >= threshold
+    ORDER BY s.old_tbl, s.sim DESC, s.new_tbl
+  )
+  SELECT b.old_tbl, b.new_tbl,
+         CASE WHEN b.sim = 1.0 THEN 'identical' ELSE 'similar' END, b.sim
+  FROM best b
+$$;
