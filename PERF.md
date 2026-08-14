@@ -401,16 +401,25 @@ rediscovered later.
 > today that concurrent work has corrupted a storage measurement. **Storage numbers are only valid on
 > an idle machine.**
 
-## A night of profiling: what won, and the four things that did not
+## A night of profiling: what won, and the nine things that did not
 
 Every change below was A/B'd on an idle machine with at least three runs a side.
 Single runs were what made two of these look like wins when they were not.
 
 | | before | after | |
 | --- | --- | --- | --- |
-| full build, 200k rows | 2,589 ms | **868 ms** | 2.98× |
-| diff, 200k fixture, 21,076 rows | 915 ms | **667 ms** | 1.37× |
-| diff, IMDb, 82,664 rows, packed | 12,008 ms | **8,584 ms** | 1.40× |
+| **revert, 1,887 rows of 100k** | 292,723 ms | **1,453 ms** | **201×** |
+| **cherry-pick, 100k rows** | 7,151 ms | **679 ms** | **10.5×** |
+| full build, 200k rows | 2,589 ms | **830 ms** | 3.12× |
+| `write_tree`, IMDb 12.7M rows | 215.1 s | **96.2 s** | 2.24× |
+| diff, 200k fixture, 21,076 rows | 915 ms | **635 ms** | 1.44× |
+| diff, IMDb, 82,664 rows, packed | 12,008 ms | **7,962 ms** | 1.51× |
+
+The two largest are not on the paths I had been staring at. After a night on
+commit and diff, **profiling all ten verbs instead found a 201× and a 10× in the
+first sweep** — `revert` took four and a half minutes and nobody had ever timed
+it. Breadth beat depth by two orders of magnitude, and the lesson is the cheaper
+one: measure everything once before optimising anything twice.
 
 **NFC normalisation on ASCII text.** The full build is 76% `row_hashes` and that is 97% the canonical
 form expression. `normalize()` is 20× the rest of the expression combined — 540 ms with it, 26 ms
@@ -431,20 +440,44 @@ boundary is a function of the key alone, so a commit that moves no membership mo
 every child still pairs by exact first key. Equality first, range join only for the leftovers:
 263 ms → 15 ms over 54 internal pairs, **17×**.
 
-### Four hypotheses that measured worse, and are not in the tree
+**The revert guard hashed the whole table per reverted row.** `live_hash` called
+`row_hashes(target)` — which canonicalises and hashes every row in the table — and filtered it for
+one key. Reverting 200 rows of a 100k row table called sha256 **9,763,066 times**. `row_hashes_keys`
+already existed for this and uses the canonical key index that `track()` maintains. **201×**.
+
+**A cherry-pick built its merge plan twice and then looked up rows it already had.** Once to count
+conflicts and once to apply — an exact 2×. Then `merge_plan_raw` looked every candidate key up three
+times, once per side, to fetch images that `diff_tree` had just returned as `before` and `after`.
+A key missing from one diff means that side did not change it, so its image is the base image the
+other diff already carries. Together **10.5×**, guarded by a new oracle that checks all three derived
+images against independent tree lookups.
+
+### Nine hypotheses that measured worse or did nothing, and are not in the tree
 
 | tried | result |
 | --- | --- |
 | descent returns hashes only, images expanded at the top | recursion 1,518 ms → 316 ms, **wall clock unchanged** — the cost moved, it did not go away |
 | expand all leaf pairs in one set-based join | 750 ms → **3,574 ms**, 4.8× worse |
 | set-based splice in the commit path | 427 ms → **1,352 ms**, 3× worse |
+| set-based `make_delta` op list | 28.4 s → **44.6 s**, 57% worse |
 | batching the splice loop's two round trips per chunk | 469 ms → **520 ms**, 11% worse |
+| accumulating spliced nodes in plpgsql arrays | 498 ms → 499 ms, nothing |
+| `is_boundary` via `get_byte` instead of a hex round trip | 1,259 ms → **1,633 ms**, 30% worse |
+| op list in `jsonb[]` instead of jsonb, to avoid O(n²) append | 28.4 s → 28.1 s, nothing |
+| `PARALLEL SAFE` on the twenty read-path functions | 712 ms → 715 ms, nothing |
 
-The pattern is consistent and worth stating: **set-based rewrites lost every time here.** Expanding a
-72-entry chunk to change one row costs more than the per-row plpgsql that reads and writes it, and
-materialising image-bearing rows into a CTE costs more than the per-call overhead it removes. The
-original author had already measured this for the splice path and left a comment saying so; the
-comment was right.
+The pattern is consistent and worth stating: **set-based rewrites lost all four times here.**
+Expanding a 72-entry chunk to change one row costs more than the per-row plpgsql that reads and
+writes it; materialising image-bearing rows into a CTE costs more than the per-call overhead it
+removes; and six UNION ALL branches over a CTE with window functions cost more than the plpgsql loop
+they replaced. The original author had already measured this for the splice path and left a comment
+saying so; the comment was right.
+
+`is_boundary` is the most instructive loss. Extracting three bytes of a hash by encoding them to hex,
+concatenating and casting through `bit(24)` looks obviously wasteful next to `get_byte` arithmetic —
+but `get_byte` needs the hash three times, so it has to go in a `FROM` subquery, and **a SQL function
+with a `FROM` clause is no longer inlinable**. It became a real call per row. The hex round trip is
+the clever part: it references the hash exactly once in a flat expression.
 
 Two more that were tested and changed nothing: raising `work_mem` from 4 MB to 256 MB (707 ms against
 712 ms — the spill in the plan is not on the critical path), and dropping all three secondary indexes
