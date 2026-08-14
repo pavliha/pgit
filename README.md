@@ -1,0 +1,96 @@
+# pgit
+
+Git semantics over data in **stock PostgreSQL**, as a plain SQL plugin. No forked engine, no C
+extension, no managed service. `commit`, `log`, `diff`, `blame`, `revert`, `branch`, `merge`,
+`rebase`, `cherry-pick` — with git's flag names and git's diff performance.
+
+**Status: pre-alpha, but the whole verb set works and is measured.** 254 checks green from an empty
+database (230 pgTAP + 15 CLI + 9 crash-safety). On a 1M-row table a commit touching 10 rows takes
+**25 ms**, and diffing 10 changed rows **10,000 commits apart** takes **163 ms** — the same as one
+commit apart.
+
+Two things to know before using it, both in `PERF.md`: journalling costs about **10× the write it
+records**, and 10,000 commits grew the node store to **5× the size of the table** — history costs
+storage, and it grows with commit count rather than data size. Neither is hidden; both are open
+decisions in `BUILD_PLAN.md`.
+
+```
+pgit status
+pgit log --oneline
+pgit diff <a> <b> --stat -- products.price_amount
+pgit blame products 42
+pgit branch feature && pgit checkout feature
+pgit commit -m "..."
+pgit merge main
+pgit rebase main
+pgit cherry-pick <sha>
+pgit revert <sha>
+```
+
+Everything else git offers is refused by name — an unimplemented flag exits 129 saying which flag,
+so nothing is ever silently ignored.
+
+## Why this exists
+
+Everything shipping today makes one of two trades:
+
+| | Trade |
+| --- | --- |
+| DoltgreSQL | leaves Postgres — own engine, no extensions, ~5.2× slower, no rebase or cherry-pick |
+| pgGit | stays on Postgres, but versions **schema only** |
+| postgresql-tableversion | rows and diffs, no branching |
+| pg_branch, Neon, Lakebase | branch whole clusters, no row-level history |
+| lakeFS, Nessie | full git model, but for data lakes, not OLTP |
+
+Row-level, full verb set, stock Postgres, OLTP is empty. That is what this is.
+
+## The bet
+
+Four things Postgres already has, that a from-scratch git-for-data engine must build:
+
+1. **`txid_current()`** groups a commit for free — one transaction is one changeset.
+2. **Deferred constraints validate a merge.** Apply inside a transaction with constraints
+   deferred, then set them immediate. Every FK, unique and check is verified by Postgres; a merge
+   that would dangle a reference aborts on its own.
+3. **`session_replication_role = replica`** disables user triggers, so replay during rebase or
+   cherry-pick neither double-fires side effects nor records itself as new history.
+4. **`sha256`, `normalize`, `trim_scale`** in core — canonicalisation with no dependencies.
+
+## Design
+
+Two layers, because the write path and the read path want opposite things:
+
+| | `changes` journal | `nodes` tree |
+| --- | --- | --- |
+| written by | row trigger, per statement | commit, in bulk |
+| serves | revert, rebase, cherry-pick, blame | diff, merge, checkout |
+| canonical | no | **yes** |
+
+The tree is a merkle forest with **content-defined chunk boundaries** — a key starts a new chunk
+when `hash(key) mod target = 0`, a property of the key alone. That makes the tree history-
+independent: the same content always produces the same root hash, whatever order it arrived in.
+Which is what buys git's defining property — **`diff A B` costs O(size of the difference)**, not
+O(history between them) and not O(table size).
+
+## Run the tests
+
+```bash
+make up        # postgres 18 + pgTAP on port 5460, isolated
+make test      # 230 pgTAP assertions + 15 CLI + 9 crash-safety checks
+make bench     # the numbers in PERF.md
+```
+
+## Scope, permanently
+
+Search indexes, object storage, payment providers and outbound notifications do not branch and
+never will. `pgit` versions rows in one database. Anything else your application does in response
+to a write is your application's problem — reverting a row does not un-send an email.
+
+## Naming
+
+`pgit` collides with two unrelated projects (`ImGajeed76/pgit`, `evoludigit/pgGit`). Renaming is
+cheap while the repo is this small; it has not been decided.
+
+## License
+
+MIT.

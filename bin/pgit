@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+DSN="${PGIT_DSN:-postgresql://postgres:pgit@localhost:5460/pgit_test}"
+
+die()   { echo "pgit: $*" >&2; exit 129; }
+q()     { psql "$DSN" -X -q -At -F $'\t' -v ON_ERROR_STOP=1 -c "$1"; }
+lit()   { printf "%s" "$1" | sed "s/'/''/g"; }
+
+allow() {
+  local allowed=" $1 "
+  shift
+  for a in "$@"; do
+    case "$a" in
+      --) return 0 ;;
+      -*) [[ "$allowed" == *" ${a%%=*} "* ]] || die "unsupported flag ${a%%=*}" ;;
+    esac
+  done
+}
+
+pathspec_of() {
+  local seen=0
+  for a in "$@"; do
+    if [ "$seen" = 1 ]; then printf "%s" "$a"; return; fi
+    [ "$a" = "--" ] && seen=1
+  done
+}
+
+sql_pathspec() {
+  local ps
+  ps=$(pathspec_of "$@")
+  if [ -z "$ps" ]; then printf "NULL"; else printf "'%s'" "$(lit "$ps")"; fi
+}
+
+positional() {
+  local out=() skip=0
+  for a in "$@"; do
+    [ "$skip" = 1 ] && continue
+    [ "$a" = "--" ] && skip=1 && continue
+    case "$a" in -*) ;; *) out+=("$a") ;; esac
+  done
+  printf "%s\n" "${out[@]:-}"
+}
+
+cmd="${1:-}"
+[ -n "$cmd" ] || die "usage: pgit <command> [<args>]"
+shift
+
+case "$cmd" in
+
+status)
+  allow "" "$@"
+  echo "On branch $(q "SELECT pgit.head()")"
+  if [ "$(q "SELECT pgit.is_dirty()")" = "t" ]; then
+    echo "Changes not staged for commit"
+    exit 0
+  fi
+  echo "nothing to commit, working tree clean"
+  ;;
+
+log)
+  allow "--oneline" "$@"
+  ps=$(sql_pathspec "$@")
+  if [[ " $* " == *" --oneline "* ]]; then
+    q "SELECT pgit.short_sha(sha) || ' ' || message FROM pgit.log(NULL, $ps)"
+  else
+    q "SELECT 'commit ' || encode(sha,'hex') || E'\nAuthor: ' || COALESCE(author,'') ||
+              E'\nDate:   ' || at || E'\n\n    ' || message || E'\n'
+       FROM pgit.log(NULL, $ps)"
+  fi
+  ;;
+
+show)
+  allow "" "$@"
+  sha=$(positional "$@" | head -1)
+  [ -n "$sha" ] || die "show needs a commit"
+  ps=$(sql_pathspec "$@")
+  q "SELECT op || E'\t' || tbl || E'\t' || COALESCE(after::text, before::text)
+     FROM pgit.show(decode('$(lit "$sha")','hex'), $ps)"
+  ;;
+
+diff)
+  allow "--stat --numstat --shortstat --name-only --name-status --exit-code" "$@"
+  mapfile -t args < <(positional "$@")
+  a="${args[0]:-}"; b="${args[1]:-}"
+  [ -n "$a" ] || die "diff needs two commits"
+  [ -n "$b" ] || die "diff needs two commits"
+  ps=$(sql_pathspec "$@")
+  A="decode('$(lit "$a")','hex')"; B="decode('$(lit "$b")','hex')"
+
+  if   [[ " $* " == *" --numstat "*    ]]; then out=$(q "SELECT added || E'\t' || removed || E'\t' || tbl FROM pgit.diff_numstat($A,$B,$ps)")
+  elif [[ " $* " == *" --shortstat "*  ]]; then out=$(q "SELECT tables || ' tables changed, ' || insertions || ' insertions(+), ' || deletions || ' deletions(-)' FROM pgit.diff_shortstat($A,$B,$ps)")
+  elif [[ " $* " == *" --name-only "*  ]]; then out=$(q "SELECT tbl FROM pgit.diff_name_only($A,$B,$ps)")
+  elif [[ " $* " == *" --name-status "* ]]; then out=$(q "SELECT status || E'\t' || tbl FROM pgit.diff_name_status($A,$B,$ps)")
+  elif [[ " $* " == *" --stat "*       ]]; then out=$(q "SELECT ' ' || tbl || ' | ' || (inserted+updated+deleted) || ' ' || repeat('+', LEAST(inserted+updated,40)) || repeat('-', LEAST(deleted,40)) FROM pgit.diff_stat($A,$B,$ps)")
+  else out=$(q "SELECT op || E'\t' || tbl || E'\t' || COALESCE(after::text, before::text) FROM pgit.diff($A,$B,$ps)")
+  fi
+
+  [ -n "$out" ] && printf "%s\n" "$out"
+  if [[ " $* " == *" --exit-code "* ]]; then
+    n=$(q "SELECT count(*) FROM pgit.diff($A,$B,$ps)")
+    [ "$n" = "0" ] || exit 1
+  fi
+  ;;
+
+blame)
+  allow "" "$@"
+  mapfile -t args < <(positional "$@")
+  [ -n "${args[0]:-}" ] && [ -n "${args[1]:-}" ] || die "blame needs a table and a key"
+  q "SELECT COALESCE(pgit.short_sha(commit_sha),'0000000') || ' (' || COALESCE(actor,'unknown') ||
+            ') ' || col || ' = ' || COALESCE(value::text,'null')
+     FROM pgit.blame('$(lit "${args[0]}")','$(lit "${args[1]}")')"
+  ;;
+
+branch)
+  allow "-d" "$@"
+  mapfile -t args < <(positional "$@")
+  name="${args[0]:-}"
+  if [[ " $* " == *" -d "* ]]; then
+    [ -n "$name" ] || die "branch -d needs a name"
+    q "SELECT pgit.delete_branch('$(lit "$name")')" >/dev/null
+  elif [ -n "$name" ]; then
+    q "SELECT pgit.branch('$(lit "$name")')" >/dev/null
+  else
+    q "SELECT CASE WHEN is_head THEN '* ' ELSE '  ' END || name FROM pgit.branches()"
+  fi
+  ;;
+
+checkout)
+  allow "-f" "$@"
+  name=$(positional "$@" | head -1)
+  [ -n "$name" ] || die "checkout needs a branch"
+  force=false; [[ " $* " == *" -f "* ]] && force=true
+  n=$(q "SELECT pgit.checkout('$(lit "$name")', $force)") || exit 1
+  echo "Switched to branch '$name' ($n rows updated)"
+  ;;
+
+commit)
+  allow "-m" "$@"
+  msg=""
+  while [ $# -gt 0 ]; do
+    case "$1" in -m) msg="${2:-}"; shift 2 ;; *) shift ;; esac
+  done
+  [ -n "$msg" ] || die "commit needs -m <message>"
+  sha=$(q "SELECT encode(pgit.commit('$(lit "$msg")'),'hex')") || exit 1
+  echo "[$(q "SELECT pgit.head()") ${sha:0:7}] $msg"
+  ;;
+
+merge|rebase|cherry-pick|revert|track|untrack)
+  case "$cmd" in
+    rebase) allow "--abort" "$@" ;;
+    *)      allow "" "$@" ;;
+  esac
+  if [ "$cmd" = rebase ] && [[ " $* " == *" --abort "* ]]; then
+    q "SELECT pgit.rebase_abort()" >/dev/null && echo "rebase aborted"
+    exit $?
+  fi
+  arg=$(positional "$@" | head -1)
+  [ -n "$arg" ] || die "$cmd needs an argument"
+  case "$cmd" in
+    merge)       n=$(q "SELECT pgit.merge('$(lit "$arg")')")        || exit 1
+                 [ "$n" = "0" ] && echo "merged $arg" || { echo "$n conflict(s), nothing applied"; exit 1; } ;;
+    rebase)      n=$(q "SELECT pgit.rebase('$(lit "$arg")')")       || exit 1
+                 [ "$n" = "0" ] && echo "rebased onto $arg" || { echo "$n conflict(s), rebase stopped"; exit 1; } ;;
+    cherry-pick) n=$(q "SELECT pgit.cherry_pick(decode('$(lit "$arg")','hex'))") || exit 1
+                 [ "$n" = "0" ] && echo "picked $arg" || { echo "$n conflict(s), nothing applied"; exit 1; } ;;
+    revert)      n=$(q "SELECT pgit.revert(decode('$(lit "$arg")','hex'))") || exit 1
+                 echo "reverted $arg ($n rows)" ;;
+    track)       q "SELECT pgit.track('$(lit "$arg")')" >/dev/null && echo "tracking $arg" ;;
+    untrack)     q "SELECT pgit.untrack('$(lit "$arg")')" >/dev/null && echo "untracked $arg" ;;
+  esac
+  ;;
+
+*)
+  die "'$cmd' is not a pgit command"
+  ;;
+esac
