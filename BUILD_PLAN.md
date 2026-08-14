@@ -119,10 +119,10 @@ engineering.
   compresses a whole chunk as one unit while individual row blobs fall below the TOAST threshold.
   And **`chunk_target=16` is worse than 64 at 1M rows** (6× slower commits, 27% more storage),
   inverting a 20k-row result that suggested otherwise.
-  What remains: auto-tune `chunk_target` from table size (the optimum is scale-dependent, so any
-  constant is wrong in principle), add a retention policy, or implement **delta compression between
-  node versions** — the actual git technique, and the one thing pgit still lacks. `PERF.md` has all
-  the numbers.
+  **Delta compression is now built** (`pgit.repack`, default depth 1: 34% of the node store for 11%
+  read cost — see `PERF.md` for the full depth curve). What remains: auto-tune `chunk_target` from
+  table size, add a retention policy, or make deep delta chains affordable with a compact binary node
+  encoding so deltas apply as byte copies rather than jsonb rebuilds.
 
 ## Follow-ups raised while building
 
@@ -346,6 +346,23 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   **worse on both axes at 1M** — 6× slower commits and 27% more storage. **Twice wrong about storage,
   both times from extrapolating a small fixture.** Anything storage- or depth-related has to be
   measured at target scale or not claimed.
+- **delta compression** — 10 assertions (240 total + 15 CLI + 9 kill). Built as a **repack step**
+  like git's, so the write path is untouched and commits stay at 25 ms; `pgit.repack()` / `pgit gc`
+  rewrites older chunk versions as deltas against the next newer one, and `pgit.unpack()` reverses
+  it. Content addressing survives because a node's hash stays the hash of its *logical* content —
+  the delta is a storage form only, and the tests pin that: after repack every node resolves to
+  byte-identical entries, no tree root moves, `diff` and `blame` return the same rows, a fresh full
+  rebuild still matches.
+  **The depth default was the whole engineering decision, and my first guess was 50× wrong.** At
+  depth 50 storage drops 66% and diff goes from 167 ms to **7,071 ms — 42× slower**. The curve is
+  brutally non-linear; depth 1 gives 34% of the storage for 11% of the read cost and everything past
+  2 falls off a cliff. Default is 1. The cause is that applying a delta rebuilds and re-sorts a
+  64-entry jsonb array, so each hop costs O(chunk) — git affords chains of 50 because its deltas are
+  byte-level copies.
+  Two measurement traps in one tick: `pg_total_relation_size` cannot shrink inside a transaction
+  because `UPDATE` leaves dead tuples, so the first storage assertion failed on the instrument rather
+  than the optimisation (fixed by summing `pg_column_size`); and a timing query that computed
+  `clock_timestamp()` and the measured query in the same `SELECT` reported 0 ms for everything.
 - **tooling** — the progress log above lost 11 entries to silent failure. They were appended with a
   Python `str.replace()` anchored on text that did not exist, and `replace()` returns the original
   string on no match, so every one reported success and wrote nothing. The `## Blocked` section

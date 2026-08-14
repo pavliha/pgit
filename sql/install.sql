@@ -203,6 +203,72 @@ CREATE TABLE IF NOT EXISTS pgit.trees (
   PRIMARY KEY (commit_sha, tbl)
 );
 
+ALTER TABLE pgit.nodes ADD COLUMN IF NOT EXISTS base_hash bytea;
+ALTER TABLE pgit.nodes ADD COLUMN IF NOT EXISTS delta jsonb;
+ALTER TABLE pgit.nodes ADD COLUMN IF NOT EXISTS seq bigserial;
+ALTER TABLE pgit.nodes ALTER COLUMN entries DROP NOT NULL;
+
+CREATE INDEX IF NOT EXISTS nodes_base_idx ON pgit.nodes (base_hash);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'nodes_stored_or_delta') THEN
+    ALTER TABLE pgit.nodes ADD CONSTRAINT nodes_stored_or_delta
+      CHECK (entries IS NOT NULL OR (base_hash IS NOT NULL AND delta IS NOT NULL));
+  END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.apply_delta(base jsonb, d jsonb) RETURNS jsonb
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT COALESCE(jsonb_agg(e ORDER BY e ->> 'k'), '[]'::jsonb)
+  FROM (
+    SELECT b AS e FROM jsonb_array_elements(base) b
+    WHERE b ->> 'k' NOT IN (SELECT jsonb_array_elements_text(COALESCE(d -> 'del', '[]'::jsonb)))
+      AND b ->> 'k' NOT IN (SELECT x ->> 'k' FROM jsonb_array_elements(COALESCE(d -> 'set', '[]'::jsonb)) x)
+    UNION ALL
+    SELECT x FROM jsonb_array_elements(COALESCE(d -> 'set', '[]'::jsonb)) x
+  ) q
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.make_delta(base jsonb, target jsonb) RETURNS jsonb
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT jsonb_build_object(
+    'del', (SELECT COALESCE(jsonb_agg(b ->> 'k'), '[]'::jsonb)
+            FROM jsonb_array_elements(base) b
+            WHERE b ->> 'k' NOT IN (SELECT t ->> 'k' FROM jsonb_array_elements(target) t)),
+    'set', (SELECT COALESCE(jsonb_agg(t), '[]'::jsonb)
+            FROM jsonb_array_elements(target) t
+            WHERE t NOT IN (SELECT b FROM jsonb_array_elements(base) b)))
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.entries_of(h bytea) RETURNS jsonb
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  chain bytea[] := '{}';
+  cur   bytea   := h;
+  acc   jsonb;
+  nxt   bytea;
+  dl    jsonb;
+  i     int;
+BEGIN
+  LOOP
+    SELECT n.entries, n.base_hash INTO acc, nxt FROM pgit.nodes n WHERE n.hash = cur;
+    IF NOT FOUND THEN RETURN NULL; END IF;
+    EXIT WHEN acc IS NOT NULL;
+    chain := chain || cur;
+    cur := nxt;
+  END LOOP;
+
+  IF array_length(chain, 1) IS NULL THEN RETURN acc; END IF;
+
+  FOR i IN REVERSE array_length(chain, 1)..1 LOOP
+    SELECT n.delta INTO dl FROM pgit.nodes n WHERE n.hash = chain[i];
+    acc := pgit.apply_delta(acc, dl);
+  END LOOP;
+
+  RETURN acc;
+END $$;
+
 CREATE TABLE IF NOT EXISTS pgit.tracked (
   tbl     regclass PRIMARY KEY,
   pk_cols text[]   NOT NULL
@@ -491,12 +557,12 @@ BEGIN
   IF lvl = 0 THEN
     RETURN QUERY
       SELECT x ->> 'k', x ->> 'h', x -> 'v'
-      FROM pgit.nodes n, jsonb_array_elements(n.entries) x
+      FROM pgit.nodes n, jsonb_array_elements(pgit.entries_of(n.hash)) x
       WHERE n.hash = h;
     RETURN;
   END IF;
 
-  FOR e IN SELECT x FROM pgit.nodes n, jsonb_array_elements(n.entries) x WHERE n.hash = h LOOP
+  FOR e IN SELECT x FROM pgit.nodes n, jsonb_array_elements(pgit.entries_of(n.hash)) x WHERE n.hash = h LOOP
     RETURN QUERY SELECT * FROM pgit.leaves(decode(e ->> 'h', 'hex'));
   END LOOP;
 END $$;
@@ -562,7 +628,7 @@ CREATE OR REPLACE FUNCTION pgit.node_items(h bytea)
 RETURNS TABLE (k text, ch text, v jsonb)
 LANGUAGE sql STABLE AS $$
   SELECT x ->> 'k', x ->> 'h', x -> 'v'
-  FROM pgit.nodes n, jsonb_array_elements(n.entries) x
+  FROM pgit.nodes n, jsonb_array_elements(pgit.entries_of(n.hash)) x
   WHERE n.hash = h
 $$;
 
@@ -727,7 +793,7 @@ CREATE OR REPLACE FUNCTION pgit.node_entries(h bytea)
 RETURNS TABLE (k text, ch text)
 LANGUAGE sql STABLE AS $$
   SELECT x ->> 'k', x ->> 'h'
-  FROM pgit.nodes n, jsonb_array_elements(n.entries) x
+  FROM pgit.nodes n, jsonb_array_elements(pgit.entries_of(n.hash)) x
   WHERE n.hash = h
 $$;
 
@@ -1513,7 +1579,7 @@ BEGIN
 
   IF lvl = 0 THEN
     RETURN QUERY
-      SELECT (SELECT min(x ->> 'k') FROM pgit.nodes n, jsonb_array_elements(n.entries) x
+      SELECT (SELECT min(x ->> 'k') FROM pgit.nodes n, jsonb_array_elements(pgit.entries_of(n.hash)) x
               WHERE n.hash = root),
              encode(root, 'hex');
     RETURN;
@@ -1524,7 +1590,7 @@ BEGIN
     RETURN;
   END IF;
 
-  FOR e IN SELECT x FROM pgit.nodes n, jsonb_array_elements(n.entries) x
+  FOR e IN SELECT x FROM pgit.nodes n, jsonb_array_elements(pgit.entries_of(n.hash)) x
            WHERE n.hash = root ORDER BY x ->> 'k' LOOP
     RETURN QUERY SELECT * FROM pgit.leaf_list(decode(e ->> 'h', 'hex'));
   END LOOP;
@@ -1780,7 +1846,7 @@ BEGIN
 
   IF lvl = want THEN
     RETURN QUERY
-      SELECT (SELECT min(x ->> 'k') FROM pgit.nodes n, jsonb_array_elements(n.entries) x
+      SELECT (SELECT min(x ->> 'k') FROM pgit.nodes n, jsonb_array_elements(pgit.entries_of(n.hash)) x
               WHERE n.hash = root),
              encode(root, 'hex');
     RETURN;
@@ -1791,7 +1857,7 @@ BEGIN
     RETURN;
   END IF;
 
-  FOR e IN SELECT x FROM pgit.nodes n, jsonb_array_elements(n.entries) x
+  FOR e IN SELECT x FROM pgit.nodes n, jsonb_array_elements(pgit.entries_of(n.hash)) x
            WHERE n.hash = root ORDER BY x ->> 'k' LOOP
     RETURN QUERY SELECT * FROM pgit.nodes_at_level(decode(e ->> 'h', 'hex'), want);
   END LOOP;
@@ -1856,4 +1922,69 @@ BEGIN
       'pgit: % has a different shape now than in that commit, and checkout restores data but not shape. Now %, then %',
       bad.name, bad.live::text, bad.recorded::text;
   END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.repack(max_depth int DEFAULT 1) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  grp          record;
+  g            record;
+  prev_hash    bytea;
+  prev_entries jsonb;
+  d            int;
+  packed       int := 0;
+  cand         jsonb;
+BEGIN
+  FOR grp IN
+    SELECT n.level AS lv, n.entries -> 0 ->> 'k' AS fk
+    FROM pgit.nodes n
+    WHERE n.entries IS NOT NULL
+    GROUP BY 1, 2
+    HAVING count(*) > 1
+  LOOP
+    prev_hash := NULL; prev_entries := NULL; d := 0;
+
+    FOR g IN
+      SELECT n.hash, n.entries FROM pgit.nodes n
+      WHERE n.level = grp.lv AND n.entries -> 0 ->> 'k' = grp.fk AND n.entries IS NOT NULL
+      ORDER BY n.seq DESC
+    LOOP
+      IF prev_hash IS NULL OR d >= max_depth THEN
+        prev_hash := g.hash; prev_entries := g.entries; d := 0;
+        CONTINUE;
+      END IF;
+
+      cand := pgit.make_delta(prev_entries, g.entries);
+
+      IF pg_column_size(cand) < pg_column_size(g.entries) THEN
+        UPDATE pgit.nodes
+        SET delta = cand, base_hash = prev_hash, entries = NULL
+        WHERE hash = g.hash;
+        packed := packed + 1;
+        d := d + 1;
+      ELSE
+        d := 0;
+      END IF;
+
+      prev_hash := g.hash; prev_entries := g.entries;
+    END LOOP;
+  END LOOP;
+
+  RETURN packed;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.unpack() RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  n int;
+BEGIN
+  WITH resolved AS (
+    SELECT x.hash, pgit.entries_of(x.hash) AS e FROM pgit.nodes x WHERE x.entries IS NULL
+  )
+  UPDATE pgit.nodes t
+  SET entries = r.e, base_hash = NULL, delta = NULL
+  FROM resolved r WHERE t.hash = r.hash;
+
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n;
 END $$;

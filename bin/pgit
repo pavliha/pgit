@@ -48,6 +48,20 @@ shift
 
 case "$cmd" in
 
+gc)
+  allow "--depth" "$@"
+  depth=1
+  while [ $# -gt 0 ]; do case "$1" in --depth) depth="${2:-1}"; shift 2 ;; *) shift ;; esac; done
+  n=$(q "SELECT pgit.repack($depth)")
+  echo "packed $n node versions as deltas (depth $depth)"
+  ;;
+
+unpack)
+  allow "" "$@"
+  n=$(q "SELECT pgit.unpack()")
+  echo "materialised $n node versions"
+  ;;
+
 status)
   allow "" "$@"
   echo "On branch $(q "SELECT pgit.head()")"

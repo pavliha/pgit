@@ -169,7 +169,39 @@ Concretely, a commit costs roughly **one leaf chunk plus one node per tree level
 1M rows — **regardless of whether it changed one row or sixty-four.** Committing the same region a
 hundred times costs a hundred chunk versions; batching those changes into one commit costs one.
 
-What pgit still does not do that git does: **delta compression between object versions**. Three
+## Delta compression between node versions
+
+Built as a **repack step**, the way git does it: the write path is untouched and commits stay at
+25 ms, then `pgit.repack()` — `pgit gc` from the CLI — rewrites older versions of a chunk as deltas
+against the next newer one. Content addressing is preserved because a node's hash stays the hash of
+its logical content; the delta is purely a storage form. `pgit.unpack()` reverses it.
+
+Measured on 20k rows and 300 commits, with `VACUUM FULL` so the on-disk numbers are real:
+
+| max_depth | deltified | node storage | diff |
+| --- | --- | --- | --- |
+| 0 (off) | 0 | 7,856 kB | 167 ms |
+| **1 (default)** | 452 | **5,208 kB — 34% off** | **186 ms — 11% slower** |
+| 2 | 603 | 4,328 kB — 45% off | 311 ms — 86% slower |
+| 4 | 722 | 3,632 kB — 54% off | 359 ms — 115% slower |
+| 8 | 803 | 3,160 kB — 60% off | 851 ms — 5× slower |
+| 50 | 887 | 2,664 kB — 66% off | 7,071 ms — **42× slower** |
+
+**Depth 1 is the default because it is the only point on this curve that is nearly free**: a third
+of the storage for a tenth of the read cost. Everything past 2 degrades sharply, and depth 50 — the
+value first tried — is unusable.
+
+The reason is that applying a delta here rebuilds a 64-entry jsonb array and re-sorts it, so every
+hop costs O(chunk). Git's packfiles apply deltas as byte-level copies, which is why git can afford
+chains of 50 and pgit cannot. Closing that gap needs a compact binary node encoding, not a deeper
+chain.
+
+Correctness is pinned by 10 assertions: after a repack every node resolves to byte-identical
+entries, no tree root changes, `diff` and `blame` return exactly the same rows, a fresh full rebuild
+still matches, and unpack restores the original bytes.
+
+What pgit still does not do that git does: **byte-level delta application**, which is what would
+make deep chains affordable. Three
 hundred near-identical chunk versions are stored in full. That, not blob separation, is the
 remaining gap.
 
