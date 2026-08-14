@@ -1,5 +1,5 @@
 BEGIN;
-SELECT plan(8);
+SELECT plan(10);
 
 CREATE TABLE num_a (id int PRIMARY KEY, v numeric);
 CREATE TABLE num_b (id int PRIMARY KEY, v numeric);
@@ -81,6 +81,19 @@ INSERT INTO dom_b VALUES (1, 9.9);
 SELECT is(
   pgit.tree_root('dom_a'), pgit.tree_root('dom_b'),
   'AC-CANON-02: a domain normalises as its base type'
+);
+
+SELECT is(
+  (SELECT count(*) FROM (VALUES ('abc'), (''), ('ქართული'), (E'e\u0301'), (E'\u00e9'),
+                                ('日本語'), ('mixed ascii and ქართული'), (NULL)) v(x)
+   WHERE pgit.canon_text(x) IS DISTINCT FROM normalize(x, NFC)),
+  0::bigint,
+  'AC-CANON-02: the ascii fast path agrees with normalize on every form, NFD and NULL included'
+);
+
+SELECT isnt(
+  (SELECT pgit.canon_text(E'e\u0301')), E'e\u0301',
+  'AC-CANON-02: and it really does normalise a decomposed string, so the check is not vacuous'
 );
 
 SELECT * FROM finish();
