@@ -357,6 +357,35 @@ remaining gap.
 Mean commit cost in one long transaction also grew from **16 ms at 500 commits to 34 ms at 10,000**,
 as `pgit.changes` accumulated 100,000 rows and the node table grew. Roughly 2× for 20× the commits.
 
+## Diff: stop re-walking the tree for images the descent already has
+
+Profiling a diff of 21,076 changed rows, `pg_stat_statements` with nested tracking:
+
+| ms | calls | |
+| --- | --- | --- |
+| **6,635** | **84,304** | `node_entries` inside `pgit.lookup`'s descent |
+| 1,151 | 42,152 | `node_items` inside `lookup`'s leaf read |
+| 1,567 | 2,760 | the tree descent itself |
+
+**77% of the diff was point lookups** — two per changed row, each walking the tree — fetching row
+images the descent had already produced and thrown away. Carrying them through the same aggregate
+that carries the hashes:
+
+| 200k rows, diff across 20 commits | |
+| --- | --- |
+| re-walking for images | 10,161 ms |
+| **images carried through the aggregate** | **1,369 ms — 7.4×** |
+
+This reverses an earlier decision made without measuring it. The images were deliberately *not*
+carried, on the reasoning that millions of candidates would spill the hash aggregate — but the cost
+of the alternative was never measured, and it was three quarters of the diff.
+
+Two failed attempts preceded this, both worth recording. Skipping images in the descent's internal
+levels changed nothing: there are ~50 internal nodes against ~3,000 leaves, so it was never the cost.
+And joining the materialised descent back by key produced **duplicate rows**, because the descent can
+emit one key from several overlapping chunk pairs — `test/diff_05_descent_oracle.sql` caught it
+immediately, which is the third time that oracle has caught a wrong version of this function.
+
 ## Whole-node deltas
 
 `repack` used to delta the `entries` column alone. Once a node became three columns, the other two —

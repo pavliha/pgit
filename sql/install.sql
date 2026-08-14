@@ -761,7 +761,7 @@ BEGIN
     RETURN;
   END IF;
 
-  FOR e IN SELECT to_jsonb(i) FROM pgit.node_items(h) i LOOP
+  FOR e IN SELECT to_jsonb(i) FROM pgit.node_entries(h) i LOOP
     RETURN QUERY SELECT * FROM pgit.leaves(decode(e ->> 'ch', 'hex'));
   END LOOP;
 END $$;
@@ -869,7 +869,7 @@ BEGIN
     END IF;
 
     SELECT decode(i.ch, 'hex') INTO cur
-    FROM pgit.node_items(cur) i
+    FROM pgit.node_entries(cur) i
     WHERE i.k <= key_hex
     ORDER BY i.k DESC
     LIMIT 1;
@@ -887,13 +887,21 @@ LANGUAGE sql STABLE AS $$
   -- nights of IMDb ratings that is 84k lookups instead of 3.4M candidates x 2.
   -- The row images are deliberately not carried through the aggregate — there
   -- are millions of candidates and the hash would spill to disk.
-  WITH d AS (
-    SELECT x.side, x.k, x.rh FROM pgit.diff_leaves(a, b) x
+  -- The descent already carries each candidate's row image. Fetching them again
+  -- by point lookup costs one tree walk per side per changed row: profiled, that
+  -- was 77% of a diff. Materialise the descent once and join instead.
+  WITH d AS MATERIALIZED (
+    SELECT x.side, x.k, x.rh, x.v FROM pgit.diff_leaves(a, b) x
   ),
+  -- The images ride through the same aggregate as the hashes. Joining them back
+  -- instead multiplies rows: the descent can emit one key from several chunk
+  -- pairs, and the oracle catches the duplicates immediately.
   pivoted AS (
     SELECT d.k,
            max(d.rh) FILTER (WHERE d.side = 'a') AS arh,
-           max(d.rh) FILTER (WHERE d.side = 'b') AS brh
+           max(d.rh) FILTER (WHERE d.side = 'b') AS brh,
+           (array_agg(d.v) FILTER (WHERE d.side = 'a'))[1] AS av,
+           (array_agg(d.v) FILTER (WHERE d.side = 'b'))[1] AS bv
     FROM d GROUP BY d.k
   ),
   -- A key seen on both sides is decided by comparing row hashes, with no lookup.
@@ -903,7 +911,7 @@ LANGUAGE sql STABLE AS $$
   -- as an insert or a delete reports rows that never changed — a range delete
   -- makes it happen, and the oracle in test/diff_05 catches it.
   resolved AS (
-    SELECT p.k,
+    SELECT p.k, p.av, p.bv, p.arh AS seen_a, p.brh AS seen_b,
            CASE WHEN p.arh IS NOT NULL THEN p.arh
                 ELSE (SELECT l.rh FROM pgit.lookup(a, p.k) l) END AS arh,
            CASE WHEN p.brh IS NOT NULL THEN p.brh
@@ -916,8 +924,12 @@ LANGUAGE sql STABLE AS $$
          CASE WHEN r.arh IS NULL THEN 'INSERT'
               WHEN r.brh IS NULL THEN 'DELETE'
               ELSE 'UPDATE' END,
-         CASE WHEN r.arh IS NOT NULL THEN (SELECT l.v FROM pgit.lookup(a, r.k) l) END,
-         CASE WHEN r.brh IS NOT NULL THEN (SELECT l.v FROM pgit.lookup(b, r.k) l) END
+         CASE WHEN r.arh IS NULL THEN NULL
+              WHEN r.seen_a IS NOT NULL THEN r.av
+              ELSE (SELECT l.v FROM pgit.lookup(a, r.k) l) END,
+         CASE WHEN r.brh IS NULL THEN NULL
+              WHEN r.seen_b IS NOT NULL THEN r.bv
+              ELSE (SELECT l.v FROM pgit.lookup(b, r.k) l) END
   FROM resolved r
   WHERE r.arh IS DISTINCT FROM r.brh
 $$;
@@ -1038,10 +1050,21 @@ LANGUAGE sql STABLE AS $$
   SELECT level FROM pgit.nodes WHERE hash = h
 $$;
 
+-- Descending a tree needs each child's key and hash and never its row image.
+-- Going through node_items expands every image only to discard it, which on the
+-- diff descent is the whole cost: the images are the bulk of a leaf.
 CREATE OR REPLACE FUNCTION pgit.node_entries(h bytea)
 RETURNS TABLE (k text, ch text)
 LANGUAGE sql STABLE AS $$
-  SELECT i.k, i.ch FROM pgit.node_items(h) i
+  WITH node AS MATERIALIZED (
+    SELECT CASE WHEN n.entries IS NOT NULL THEN n.keys
+                ELSE (SELECT c.keys FROM pgit.node_cols(n.hash) c) END AS keys,
+           CASE WHEN n.entries IS NOT NULL THEN n.hashes
+                ELSE (SELECT c.hashes FROM pgit.node_cols(n.hash) c) END AS hashes
+    FROM pgit.nodes n WHERE n.hash = h
+  )
+  SELECT t.key, encode(substring(node.hashes FROM (t.ord - 1)::int * 32 + 1 FOR 32), 'hex')
+  FROM node, unnest(node.keys) WITH ORDINALITY t(key, ord)
 $$;
 
 DROP FUNCTION IF EXISTS pgit.all_columns(regclass);
@@ -1903,11 +1926,11 @@ BEGIN
   END IF;
 
   IF lvl = 1 THEN
-    RETURN QUERY SELECT i.k, i.ch FROM pgit.node_items(root) i ORDER BY i.k;
+    RETURN QUERY SELECT i.k, i.ch FROM pgit.node_entries(root) i ORDER BY i.k;
     RETURN;
   END IF;
 
-  FOR e IN SELECT to_jsonb(i) FROM pgit.node_items(root) i ORDER BY i.k COLLATE "C" LOOP
+  FOR e IN SELECT to_jsonb(i) FROM pgit.node_entries(root) i ORDER BY i.k COLLATE "C" LOOP
     RETURN QUERY SELECT * FROM pgit.leaf_list(decode(e ->> 'ch', 'hex'));
   END LOOP;
 END $$;
@@ -2286,11 +2309,11 @@ BEGIN
   END IF;
 
   IF lvl = want + 1 THEN
-    RETURN QUERY SELECT i.k, i.ch FROM pgit.node_items(root) i ORDER BY i.k;
+    RETURN QUERY SELECT i.k, i.ch FROM pgit.node_entries(root) i ORDER BY i.k;
     RETURN;
   END IF;
 
-  FOR e IN SELECT to_jsonb(i) FROM pgit.node_items(root) i ORDER BY i.k COLLATE "C" LOOP
+  FOR e IN SELECT to_jsonb(i) FROM pgit.node_entries(root) i ORDER BY i.k COLLATE "C" LOOP
     RETURN QUERY SELECT * FROM pgit.nodes_at_level(decode(e ->> 'ch', 'hex'), want);
   END LOOP;
 END $$;
