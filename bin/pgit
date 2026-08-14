@@ -73,14 +73,23 @@ status)
   ;;
 
 log)
-  allow "--oneline" "$@"
+  allow "--oneline -n --author --since" "$@"
   ps=$(sql_pathspec "$@")
+  lim=NULL; auth=NULL; since=NULL; prev=""
+  for a in "$@"; do
+    case "$prev" in
+      -n)       lim="$a" ;;
+      --author) auth="'$(lit "$a")'" ;;
+      --since)  since="'$(lit "$a")'" ;;
+    esac
+    prev="$a"
+  done
   if [[ " $* " == *" --oneline "* ]]; then
-    q "SELECT pgit.short_sha(sha) || ' ' || message FROM pgit.log(NULL, $ps)"
+    q "SELECT pgit.short_sha(sha) || ' ' || message FROM pgit.log(NULL, $ps, $lim, $since, $auth)"
   else
     q "SELECT 'commit ' || encode(sha,'hex') || E'\nAuthor: ' || COALESCE(author,'') ||
               E'\nDate:   ' || at || E'\n\n    ' || message || E'\n'
-       FROM pgit.log(NULL, $ps)"
+       FROM pgit.log(NULL, $ps, $lim, $since, $auth)"
   fi
   ;;
 
@@ -90,17 +99,28 @@ show)
   [ -n "$sha" ] || die "show needs a commit"
   ps=$(sql_pathspec "$@")
   q "SELECT op || E'\t' || tbl || E'\t' || COALESCE(after::text, before::text)
-     FROM pgit.show(decode('$(lit "$sha")','hex'), $ps)"
+     FROM pgit.show(pgit.rev('$(lit "$sha")'), $ps)"
   ;;
 
 diff)
   allow "--stat --numstat --shortstat --name-only --name-status --exit-code" "$@"
   mapfile -t args < <(positional "$@")
   a="${args[0]:-}"; b="${args[1]:-}"
-  [ -n "$a" ] || die "diff needs two commits"
-  [ -n "$b" ] || die "diff needs two commits"
   ps=$(sql_pathspec "$@")
-  A="decode('$(lit "$a")','hex')"; B="decode('$(lit "$b")','hex')"
+
+  if [ -z "$a" ]; then
+    out=$(q "SELECT op || E'\t' || tbl || E'\t' || COALESCE(after::text, before::text)
+             FROM pgit.diff_working($ps)")
+    [ -n "$out" ] && printf '%s\n' "$out"
+    if [[ " $* " == *" --exit-code "* ]]; then
+      n=$(q "SELECT count(*) FROM pgit.diff_working($ps)")
+      [ "$n" = "0" ] || exit 1
+    fi
+    exit 0
+  fi
+
+  [ -n "$b" ] || die "diff needs two commits, or none for the working tree"
+  A="pgit.rev('$(lit "$a")')"; B="pgit.rev('$(lit "$b")')"
 
   if   [[ " $* " == *" --numstat "*    ]]; then out=$(q "SELECT added || E'\t' || removed || E'\t' || tbl FROM pgit.diff_numstat($A,$B,$ps)")
   elif [[ " $* " == *" --shortstat "*  ]]; then out=$(q "SELECT tables || ' tables changed, ' || insertions || ' insertions(+), ' || deletions || ' deletions(-)' FROM pgit.diff_shortstat($A,$B,$ps)")
@@ -196,6 +216,32 @@ merge)
   fi
   ;;
 
+fsck)
+  allow "" "$@"
+  out=$(q "SELECT problem || E'\t' || detail FROM pgit.fsck()")
+  if [ -z "$out" ]; then echo "ok: no problems found"; exit 0; fi
+  printf '%s\n' "$out" >&2
+  echo "$(printf '%s\n' "$out" | wc -l | tr -d ' ') problem(s)" >&2
+  exit 1
+  ;;
+
+reset)
+  allow "--hard --soft" "$@"
+  mode=hard
+  [[ " $* " == *" --soft "* ]] && mode=soft
+  spec=$(positional "$@" | head -1)
+  [ -n "$spec" ] || die "reset needs a revision"
+  n=$(q "SELECT pgit.reset('$(lit "$spec")', '$mode')") || exit 1
+  echo "reset --$mode to $spec ($n rows rewritten)"
+  ;;
+
+reflog)
+  allow "" "$@"
+  q "SELECT pgit.short_sha(new_sha) || ' ' || ref || ': ' || action ||
+            COALESCE(' (was ' || pgit.short_sha(old_sha) || ')','')
+     FROM pgit.reflog ORDER BY id DESC"
+  ;;
+
 conflicts)
   allow "" "$@"
   q "SELECT tbl || E'\t' || k || E'\t' || COALESCE(col,'(row)') || E'\t' ||
@@ -228,9 +274,9 @@ rebase|cherry-pick|revert|track|untrack)
   case "$cmd" in
     rebase)      n=$(q "SELECT pgit.rebase('$(lit "$arg")')")       || exit 1
                  [ "$n" = "0" ] && echo "rebased onto $arg" || { echo "$n conflict(s), rebase stopped"; exit 1; } ;;
-    cherry-pick) n=$(q "SELECT pgit.cherry_pick(decode('$(lit "$arg")','hex'))") || exit 1
+    cherry-pick) n=$(q "SELECT pgit.cherry_pick(pgit.rev('$(lit "$arg")'))") || exit 1
                  [ "$n" = "0" ] && echo "picked $arg" || { echo "$n conflict(s), nothing applied"; exit 1; } ;;
-    revert)      n=$(q "SELECT pgit.revert(decode('$(lit "$arg")','hex'))") || exit 1
+    revert)      n=$(q "SELECT pgit.revert(pgit.rev('$(lit "$arg")'))") || exit 1
                  echo "reverted $arg ($n rows)" ;;
     track)       q "SELECT pgit.track('$(lit "$arg")')" >/dev/null && echo "tracking $arg" ;;
     untrack)     q "SELECT pgit.untrack('$(lit "$arg")')" >/dev/null && echo "untracked $arg" ;;

@@ -87,6 +87,21 @@ like "AC-CLI-01: conflicts shows the resolution" "$("$PGIT" conflicts | head -1)
 is "AC-CLI-01: merge --continue applied the resolution" \
    "$(psql "$PGIT_DSN" -X -q -At -c "SELECT v FROM m WHERE id=1")" "main"
 
+is "AC-CLI-01: fsck reports a clean repository" "$("$PGIT" fsck)" "ok: no problems found"
+like "AC-CLI-01: log -n limits output" "$("$PGIT" log --oneline -n 1 | wc -l | tr -d ' ')" '^1$'
+like "AC-CLI-01: reflog shows ref movements" "$("$PGIT" reflog | head -1)" '^[0-9a-f]{7} '
+
+psql "$PGIT_DSN" -X -q -c "UPDATE m SET v='dirty' WHERE id=1" >/dev/null
+like "AC-CLI-01: diff with no revisions shows the working tree" "$("$PGIT" diff | head -1)" 'UPDATE'
+"$PGIT" diff --exit-code >/dev/null; rc=$?
+is "AC-CLI-03: working tree diff --exit-code returns 1 when dirty" "$rc" "1"
+
+"$PGIT" reset HEAD --hard >/dev/null
+is "AC-CLI-01: reset --hard restored the working tree" \
+   "$(psql "$PGIT_DSN" -X -q -At -c "SELECT v FROM m WHERE id=1")" "main"
+
+like "AC-CLI-01: show accepts a revision expression" "$("$PGIT" show HEAD~1 | head -1)" 'INSERT|UPDATE|DELETE'
+
 psql "$ADMIN" -X -q -c "DROP DATABASE pgit_cli" >/dev/null
 
 echo

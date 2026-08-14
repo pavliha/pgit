@@ -4,8 +4,8 @@ Git semantics over data in **stock PostgreSQL**, as a plain SQL plugin. No forke
 extension, no managed service. `commit`, `log`, `diff`, `blame`, `revert`, `branch`, `merge`,
 `rebase`, `cherry-pick` — with git's flag names and git's diff performance.
 
-**Status: pre-alpha, but the whole verb set works and is measured.** 308 checks green from an empty
-database (268 pgTAP + 19 CLI + 9 crash-safety + 12 non-superuser portability).
+**Status: pre-alpha, but the whole verb set works and is measured.** 338 checks green from an empty
+database (291 pgTAP + 26 CLI + 9 crash-safety + 12 non-superuser portability).
 
 **Runs on managed Postgres.** Every verb is exercised as a plain `LOGIN` role with no superuser
 rights — strictly fewer privileges than the RDS master user gets — so RDS, Neon and Supabase are
@@ -23,6 +23,7 @@ pgit status
 pgit log --oneline
 pgit diff <a> <b> --stat -- products.price_amount
 pgit blame products 42
+pgit show HEAD~2                # revisions: HEAD, HEAD~N, HEAD^, branch, short sha
 pgit branch feature && pgit checkout feature
 pgit commit -m "..."
 pgit merge main                 # -X ours | -X theirs | -s ours
@@ -30,6 +31,11 @@ pgit conflicts                  # base/ours/theirs per conflict, queryable
 pgit resolve products 42 theirs # or ours | base | delete
 pgit merge --continue           # or --abort
 pgit rebase main
+pgit diff                       # working tree against HEAD
+pgit reset HEAD~1 --hard        # or --soft
+pgit reflog
+pgit fsck                       # verify every hash, ref, chain and tree
+pgit gc                         # pack node versions as deltas
 pgit cherry-pick <sha>
 pgit revert <sha>
 ```

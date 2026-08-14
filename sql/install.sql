@@ -843,47 +843,38 @@ $$;
 
 DROP FUNCTION IF EXISTS pgit.apply_diff(regclass, bytea, bytea);
 
-CREATE OR REPLACE FUNCTION pgit.apply_diff(
-  target regclass, a_sha bytea, b_sha bytea, source text DEFAULT NULL
-) RETURNS int
+CREATE OR REPLACE FUNCTION pgit.apply_tree_diff(target regclass, a bytea, b bytea) RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
-  r        record;
-  applied  int    := 0;
-  pk       text[] := pgit.pk_columns(target);
-  cols     text[] := pgit.all_columns(target);
-  src      text   := COALESCE(source, target::text);
-  a        bytea;
-  b        bytea;
-  pk_pred  text;
-  set_cols text;
-  set_vals text;
+  r       record;
+  applied int := 0;
 BEGIN
-  SELECT root_hash INTO a FROM pgit.trees WHERE commit_sha = a_sha AND tbl = src;
-  SELECT root_hash INTO b FROM pgit.trees WHERE commit_sha = b_sha AND tbl = src;
-
-  SELECT string_agg(format('t.%I = s.%I', c, c), ' AND ') INTO pk_pred FROM unnest(pk) c;
-  SELECT string_agg(format('%I', c), ', ') INTO set_cols FROM unnest(cols) c;
-  SELECT string_agg(format('s.%I', c), ', ') INTO set_vals FROM unnest(cols) c;
-
   FOR r IN SELECT * FROM pgit.diff_tree(a, b) LOOP
     IF r.op = 'INSERT' THEN
-      EXECUTE format(
-        'INSERT INTO %s SELECT * FROM jsonb_populate_record(NULL::%s, $1)',
-        target::text, target::text) USING r.after;
+      PERFORM pgit.apply_row(target, 'upsert', r.after);
     ELSIF r.op = 'DELETE' THEN
-      EXECUTE format(
-        'DELETE FROM %s t USING jsonb_populate_record(NULL::%s, $1) s WHERE %s',
-        target::text, target::text, pk_pred) USING r.before;
+      PERFORM pgit.apply_row(target, 'delete', r.before);
     ELSE
-      EXECUTE format(
-        'UPDATE %s t SET (%s) = (%s) FROM jsonb_populate_record(NULL::%s, $1) s WHERE %s',
-        target::text, set_cols, set_vals, target::text, pk_pred) USING r.after;
+      PERFORM pgit.apply_row(target, 'upsert', r.after);
     END IF;
     applied := applied + 1;
   END LOOP;
 
   RETURN applied;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.apply_diff(
+  target regclass, a_sha bytea, b_sha bytea, source text DEFAULT NULL
+) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  src text  := COALESCE(source, target::text);
+  a   bytea;
+  b   bytea;
+BEGIN
+  SELECT root_hash INTO a FROM pgit.trees WHERE commit_sha = a_sha AND tbl = src;
+  SELECT root_hash INTO b FROM pgit.trees WHERE commit_sha = b_sha AND tbl = src;
+  RETURN pgit.apply_tree_diff(target, a, b);
 END $$;
 
 ALTER TABLE pgit.changes ADD COLUMN IF NOT EXISTS commit_sha bytea;
@@ -2365,3 +2356,230 @@ BEGIN
     RETURN NEXT;
   END LOOP;
 END $$;
+
+CREATE TABLE IF NOT EXISTS pgit.reflog (
+  id      bigserial PRIMARY KEY,
+  ref     text        NOT NULL,
+  old_sha bytea,
+  new_sha bytea       NOT NULL,
+  action  text        NOT NULL,
+  actor   text,
+  at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS reflog_ref_idx ON pgit.reflog (ref, id DESC);
+
+DROP FUNCTION IF EXISTS pgit.advance_ref(text, bytea, bytea);
+
+CREATE OR REPLACE FUNCTION pgit.advance_ref(
+  ref_name text, expected bytea, next_sha bytea, act text DEFAULT 'update'
+) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+  n int;
+BEGIN
+  IF expected IS NULL THEN
+    INSERT INTO pgit.refs (name, sha) VALUES (ref_name, next_sha)
+    ON CONFLICT (name) DO NOTHING;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n = 0 THEN
+      RAISE EXCEPTION 'pgit: ref % already exists, refusing to create it', ref_name;
+    END IF;
+  ELSE
+    UPDATE pgit.refs SET sha = next_sha WHERE name = ref_name AND sha = expected;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n = 0 THEN
+      RAISE EXCEPTION 'pgit: ref % moved under us', ref_name;
+    END IF;
+  END IF;
+
+  INSERT INTO pgit.reflog (ref, old_sha, new_sha, action, actor)
+  VALUES (ref_name, expected, next_sha, act, pgit.actor());
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.rev(spec text) RETURNS bytea
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  base text := spec;
+  ops  text[] := '{}';
+  m    text;
+  cur  bytea;
+  i    int;
+  n    int;
+BEGIN
+  IF spec IS NULL THEN RETURN NULL; END IF;
+
+  LOOP
+    m := substring(base FROM '(\^[0-9]*|~[0-9]*)$');
+    EXIT WHEN m IS NULL;
+    ops := m || ops;
+    base := left(base, length(base) - length(m));
+  END LOOP;
+
+  IF base = 'HEAD' OR base = '@' THEN
+    cur := pgit.resolve(pgit.head());
+  ELSIF EXISTS (SELECT 1 FROM pgit.refs r WHERE r.name = base) THEN
+    cur := pgit.resolve(base);
+  ELSIF base ~ '^[0-9a-fA-F]{4,64}$' THEN
+    SELECT c.sha INTO cur FROM pgit.commits c
+    WHERE encode(c.sha, 'hex') LIKE lower(base) || '%';
+    IF cur IS NULL THEN
+      RAISE EXCEPTION 'pgit: no commit matching %', base;
+    END IF;
+  ELSE
+    RAISE EXCEPTION 'pgit: cannot resolve %', spec;
+  END IF;
+
+  FOREACH m IN ARRAY ops LOOP
+    n := COALESCE(NULLIF(substring(m FROM '[0-9]+'), '')::int, 1);
+    IF left(m, 1) = '~' THEN
+      FOR i IN 1..n LOOP
+        SELECT c.parent_sha INTO cur FROM pgit.commits c WHERE c.sha = cur;
+        IF cur IS NULL THEN RAISE EXCEPTION 'pgit: % goes past the root commit', spec; END IF;
+      END LOOP;
+    ELSE
+      IF n = 2 THEN
+        SELECT c.parent2_sha INTO cur FROM pgit.commits c WHERE c.sha = cur;
+      ELSE
+        SELECT c.parent_sha INTO cur FROM pgit.commits c WHERE c.sha = cur;
+      END IF;
+      IF cur IS NULL THEN RAISE EXCEPTION 'pgit: % has no such parent', spec; END IF;
+    END IF;
+  END LOOP;
+
+  RETURN cur;
+END $$;
+
+DROP FUNCTION IF EXISTS pgit.log(bytea, text);
+
+CREATE OR REPLACE FUNCTION pgit.log(
+  start_sha bytea DEFAULT NULL, pathspec text DEFAULT NULL,
+  max_count int DEFAULT NULL, since timestamptz DEFAULT NULL, who text DEFAULT NULL
+) RETURNS TABLE (depth int, sha bytea, parent_sha bytea, author text, message text, at timestamptz)
+LANGUAGE sql STABLE AS $$
+  WITH RECURSIVE walk AS (
+    SELECT 0 AS depth, c.sha, c.parent_sha, c.author, c.message, c.at
+    FROM pgit.commits c
+    WHERE c.sha = COALESCE(start_sha, pgit.resolve(pgit.head()))
+    UNION ALL
+    SELECT w.depth + 1, c.sha, c.parent_sha, c.author, c.message, c.at
+    FROM walk w JOIN pgit.commits c ON c.sha = w.parent_sha
+  )
+  SELECT w.depth, w.sha, w.parent_sha, w.author, w.message, w.at
+  FROM walk w
+  WHERE (pathspec IS NULL OR EXISTS (SELECT 1 FROM pgit.diff(w.parent_sha, w.sha, pathspec)))
+    AND (since IS NULL OR w.at >= since)
+    AND (who IS NULL OR w.author = who)
+  ORDER BY w.depth
+  LIMIT max_count
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.reset(spec text, mode text DEFAULT 'hard') RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  branch  text  := pgit.head();
+  cur     bytea := pgit.resolve(branch);
+  tgt     bytea := pgit.rev(spec);
+  applied int   := 0;
+  r       record;
+  troot   bytea;
+  guard   jsonb;
+BEGIN
+  IF mode NOT IN ('soft', 'hard') THEN
+    RAISE EXCEPTION 'pgit: reset takes soft or hard, not % (there is no index to reset)', mode;
+  END IF;
+
+  IF tgt IS NULL THEN
+    RAISE EXCEPTION 'pgit: cannot resolve %', spec;
+  END IF;
+
+  IF mode = 'hard' THEN
+    guard := pgit.replay_begin();
+    SET CONSTRAINTS ALL DEFERRED;
+
+    FOR r IN SELECT x.tbl FROM pgit.tracked x LOOP
+      SELECT y.root_hash INTO troot FROM pgit.trees y
+      WHERE y.commit_sha = tgt AND y.tbl = r.tbl::text;
+      applied := applied + pgit.apply_tree_diff(r.tbl, pgit.write_tree(r.tbl), troot);
+    END LOOP;
+
+    SET CONSTRAINTS ALL IMMEDIATE;
+    PERFORM pgit.replay_end(guard);
+    DELETE FROM pgit.changes WHERE commit_sha IS NULL;
+  END IF;
+
+  UPDATE pgit.refs SET sha = tgt WHERE name = branch;
+  INSERT INTO pgit.reflog (ref, old_sha, new_sha, action, actor)
+  VALUES (branch, cur, tgt, 'reset --' || mode, pgit.actor());
+
+  RETURN applied;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.diff_working(pathspec text DEFAULT NULL)
+RETURNS TABLE (tbl text, k text, op text, before jsonb, after jsonb)
+LANGUAGE plpgsql AS $$
+DECLARE
+  h     bytea := pgit.resolve(pgit.head());
+  t     record;
+  hroot bytea;
+  lroot bytea;
+BEGIN
+  FOR t IN SELECT x.tbl FROM pgit.tracked x ORDER BY x.tbl::text LOOP
+    CONTINUE WHEN pathspec IS NOT NULL
+              AND split_part(split_part(pathspec, ':', 1), '.', 1) <> t.tbl::text;
+
+    SELECT x.root_hash INTO hroot FROM pgit.trees x
+    WHERE x.commit_sha = h AND x.tbl = t.tbl::text;
+
+    lroot := pgit.write_tree(t.tbl);
+
+    RETURN QUERY
+      SELECT t.tbl::text, d.k, d.op, d.before, d.after
+      FROM pgit.diff_tree(hroot, lroot) d;
+  END LOOP;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.fsck()
+RETURNS TABLE (problem text, detail text)
+LANGUAGE sql STABLE AS $$
+  SELECT 'node hash mismatch', encode(n.hash, 'hex')
+  FROM pgit.nodes n
+  WHERE n.hash <> pgit.hash((
+    SELECT COALESCE(string_agg(decode(x ->> 'h', 'hex'), ''::bytea ORDER BY x ->> 'k'), ''::bytea)
+    FROM jsonb_array_elements(pgit.entries_of(n.hash)) x))
+
+  UNION ALL
+  SELECT 'delta base missing', encode(n.hash, 'hex')
+  FROM pgit.nodes n
+  WHERE n.base_hash IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM pgit.nodes b WHERE b.hash = n.base_hash)
+
+  UNION ALL
+  SELECT 'node unresolvable', encode(n.hash, 'hex')
+  FROM pgit.nodes n WHERE pgit.entries_of(n.hash) IS NULL
+
+  UNION ALL
+  SELECT 'ref points at a missing commit', r.name
+  FROM pgit.refs r
+  WHERE NOT EXISTS (SELECT 1 FROM pgit.commits c WHERE c.sha = r.sha)
+
+  UNION ALL
+  SELECT 'commit parent missing', encode(c.sha, 'hex')
+  FROM pgit.commits c
+  WHERE (c.parent_sha IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM pgit.commits p WHERE p.sha = c.parent_sha))
+     OR (c.parent2_sha IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM pgit.commits p WHERE p.sha = c.parent2_sha))
+
+  UNION ALL
+  SELECT 'tree root missing from the node store', t.commit_sha::text || ' ' || t.tbl
+  FROM pgit.trees t
+  WHERE t.root_hash <> pgit.hash(''::bytea)
+    AND NOT EXISTS (SELECT 1 FROM pgit.nodes n WHERE n.hash = t.root_hash)
+
+  UNION ALL
+  SELECT 'child node missing', encode(n.hash, 'hex') || ' -> ' || (x ->> 'h')
+  FROM pgit.nodes n, jsonb_array_elements(pgit.entries_of(n.hash)) x
+  WHERE n.level > 0
+    AND NOT EXISTS (SELECT 1 FROM pgit.nodes c WHERE c.hash = decode(x ->> 'h', 'hex'))
+$$;

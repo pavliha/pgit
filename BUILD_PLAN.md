@@ -421,6 +421,25 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   `pgit.rename_pairs` is public, so wiring `-M` into `diff` later is a small change. Still absent by
   choice: octopus merges, `subtree`, `rerere`, and **table**-level rename detection (a table renamed
   by DDL is currently refused by the schema-fingerprint guard rather than followed).
+- **fsck, revisions, reset/reflog, working-tree diff** — 30 new assertions (291 pgTAP + 26 CLI +
+  9 kill + 12 RDS = 338).
+  **`pgit.fsck`** recomputes every node's hash from its children, follows every delta chain, and
+  checks refs, commit parents, tree roots and child links. It reports zero on a healthy repo *and*
+  zero after `repack(50)`, which is the useful part — it verifies delta chains end to end. It is
+  also tested **negatively**: a tampered node is caught, and a delta pointing at a missing base is
+  caught. Without those two, "fsck returns 0" would be indistinguishable from "fsck checks nothing".
+  **`pgit.rev`** gives `HEAD`, `HEAD~N`, `HEAD^`, `HEAD^2`, branch names and abbreviated shas, and
+  the CLI now routes `show`, `diff`, `revert` and `cherry-pick` through it — so the tool takes
+  revisions instead of 64-character hashes.
+  **`log`** gained `-n`, `--author` and `--since`. **`reflog`** records every ref movement, which
+  came almost free because `advance_ref` was already the single choke point for ref updates.
+  **`diff_working`** compares the live tables to HEAD, closing AC-DIFF-11 which had been written and
+  never built.
+  **`reset --hard` had a real bug the CLI test caught**: it diffed the old ref against the target, so
+  `reset --hard HEAD` did nothing to a dirty tree. Git compares the *working tree* to the target. Now
+  it does too — `apply_diff` was split into `apply_tree_diff` taking roots directly, and reset
+  computes the live root with `write_tree`. Pinned by an assertion in the SQL suite as well as the
+  CLI one.
 - **tooling** — the progress log above lost 11 entries to silent failure. They were appended with a
   Python `str.replace()` anchored on text that did not exist, and `replace()` returns the original
   string on no match, so every one reported success and wrote nothing. The `## Blocked` section
