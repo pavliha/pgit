@@ -149,6 +149,26 @@ optimum is **scale-dependent**, so any fixed constant is wrong in principle — 
 `chunk_target` from table size would beat both. And if diff latency is what matters, the lever is
 narrowing the candidate set, not shrinking chunks.
 
+**Hoisting column names out of the row images saves nothing.** Each row image is a jsonb object
+repeating every column name, 64 times per chunk. A columnar layout — column names once, values as
+parallel arrays — measures **7,664 kB against 7,800 kB, a 1.7% saving**. pglz has already erased the
+repetition.
+
+### The principle these three measurements establish
+
+Every layout change tried so far fails for the same reason. **Compression already captures the
+redundancy *inside* a node.** Blob separation, smaller chunks and columnar encoding all rearrange
+data within or around a node, and pglz was already handling that.
+
+What compression cannot capture is redundancy **between versions of a node**, because each node is
+compressed independently. Three hundred versions of one chunk, differing by a single row, are stored
+three hundred times over. That is exactly the gap git closes with packfile deltas — and it means
+there are only two ways to control storage here: **store fewer node versions, or delta them.**
+
+Concretely, a commit costs roughly **one leaf chunk plus one node per tree level** — about 40 KB at
+1M rows — **regardless of whether it changed one row or sixty-four.** Committing the same region a
+hundred times costs a hundred chunk versions; batching those changes into one commit costs one.
+
 What pgit still does not do that git does: **delta compression between object versions**. Three
 hundred near-identical chunk versions are stored in full. That, not blob separation, is the
 remaining gap.
