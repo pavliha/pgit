@@ -122,6 +122,7 @@ O(history between them) and not O(table size).
 | --- | --- |
 | [docs/USAGE.md](docs/USAGE.md) | install, track a table, commit, branch, merge, resolve conflicts, move history between databases |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | the canonical row form, content-defined chunking, the packed node format, how commit and diff actually work, and the invariants each test defends |
+| [docs/DESIGN-STORAGE.md](docs/DESIGN-STORAGE.md) | proposal: what it would take to match git's storage model, what it would buy, and what it would still not achieve |
 | [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | what it costs, what it refuses, and what it will never do |
 | [PERF.md](PERF.md) | every measurement, including the ones that overturned an earlier conclusion |
 
