@@ -1852,6 +1852,7 @@ END $$;
 CREATE OR REPLACE FUNCTION pgit.build_up(lvl int) RETURNS bytea
 LANGUAGE plpgsql SET client_min_messages = warning AS $$
 DECLARE
+  ct int := pgit.setting('chunk_target')::int;
   n     bigint;
   depth int := lvl;
 BEGIN
@@ -1868,7 +1869,7 @@ BEGIN
       WITH marked AS (
         SELECT key_bytes, hash, image,
                COALESCE(
-                 SUM(CASE WHEN pgit.is_boundary(key_bytes) THEN 1 ELSE 0 END)
+                 SUM(CASE WHEN pgit.is_boundary(key_bytes, ct) THEN 1 ELSE 0 END)
                    OVER (ORDER BY key_bytes ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS chunk
         FROM pgit_lvl
       )
@@ -1911,6 +1912,7 @@ CREATE OR REPLACE FUNCTION pgit.write_tree_incremental(target regclass, prev_roo
 RETURNS bytea
 LANGUAGE plpgsql SET client_min_messages = warning AS $$
 DECLARE
+  ct int := pgit.setting('chunk_target')::int;
   changed text[] := pgit.changed_keys(target);
   region  record;
   hi_key  text;
@@ -2085,7 +2087,7 @@ BEGIN
         WITH marked AS (
           SELECT key_bytes, hash, image,
                  COALESCE(
-                   SUM(CASE WHEN pgit.is_boundary(key_bytes) THEN 1 ELSE 0 END)
+                   SUM(CASE WHEN pgit.is_boundary(key_bytes, ct) THEN 1 ELSE 0 END)
                      OVER (ORDER BY key_bytes ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS chunk
           FROM pgit_lvl
         )
@@ -2136,6 +2138,8 @@ DROP FUNCTION IF EXISTS pgit.build_one_level(int);
 CREATE OR REPLACE FUNCTION pgit.build_one_level(depth int, with_images boolean DEFAULT false)
 RETURNS void
 LANGUAGE plpgsql SET client_min_messages = warning AS $$
+DECLARE
+  ct int := pgit.setting('chunk_target')::int;
 BEGIN
   PERFORM pgit.ensure_scratch();
 
@@ -2144,7 +2148,7 @@ BEGIN
     WITH marked AS (
       SELECT key_bytes, hash, image,
              COALESCE(
-               SUM(CASE WHEN pgit.is_boundary(key_bytes) THEN 1 ELSE 0 END)
+               SUM(CASE WHEN pgit.is_boundary(key_bytes, ct) THEN 1 ELSE 0 END)
                  OVER (ORDER BY key_bytes ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS chunk
       FROM pgit_lvl
     )
