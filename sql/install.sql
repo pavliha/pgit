@@ -1257,13 +1257,6 @@ LANGUAGE sql STABLE AS $$
   WHERE first_before IS DISTINCT FROM last_after
 $$;
 
-CREATE OR REPLACE FUNCTION pgit.live_hash(target regclass, key_hex text) RETURNS text
-LANGUAGE sql STABLE AS $$
-  SELECT encode(r.hash, 'hex')
-  FROM pgit.row_hashes(target) r
-  WHERE encode(r.key_bytes, 'hex') = key_hex
-$$;
-
 CREATE OR REPLACE FUNCTION pgit.revert(target_sha bytea) RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -1988,6 +1981,17 @@ BEGIN
     pk, pgit.row_canon_expr(target), target::text, pk)
   USING (SELECT array_agg(convert_from(decode(k, 'hex'), 'UTF8')) FROM unnest(keys) k);
 END $$;
+
+-- row_hashes canonicalises and hashes the whole table, so filtering it for one
+-- key made the revert guard O(table x reverted rows): reverting 200 rows of a
+-- 100k row table called sha256 9.76 million times and took 31 s. row_hashes_keys
+-- joins the canonical key index that track() already maintains.
+CREATE OR REPLACE FUNCTION pgit.live_hash(target regclass, key_hex text) RETURNS text
+LANGUAGE sql STABLE AS $$
+  SELECT encode(r.hash, 'hex')
+  FROM pgit.row_hashes_keys(target, ARRAY[key_hex]) r
+$$;
+
 
 CREATE OR REPLACE FUNCTION pgit.row_hashes_range(target regclass, lo bytea, hi bytea)
 RETURNS TABLE (key_bytes bytea, hash bytea, image jsonb)
