@@ -1859,6 +1859,13 @@ DECLARE
   region  record;
   hi_key  text;
 BEGIN
+  -- Nothing in this table changed, so its tree is the one the parent recorded.
+  -- Falling through to a full rebuild here makes the cheapest case the most
+  -- expensive one: every commit would rebuild every table it did not touch.
+  IF array_length(changed, 1) IS NULL AND prev_root IS NOT NULL THEN
+    RETURN prev_root;
+  END IF;
+
   IF prev_root IS NULL OR COALESCE(pgit.node_level(prev_root), -1) < 1
      OR array_length(changed, 1) IS NULL
      OR array_length(changed, 1) > 10000 THEN

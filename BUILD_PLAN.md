@@ -611,6 +611,26 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   constraint`, not `violates foreign key`, and `blame.actor` is who changed the row, not who authored
   the commit.
 
+- **a commit rebuilt every table it did not touch** — found by versioning IMDb's `title_basics`
+  (12.7M rows, 1.9 GB) alongside a small table that changes nightly, which is the shape of every real
+  application: many tables, one of them big, most untouched per commit.
+  `write_tree_incremental` guards with `array_length(changed, 1) IS NULL` — *nothing in this table
+  changed* — and fell through to a full `pgit.write_tree(target)`. **The cheapest possible case took
+  the most expensive path.** An unchanged table now returns the root its parent commit recorded.
+  Measured at 100k rows: a commit touching only the small table costs **44 ms** with the fix against
+  **1,525 ms** for one rebuild of the untouched table alone — 35× the whole commit, and the ratio
+  grows with the table. On the IMDb fixture each nightly commit was rebuilding 12.7M rows at ~6
+  minutes a time; 30 nights would have taken about three hours instead of about one minute.
+  It stayed hidden because the synthetic bench tracks exactly one table and always changes it, and
+  because the 63-table application schema is small enough that rebuilding all of it costs ~1 s. It
+  only bites when more than one table is tracked and one of them is large, which is the normal case.
+  **The regression test needed a timing assertion, and that is the lesson.** The nine correctness
+  assertions written first all pass *without* the fix, because a needless rebuild produces exactly
+  the same root hash — the defect is invisible to any check on values. The tenth compares, inside one
+  run, the cost of a commit touching only the small table against one rebuild of the big one, so it
+  is machine independent; it is the only one that goes red when the guard is removed.
+  `test/incremental_05_untouched_tables.sql`, 10 assertions.
+
 ## Reference
 
 Postgres.md`.
