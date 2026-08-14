@@ -401,6 +401,61 @@ rediscovered later.
 > today that concurrent work has corrupted a storage measurement. **Storage numbers are only valid on
 > an idle machine.**
 
+## A night of profiling: what won, and the four things that did not
+
+Every change below was A/B'd on an idle machine with at least three runs a side.
+Single runs were what made two of these look like wins when they were not.
+
+| | before | after | |
+| --- | --- | --- | --- |
+| full build, 200k rows | 2,589 ms | **868 ms** | 2.98× |
+| diff, 200k fixture, 21,076 rows | 915 ms | **667 ms** | 1.37× |
+| diff, IMDb, 82,664 rows, packed | 12,008 ms | **8,584 ms** | 1.40× |
+
+**NFC normalisation on ASCII text.** The full build is 76% `row_hashes` and that is 97% the canonical
+form expression. `normalize()` is 20× the rest of the expression combined — 540 ms with it, 26 ms
+without, over 200k rows. NFC is the identity on pure ASCII and `octet_length = length` detects that
+in constant time, against a length walk that has to happen anyway for the length prefix. 9.4× on the
+expression, zero rows canonicalising differently.
+
+**Every function was PARALLEL UNSAFE.** PostgreSQL defaults a function to `PARALLEL UNSAFE`, and a
+single unsafe function anywhere in a query forbids parallel workers for the *whole* query. `pgit.hash`,
+all six `canon_*` functions, `is_boundary` and `setting` are pure computations or plain table reads,
+so every one of them was mislabelled by omission — and they appear in the expression that builds every
+row hash. Marking them `PARALLEL SAFE` is a one-word change per function: **1,265 ms → 868 ms, 1.46×**,
+five runs a side. Nothing about the code changed; the planner was simply allowed to use the machine.
+
+**Pairing a node's children.** The descent pairs children by overlapping key range, which is a range
+join with no equality and therefore a nested loop over every child of both nodes, twice. But a
+boundary is a function of the key alone, so a commit that moves no membership moves no boundary and
+every child still pairs by exact first key. Equality first, range join only for the leftovers:
+263 ms → 15 ms over 54 internal pairs, **17×**.
+
+### Four hypotheses that measured worse, and are not in the tree
+
+| tried | result |
+| --- | --- |
+| descent returns hashes only, images expanded at the top | recursion 1,518 ms → 316 ms, **wall clock unchanged** — the cost moved, it did not go away |
+| expand all leaf pairs in one set-based join | 750 ms → **3,574 ms**, 4.8× worse |
+| set-based splice in the commit path | 427 ms → **1,352 ms**, 3× worse |
+| batching the splice loop's two round trips per chunk | 469 ms → **520 ms**, 11% worse |
+
+The pattern is consistent and worth stating: **set-based rewrites lost every time here.** Expanding a
+72-entry chunk to change one row costs more than the per-row plpgsql that reads and writes it, and
+materialising image-bearing rows into a CTE costs more than the per-call overhead it removes. The
+original author had already measured this for the splice path and left a comment saying so; the
+comment was right.
+
+Two more that were tested and changed nothing: raising `work_mem` from 4 MB to 256 MB (707 ms against
+712 ms — the spill in the plan is not on the critical path), and dropping all three secondary indexes
+on `pgit.changes` (9%, inside the run-to-run spread).
+
+> [!warning]
+> The splice batching measured 456 → 427 ms on one run each and looked like a 6% win. Three runs a
+> side showed 469 ms against 520 ms — it is 11% *slower*. It was committed to nothing only because
+> the A/B was run before the commit. **One run per side is not a measurement**, and this is the
+> second time in two days that rule has caught a change that was about to ship backwards.
+
 ## Delta hops were paying for UTF-8 character offsets
 
 A delta hop splits into a fixed cost and a per-hop cost, and profiling by chain depth separated them

@@ -12,17 +12,17 @@ INSERT INTO pgit.meta (key, value) VALUES
 ON CONFLICT (key) DO NOTHING;
 
 CREATE OR REPLACE FUNCTION pgit.setting(k text) RETURNS text
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql STABLE PARALLEL SAFE AS $$
   SELECT value FROM pgit.meta WHERE key = k
 $$;
 
 CREATE OR REPLACE FUNCTION pgit.hash(v bytea) RETURNS bytea
-LANGUAGE sql IMMUTABLE AS $$
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
   SELECT sha256(v)
 $$;
 
 CREATE OR REPLACE FUNCTION pgit.hash(v text) RETURNS bytea
-LANGUAGE sql IMMUTABLE AS $$
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
   SELECT sha256(convert_to(v, 'UTF8'))
 $$;
 
@@ -41,7 +41,7 @@ BEGIN
 END $$;
 
 CREATE OR REPLACE FUNCTION pgit.canon_numeric(v numeric) RETURNS text
-LANGUAGE sql IMMUTABLE AS $$
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
   SELECT CASE
     WHEN v IS NULL      THEN NULL
     WHEN v::text = 'NaN' THEN 'NaN'
@@ -50,7 +50,7 @@ LANGUAGE sql IMMUTABLE AS $$
 $$;
 
 CREATE OR REPLACE FUNCTION pgit.canon_float(v float8) RETURNS text
-LANGUAGE sql IMMUTABLE AS $$
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
   SELECT CASE
     WHEN v IS NULL                  THEN NULL
     WHEN v::text = 'NaN'            THEN 'NaN'
@@ -62,7 +62,7 @@ LANGUAGE sql IMMUTABLE AS $$
 $$;
 
 CREATE OR REPLACE FUNCTION pgit.canon_ts(v timestamptz) RETURNS text
-LANGUAGE sql IMMUTABLE AS $$
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
   SELECT CASE
     WHEN v IS NULL                       THEN NULL
     WHEN v = 'infinity'::timestamptz     THEN 'infinity'
@@ -72,7 +72,7 @@ LANGUAGE sql IMMUTABLE AS $$
 $$;
 
 CREATE OR REPLACE FUNCTION pgit.canon_tsn(v timestamp) RETURNS text
-LANGUAGE sql IMMUTABLE AS $$
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
   SELECT CASE
     WHEN v IS NULL                    THEN NULL
     WHEN v = 'infinity'::timestamp    THEN 'infinity'
@@ -82,7 +82,7 @@ LANGUAGE sql IMMUTABLE AS $$
 $$;
 
 CREATE OR REPLACE FUNCTION pgit.canon_date(v date) RETURNS text
-LANGUAGE sql IMMUTABLE AS $$
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
   SELECT CASE
     WHEN v IS NULL                 THEN NULL
     WHEN v = 'infinity'::date      THEN 'infinity'
@@ -182,7 +182,7 @@ BEGIN
 END $$;
 
 CREATE OR REPLACE FUNCTION pgit.is_boundary(key_bytes bytea, target int DEFAULT NULL)
-RETURNS boolean LANGUAGE sql STABLE AS $$
+RETURNS boolean LANGUAGE sql STABLE PARALLEL SAFE AS $$
   SELECT ('x' || encode(substring(pgit.hash(key_bytes) FROM 1 FOR 3), 'hex'))::bit(24)::int
          % COALESCE(target, pgit.setting('chunk_target')::int) = 0
 $$;
