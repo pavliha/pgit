@@ -667,6 +667,8 @@ BEGIN
   CREATE TEMP TABLE IF NOT EXISTS pgit_old   (k text COLLATE "C", h text, nk text COLLATE "C", rn bigint);
   CREATE TEMP TABLE IF NOT EXISTS pgit_hit   (rn bigint);
 
+  CREATE TEMP TABLE IF NOT EXISTS pgit_chg   (k text COLLATE "C" PRIMARY KEY, h bytea, v jsonb);
+
   CREATE INDEX IF NOT EXISTS pgit_l1_k_idx  ON pgit_l1 (k);
   CREATE INDEX IF NOT EXISTS pgit_old_k_idx ON pgit_old (k);
 END $$;
@@ -1784,6 +1786,25 @@ EXCEPTION WHEN others THEN
   RAISE NOTICE 'pgit: no key index on % (%), range reads will scan', target::text, SQLERRM;
 END $$;
 
+CREATE OR REPLACE FUNCTION pgit.row_hashes_keys(target regclass, keys text[])
+RETURNS TABLE (key_bytes bytea, hash bytea, image jsonb)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE pk text := pgit.pk_canon_expr(target);
+BEGIN
+  -- The unnest alias and its column are both prefixed: the canonical key
+  -- expression references the table's own columns unqualified, so a tracked
+  -- table with a column named k made this ambiguous.
+  -- Joining unnest gives a nested loop over the canonical key index. Passing the
+  -- same keys as "= ANY(array)" lets the planner pick a sequential scan instead,
+  -- which on 1.7M rows cost more than the whole-range rescan this replaces.
+  RETURN QUERY EXECUTE format(
+    'SELECT convert_to(%s, ''UTF8''), pgit.hash(%s), to_jsonb(t)
+     FROM unnest($1) AS pgit_kk(pgit_key)
+     JOIN %s t ON (%s) COLLATE "C" = pgit_kk.pgit_key',
+    pk, pgit.row_canon_expr(target), target::text, pk)
+  USING (SELECT array_agg(convert_from(decode(k, 'hex'), 'UTF8')) FROM unnest(keys) k);
+END $$;
+
 CREATE OR REPLACE FUNCTION pgit.row_hashes_range(target regclass, lo bytea, hi bytea)
 RETURNS TABLE (key_bytes bytea, hash bytea, image jsonb)
 LANGUAGE plpgsql STABLE AS $$
@@ -1893,6 +1914,7 @@ DECLARE
   changed text[] := pgit.changed_keys(target);
   region  record;
   hi_key  text;
+  pure_updates boolean;
 BEGIN
   -- Nothing in this table changed, so its tree is the one the parent recorded.
   -- Falling through to a full rebuild here makes the cheapest case the most
@@ -1908,6 +1930,11 @@ BEGIN
   END IF;
 
   PERFORM pgit.ensure_scratch();
+
+  SELECT NOT EXISTS (
+    SELECT 1 FROM pgit.changes c
+    WHERE c.tbl = target::text AND c.commit_sha IS NULL AND c.op <> 'UPDATE'
+  ) INTO pure_updates;
 
   TRUNCATE pgit_l1;
   INSERT INTO pgit_l1
@@ -1979,42 +2006,89 @@ BEGIN
 
   TRUNCATE pgit_new;
 
-  FOR region IN
-    WITH h AS (SELECT DISTINCT rn FROM pgit_hit),
-    grp AS (SELECT rn, rn - row_number() OVER (ORDER BY rn) AS g FROM h)
-    SELECT min(rn) AS lo_rn, max(rn) AS hi_rn FROM grp GROUP BY g ORDER BY 1
-  LOOP
-    SELECT o.nk INTO hi_key FROM pgit_old o WHERE o.rn = region.hi_rn;
-
-    TRUNCATE pgit_lvl;
-    INSERT INTO pgit_lvl
-      SELECT * FROM pgit.row_hashes_range(
-        target,
-        (SELECT decode(o.k, 'hex') FROM pgit_old o WHERE o.rn = region.lo_rn),
-        CASE WHEN hi_key IS NULL THEN NULL ELSE decode(hi_key, 'hex') END);
+  -- A chunk boundary is is_boundary(key) — a property of the key alone — so an
+  -- UPDATE that touches no key cannot move one. Every affected chunk therefore
+  -- keeps exactly its old membership, and can be rebuilt from the previous
+  -- node's entries with only the changed rows substituted. Re-reading the whole
+  -- key range instead re-canonicalises every neighbour: 5,000 scattered updates
+  -- in a 1.7M row table re-hashed about 832,000 rows to change 5,000.
+  -- Rebuilding a chunk from its previous entries only wins when the changed rows
+  -- are sparse within the chunks they touch. Dense changes fill those chunks
+  -- anyway, and the range rescan is then one sequential index walk rather than
+  -- thousands of point lookups: measured, 100 adjacent rows cost 40 ms rescanned
+  -- and 1,900 ms looked up, while 5,000 scattered rows cost 13,400 ms rescanned
+  -- and 7,600 ms looked up.
+  IF pure_updates
+     AND (SELECT count(*) FROM pgit_hit) * 8 > COALESCE(array_length(changed, 1), 0) THEN
+    TRUNCATE pgit_chg;
+    INSERT INTO pgit_chg
+      SELECT encode(r.key_bytes, 'hex'), r.hash, r.image
+      FROM pgit.row_hashes_keys(target, changed) r
+      ON CONFLICT (k) DO NOTHING;
 
     TRUNCATE pgit_grp;
     INSERT INTO pgit_grp
-      WITH marked AS (
-        SELECT key_bytes, hash, image,
-               COALESCE(
-                 SUM(CASE WHEN pgit.is_boundary(key_bytes) THEN 1 ELSE 0 END)
-                   OVER (ORDER BY key_bytes ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS chunk
-        FROM pgit_lvl
+      WITH hit_chunks AS (
+        SELECT o.k, o.h FROM pgit_old o JOIN pgit_hit x ON x.rn = o.rn
+      ),
+      ent AS (
+        SELECT hc.k AS chunk_k,
+               decode(e.el ->> 'k', 'hex') AS ekb,
+               COALESCE(encode(c.h, 'hex'), e.el ->> 'h') AS eh,
+               COALESCE(c.v, e.el -> 'v') AS ev
+        FROM hit_chunks hc
+        CROSS JOIN LATERAL jsonb_array_elements(pgit.entries_of(decode(hc.h, 'hex'))) e(el)
+        LEFT JOIN pgit_chg c ON c.k = e.el ->> 'k'
       )
-      SELECT min(key_bytes),
-             pgit.hash(string_agg(hash, ''::bytea ORDER BY key_bytes)),
-             jsonb_agg(jsonb_build_object('k', encode(key_bytes, 'hex'),
-                                          'h', encode(hash, 'hex'),
-                                          'v', image) ORDER BY key_bytes)
-      FROM marked GROUP BY chunk;
+      SELECT decode(ent.chunk_k, 'hex'),
+             pgit.hash(string_agg(decode(ent.eh, 'hex'), ''::bytea ORDER BY ent.ekb)),
+             jsonb_agg(jsonb_build_object('k', encode(ent.ekb, 'hex'), 'h', ent.eh, 'v', ent.ev)
+                       ORDER BY ent.ekb)
+      FROM ent GROUP BY ent.chunk_k;
 
     INSERT INTO pgit.nodes (hash, level, entries)
     SELECT g.hash, 0, g.entries FROM pgit_grp g
     ON CONFLICT (hash) DO NOTHING;
 
     INSERT INTO pgit_new SELECT g.key_bytes, g.hash FROM pgit_grp g;
-  END LOOP;
+  ELSE
+    FOR region IN
+      WITH h AS (SELECT DISTINCT rn FROM pgit_hit),
+      grp AS (SELECT rn, rn - row_number() OVER (ORDER BY rn) AS g FROM h)
+      SELECT min(rn) AS lo_rn, max(rn) AS hi_rn FROM grp GROUP BY g ORDER BY 1
+    LOOP
+      SELECT o.nk INTO hi_key FROM pgit_old o WHERE o.rn = region.hi_rn;
+
+      TRUNCATE pgit_lvl;
+      INSERT INTO pgit_lvl
+        SELECT * FROM pgit.row_hashes_range(
+          target,
+          (SELECT decode(o.k, 'hex') FROM pgit_old o WHERE o.rn = region.lo_rn),
+          CASE WHEN hi_key IS NULL THEN NULL ELSE decode(hi_key, 'hex') END);
+
+      TRUNCATE pgit_grp;
+      INSERT INTO pgit_grp
+        WITH marked AS (
+          SELECT key_bytes, hash, image,
+                 COALESCE(
+                   SUM(CASE WHEN pgit.is_boundary(key_bytes) THEN 1 ELSE 0 END)
+                     OVER (ORDER BY key_bytes ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS chunk
+          FROM pgit_lvl
+        )
+        SELECT min(key_bytes),
+               pgit.hash(string_agg(hash, ''::bytea ORDER BY key_bytes)),
+               jsonb_agg(jsonb_build_object('k', encode(key_bytes, 'hex'),
+                                            'h', encode(hash, 'hex'),
+                                            'v', image) ORDER BY key_bytes)
+        FROM marked GROUP BY chunk;
+
+      INSERT INTO pgit.nodes (hash, level, entries)
+      SELECT g.hash, 0, g.entries FROM pgit_grp g
+      ON CONFLICT (hash) DO NOTHING;
+
+      INSERT INTO pgit_new SELECT g.key_bytes, g.hash FROM pgit_grp g;
+    END LOOP;
+  END IF;
 
   TRUNCATE pgit_lvl;
   INSERT INTO pgit_lvl

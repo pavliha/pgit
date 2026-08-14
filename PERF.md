@@ -357,6 +357,42 @@ remaining gap.
 Mean commit cost in one long transaction also grew from **16 ms at 500 commits to 34 ms at 10,000**,
 as `pgit.changes` accumulated 100,000 rows and the node table grew. Roughly 2× for 20× the commits.
 
+## Measured against git, on the same data
+
+The claim "git's diff performance" was in the README for weeks. It is wrong, and this is by how much.
+The same 1.7M row IMDb ratings table, 30 commits, each changing ~5,300 scattered rows: as a TSV in a
+git repository, and as a tracked table in pgit. Identical change sets — git saw 152,349 modified
+rows, pgit 152,068.
+
+| | git | pgit | |
+| --- | --- | --- | --- |
+| baseline commit | **389 ms** | 17,259 ms | 44× |
+| mean commit over 30 | **492 ms** | 13,383 ms | 27× |
+| diff across all 30 commits | **391 ms** | 60,940 ms | **156×** |
+| store, loose | 316 MB | 1,742 MB | |
+| store, after gc | **10 MB** | — | |
+| gc | 11 s | 33 min (killed) | |
+
+Git's diff is a linear Myers diff over two sorted 28 MB text blobs; its commit is a hash and a zlib
+pass over the same. pgit canonicalises every changed row (`normalize`, `trim_scale`, sha256 each),
+computes content-defined boundaries, builds jsonb nodes, and writes them to a heap with WAL and
+index maintenance. That is not a constant factor away from a byte-stream hash and it will not close.
+
+**What does hold is the scaling property the design was chosen for.** Diff cost tracks the size of
+the difference, not the history between two commits: 10 rows 10,000 commits apart costs 163 ms, the
+same as one commit apart. Git has that property and so does pgit. The shape matches; the constant
+is about 100× worse.
+
+**One structural axis favours pgit, and this fixture hides it.** Git's per-commit cost is O(file):
+changing 5,300 rows in a 28 MB TSV re-hashes and re-compresses all 28 MB. pgit's is O(changed
+chunks). At 28 MB git's whole-file cost is an invisible 492 ms; on the full 2.6 GB IMDb set the same
+commit would re-process 2.6 GB, while pgit's untouched 12.7M row table costs **100 ms**. A fair
+comparison at that scale has not been run, so this is stated as a structural difference rather than
+a measurement.
+
+And the part git does not do at all: the pgit copy is a live database — indexed, constrained,
+transactional, queryable — throughout. The git copy is a file you must materialise to use.
+
 ## What tracking a table actually costs
 
 Re-measured after the commit and diff work, on a 1M-row table with four columns.
