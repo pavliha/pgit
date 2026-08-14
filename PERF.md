@@ -452,6 +452,22 @@ A key missing from one diff means that side did not change it, so its image is t
 other diff already carries. Together **10.5×**, guarded by a new oracle that checks all three derived
 images against independent tree lookups.
 
+### What `make_delta` actually iterates, since I got this wrong
+
+`repack` calls `make_delta(node_parts(...), node_parts(...))`, and `node_parts` returns a **three**
+element array — `[hashes, keys, entries]`. So `make_delta`'s loop runs three times per call, once per
+part. It does *not* iterate row images, and a node with 78 entries still goes round three times.
+
+I spent an attempt on the assumption that it was one iteration per entry, and built a whole
+optimisation to skip unchanged entries using the node's hash vector. The fixtures rejected it on the
+first assertion, because a test calls `make_delta` with a plain array of entries and `base ->> 0` is
+then an entry object rather than a hex string. The premise was wrong before the code was.
+
+`make_delta` costs 0.54 ms on a 78 entry node not because it loops a lot but because each of its
+three iterations works on a large string: `common_prefix` and `common_suffix` binary search with
+`substr` over the whole entries text, which on UTF-8 walks the string at every step. That is where
+repack's time goes, and it is the thing to attack if anyone returns to this.
+
 ### Nine hypotheses that measured worse or did nothing, and are not in the tree
 
 | tried | result |
