@@ -791,8 +791,8 @@ BEGIN
   END LOOP;
 END $$;
 
-CREATE OR REPLACE FUNCTION pgit.diff_leaves(a bytea, b bytea)
-RETURNS TABLE (side text, k text, rh text, v jsonb)
+CREATE OR REPLACE FUNCTION pgit.diff_pairs(a bytea, b bytea)
+RETURNS TABLE (ach bytea, bch bytea)
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
   lvl int;
@@ -800,38 +800,19 @@ DECLARE
 BEGIN
   IF a IS NOT DISTINCT FROM b THEN RETURN; END IF;
 
-  IF a IS NULL THEN
-    RETURN QUERY SELECT 'b'::text, l.k, l.rh, l.v FROM pgit.leaves(b) l;
-    RETURN;
-  END IF;
-
-  IF b IS NULL THEN
-    RETURN QUERY SELECT 'a'::text, l.k, l.rh, l.v FROM pgit.leaves(a) l;
-    RETURN;
-  END IF;
+  IF a IS NULL THEN RETURN QUERY SELECT NULL::bytea, b; RETURN; END IF;
+  IF b IS NULL THEN RETURN QUERY SELECT a, NULL::bytea; RETURN; END IF;
 
   IF pgit.node_level(a) IS DISTINCT FROM pgit.node_level(b) THEN
-    RETURN QUERY SELECT 'a'::text, l.k, l.rh, l.v FROM pgit.leaves(a) l;
-    RETURN QUERY SELECT 'b'::text, l.k, l.rh, l.v FROM pgit.leaves(b) l;
+    RETURN QUERY SELECT a, NULL::bytea;
+    RETURN QUERY SELECT NULL::bytea, b;
     RETURN;
   END IF;
 
   lvl := COALESCE(pgit.node_level(a), pgit.node_level(b));
   IF lvl IS NULL THEN RETURN; END IF;
 
-  IF lvl = 0 THEN
-    RETURN QUERY
-      WITH ai AS MATERIALIZED (SELECT i.k, i.ch, i.v FROM pgit.node_items(a) i),
-           bi AS MATERIALIZED (SELECT i.k, i.ch, i.v FROM pgit.node_items(b) i)
-      SELECT 'a'::text, ai.k, ai.ch, ai.v
-        FROM ai LEFT JOIN bi ON bi.k = ai.k
-        WHERE bi.k IS NULL OR bi.ch IS DISTINCT FROM ai.ch
-      UNION ALL
-      SELECT 'b'::text, bi.k, bi.ch, bi.v
-        FROM bi LEFT JOIN ai ON ai.k = bi.k
-        WHERE ai.k IS NULL OR ai.ch IS DISTINCT FROM bi.ch;
-    RETURN;
-  END IF;
+  IF lvl = 0 THEN RETURN QUERY SELECT a, b; RETURN; END IF;
 
   FOR r IN
     WITH ae AS (
@@ -840,19 +821,32 @@ BEGIN
     be AS (
       SELECT e.k, e.ch, lead(e.k) OVER (ORDER BY e.k) AS nk FROM pgit.node_entries(b) e
     ),
+    -- Children whose first key matches pair directly. A boundary is a function
+    -- of the key alone, so a commit that changes no membership moves no
+    -- boundary and this covers every child; the range join below then runs over
+    -- the few children around an insert or delete rather than over all of them.
+    -- It is a range join with no equality, so it is a nested loop and was 4.9 ms
+    -- per internal node pair when it saw every child.
+    exact AS (
+      SELECT ae.k, ae.ch AS ach, be.ch AS bch FROM ae JOIN be ON be.k = ae.k
+    ),
+    a_rest AS (SELECT ae.* FROM ae WHERE NOT EXISTS (SELECT 1 FROM exact e WHERE e.k = ae.k)),
+    b_rest AS (SELECT be.* FROM be WHERE NOT EXISTS (SELECT 1 FROM exact e WHERE e.k = be.k)),
     paired AS (
-      SELECT ae.ch AS ach, be.ch AS bch
-      FROM ae LEFT JOIN be
-        ON ae.k < COALESCE(be.nk, 'g') AND be.k < COALESCE(ae.nk, 'g')
+      SELECT exact.ach, exact.bch FROM exact
       UNION
-      SELECT ae.ch AS ach, be.ch AS bch
-      FROM be LEFT JOIN ae
-        ON ae.k < COALESCE(be.nk, 'g') AND be.k < COALESCE(ae.nk, 'g')
+      SELECT a_rest.ch AS ach, be.ch AS bch
+      FROM a_rest LEFT JOIN be
+        ON a_rest.k < COALESCE(be.nk, 'g') AND be.k < COALESCE(a_rest.nk, 'g')
+      UNION
+      SELECT ae.ch AS ach, b_rest.ch AS bch
+      FROM b_rest LEFT JOIN ae
+        ON ae.k < COALESCE(b_rest.nk, 'g') AND b_rest.k < COALESCE(ae.nk, 'g')
     )
     SELECT DISTINCT paired.ach, paired.bch FROM paired
     WHERE paired.ach IS DISTINCT FROM paired.bch
   LOOP
-    RETURN QUERY SELECT * FROM pgit.diff_leaves(decode(r.ach, 'hex'), decode(r.bch, 'hex'));
+    RETURN QUERY SELECT * FROM pgit.diff_pairs(decode(r.ach, 'hex'), decode(r.bch, 'hex'));
   END LOOP;
 END $$;
 
@@ -883,6 +877,39 @@ LANGUAGE sql STABLE AS $$
          encode(substring(node.hashes FROM (ks.ord - 1)::int * 32 + 1 FOR 32), 'hex'),
          vs.el
   FROM node, ks LEFT JOIN vs ON vs.ord = ks.ord
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.leaf_diff(a bytea, b bytea)
+RETURNS TABLE (side text, k text, rh text, v jsonb)
+LANGUAGE sql STABLE AS $$
+  SELECT 'b'::text, l.k, l.rh, l.v FROM pgit.leaves(b) l WHERE a IS NULL
+  UNION ALL
+  SELECT 'a'::text, l.k, l.rh, l.v FROM pgit.leaves(a) l WHERE b IS NULL
+  UNION ALL
+  SELECT q.side, q.k, q.rh, q.v FROM (
+    WITH ai AS MATERIALIZED (SELECT i.k, i.ch, i.v FROM pgit.node_items(a) i),
+         bi AS MATERIALIZED (SELECT i.k, i.ch, i.v FROM pgit.node_items(b) i)
+    SELECT 'a'::text AS side, ai.k, ai.ch AS rh, ai.v
+      FROM ai LEFT JOIN bi ON bi.k = ai.k
+      WHERE bi.k IS NULL OR bi.ch IS DISTINCT FROM ai.ch
+    UNION ALL
+    SELECT 'b'::text, bi.k, bi.ch, bi.v
+      FROM bi LEFT JOIN ai ON ai.k = bi.k
+      WHERE ai.k IS NULL OR ai.ch IS DISTINCT FROM bi.ch
+  ) q
+  WHERE a IS NOT NULL AND b IS NOT NULL
+$$;
+
+-- The descent carries only node hashes, never row images. Returning images from
+-- the recursion copied every one of them into a tuplestore at each level of the
+-- tree; the pairs are two hashes wide and the images are expanded once, at the
+-- top, from the pair list.
+CREATE OR REPLACE FUNCTION pgit.diff_leaves(a bytea, b bytea)
+RETURNS TABLE (side text, k text, rh text, v jsonb)
+LANGUAGE sql STABLE AS $$
+  SELECT x.side, x.k, x.rh, x.v
+  FROM pgit.diff_pairs(a, b) p
+  CROSS JOIN LATERAL pgit.leaf_diff(p.ach, p.bch) x
 $$;
 
 CREATE OR REPLACE FUNCTION pgit.lookup(root bytea, key_hex text)
