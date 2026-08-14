@@ -357,6 +357,30 @@ remaining gap.
 Mean commit cost in one long transaction also grew from **16 ms at 500 commits to 34 ms at 10,000**,
 as `pgit.changes` accumulated 100,000 rows and the node table grew. Roughly 2× for 20× the commits.
 
+## gc was quadratic in the number of node groups
+
+`repack` walks one group of node versions at a time, keyed by level and first key, and selected each
+group with `WHERE level = ? AND keys[1] = ?`. `keys[1]` is not indexable, so **every group cost a
+sequential scan of the whole node table**: 2,761 groups over 20,583 nodes is 57 million row
+examinations on a 200k-row fixture, and at 2 GB `gc` never finished in four attempts.
+
+A partial index on `(level, (keys[1]), seq DESC) WHERE entries IS NOT NULL` turns each group lookup
+into an index scan.
+
+| 200k rows, 22 commits | |
+| --- | --- |
+| `repack` before | 55 s |
+| `repack` after | **30 s**, same 58% off |
+
+> [!warning]
+> Two of the measurements taken while diagnosing this were wrong, both the same way. `gc` appeared to
+> *grow* the store by 11%, twice, which sent me reverting a working change. It had not: live data was
+> 6.8 MB of deltas plus 30 MB of unpacked nodes, and the 121 MB reading was bloat `VACUUM FULL` had
+> not reclaimed because a benchmark was running concurrently in another database. A clean
+> `VACUUM FULL` on an idle machine gave 46 MB — the original figure exactly. This is the third time
+> today that concurrent work has corrupted a storage measurement. **Storage numbers are only valid on
+> an idle machine.**
+
 ## Diff: stop re-walking the tree for images the descent already has
 
 Profiling a diff of 21,076 changed rows, `pg_stat_statements` with nested tracking:

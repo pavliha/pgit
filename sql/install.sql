@@ -218,6 +218,13 @@ ALTER TABLE pgit.nodes ADD COLUMN IF NOT EXISTS keys   text[];
 
 CREATE INDEX IF NOT EXISTS nodes_base_idx ON pgit.nodes (base_hash);
 
+-- repack walks one group of node versions at a time, keyed by level and first
+-- key. Without this the filter on keys[1] cannot use an index and every group
+-- costs a sequential scan: 2,761 groups over 20,583 nodes is 57 million row
+-- examinations on a small fixture, and at 2 GB gc took 50 minutes.
+CREATE INDEX IF NOT EXISTS nodes_group_idx ON pgit.nodes (level, (keys[1]), seq DESC)
+  WHERE entries IS NOT NULL;
+
 -- Nodes written before the packed format have no key vector, and every reader
 -- drives off it — they would read as empty rather than failing. Refuse to
 -- install over them instead.
