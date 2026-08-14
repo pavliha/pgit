@@ -434,6 +434,26 @@ holds: at 1.7M rows, a 5,000 row scattered commit costs 4,049 ms at target 64, 4
 5,462 ms at 16, with the node store growing from 209 MB to 241 MB. More, smaller nodes cost more
 tree levels and more nodes to write than they save in bytes copied.
 
+## Where pgit beats git, and where it does not
+
+The comparison below this one used a 28 MB file, which flatters git: its commit cost is O(file), so a
+small fixture hides it. The same 12.7M-row IMDb data at full size, same 100-row change:
+
+| | git | pgit |
+| --- | --- | --- |
+| 12.7M rows as a 1.0 GB TSV / a tracked table | | |
+| baseline commit | 10,817 ms | 253,868 ms |
+| **100 changed rows** | **12,062 ms** | **527 ms — 22.9× faster** |
+| 28 MB slice, ~5,300 changed rows | **492 ms** | 1,801 ms |
+
+**git re-hashes and re-compresses the whole file on every commit**; pgit rewrites only the chunks
+holding changed rows. The crossover is around 50 MB. Below it git wins on constants, above it pgit
+wins on complexity and the gap grows linearly with the data.
+
+git still wins the first commit outright — 10.8 s against 254 s — because a full tree build
+canonicalises and hashes every row individually where git makes one pass over a byte stream. That is
+a one-time cost, but it is real and it is 23×.
+
 ## Measured against git, on the same data
 
 The claim "git's diff performance" was in the README for weeks. It is wrong, and this is by how much.

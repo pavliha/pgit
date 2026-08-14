@@ -101,13 +101,28 @@ Expected, with the reasoning:
 | diff | unchanged | already O(difference); the descent is not the cost |
 | write path | ~2× better if the journal slims | the images are the cost, measured |
 
-**It will not match git's absolute speed, and the proposal should not pretend otherwise.** Git commits
-in 492 ms by hashing a byte stream and appending it. pgit canonicalises every changed row, hashes it,
-and writes durably under MVCC with WAL. Postgres will not be talked out of those. A realistic target
-is git-comparable *storage ratios* and commits within a small factor — not parity.
+### On "parity with git", which this document previously got wrong
 
-The honest framing for the README stays what it is: the scaling property matches git, the constants
-do not, and the comparison that matters is against other ways to version a database.
+An earlier draft said absolute parity was not reachable. That was written when the gap was 27× and
+never revisited after the packed format brought it to 3.7×, and it generalised from a 28 MB fixture —
+small enough that git's whole-file cost is invisible. Measured properly, the two costs scale
+differently and there is a crossover, not a verdict:
+
+| same 12.7M rows | git | pgit |
+| --- | --- | --- |
+| 28 MB of it, ~5,300 changed rows | **492 ms** | 1,801 ms |
+| all 1.0 GB of it, 100 changed rows | 12,062 ms | **527 ms** |
+
+**git's commit is O(file)** — it re-hashes and re-compresses everything however little changed.
+**pgit's is O(changed)** — it rewrites only the chunks holding changed rows. Below roughly 50 MB git
+wins on constants; above it pgit wins on complexity, and the gap grows linearly. At 1 GB pgit is
+**22.9× faster**, and that is the size range a database lives in.
+
+So the target is not parity — parity is already passed where it matters. What is left is the constant
+factor on small datasets, and that is what packs and a leaner journal are for. Absolute parity on a
+28 MB file is still unlikely: git hashes a byte stream and appends it, while pgit canonicalises every
+changed row and writes durably under MVCC with WAL. That is a constant, not a scaling wall, and it is
+worth much less than it appeared.
 
 ## What would need C, and why we are not doing it
 

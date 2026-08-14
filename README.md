@@ -5,13 +5,15 @@ extension, no managed service. `commit`, `log`, `diff`, `blame`, `revert`, `bran
 `rebase`, `cherry-pick` — with git's flag names, and git's *scaling* on diff: cost tracks the size
 of the difference, not the length of the history between two commits.
 
-**It is not as fast as git, and the gap is large.** Versioning the same 1.7M-row dataset over 30
-commits, measured side by side: git commits in 492 ms against pgit's 13.4 s, and diffs 152k changed
-rows in 391 ms against pgit's 61 s. Git is doing a different job — hashing and zlib-ing a byte
-stream, with no live queryable result — but if raw speed on a file is what you need, git is faster
-by one to two orders of magnitude and this will not close that. What pgit gives you instead is that
-the versioned thing stays a real database: indexed, constrained, transactional, queryable in SQL
-while under version control. `PERF.md` has the full comparison.
+**How it compares to git depends on size, and the crossover is low.** git's commit is O(file) — it
+re-hashes and re-compresses everything however little changed — while pgit's is O(changed). On the
+same 12.7M-row IMDb dataset, committing a 100-row change: **git 12,062 ms, pgit 527 ms — 22.9×
+faster**. On a 28 MB slice of it with 5,300 changed rows the order reverses: git 492 ms, pgit
+1,801 ms. Below roughly 50 MB git wins on constants; above it pgit wins on complexity.
+
+git is also doing a different job: its result is a file you must materialise, while pgit's stays a
+real database — indexed, constrained, transactional, queryable in SQL while under version control.
+`PERF.md` has the full comparison, including where git is still ahead.
 
 **Status: pre-alpha, but the whole verb set works and is measured.** 530 checks green from an empty
 database in about 90 seconds — 423 pgTAP, 40 CLI, 9 crash-safety, 12 non-superuser portability,
