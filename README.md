@@ -4,8 +4,12 @@ Git semantics over data in **stock PostgreSQL**, as a plain SQL plugin. No forke
 extension, no managed service. `commit`, `log`, `diff`, `blame`, `revert`, `branch`, `merge`,
 `rebase`, `cherry-pick` — with git's flag names and git's diff performance.
 
-**Status: pre-alpha, but the whole verb set works and is measured.** 254 checks green from an empty
-database (230 pgTAP + 15 CLI + 9 crash-safety). On a 1M-row table a commit touching 10 rows takes
+**Status: pre-alpha, but the whole verb set works and is measured.** 276 checks green from an empty
+database (240 pgTAP + 15 CLI + 9 crash-safety + 12 non-superuser portability).
+
+**Runs on managed Postgres.** Every verb is exercised as a plain `LOGIN` role with no superuser
+rights — strictly fewer privileges than the RDS master user gets — so RDS, Neon and Supabase are
+covered by construction. There is no C extension to install and no `pgcrypto` dependency. On a 1M-row table a commit touching 10 rows takes
 **25 ms**, and diffing 10 changed rows **10,000 commits apart** takes **163 ms** — the same as one
 commit apart.
 

@@ -51,6 +51,20 @@ changed and **24,700** when all fifty did — a ratio of exactly **50.0**. Reads
 of *changed* tables and cost nothing for unchanged ones, because an untouched table keeps a bit-
 identical root hash and the descent short-circuits before reading a single node.
 
+### AC-PORT-02, finally run
+
+`test/rds_test.sh` creates a plain `LOGIN` role with no superuser rights and exercises the whole verb
+set against it. That is **stricter than RDS**, where the master user is `rds_superuser`.
+
+It found one real dependency: `session_replication_role` is superuser-only, so **`revert` and
+`checkout` failed outright** — everything else already worked. Both now call `pgit.replay_begin()`,
+which tries the session GUC and, on `insufficient_privilege`, falls back to disabling each
+non-pgit trigger by name and restoring its exact prior state afterwards.
+
+The fallback is arguably the better path: `DISABLE TRIGGER` skips internal triggers, so **referential
+integrity stays enforced during replay**, which closes the FK gap that replica mode left open. It
+costs an ACCESS EXCLUSIVE lock per tracked table for the duration of the replay.
+
 Not run, and not claimed:
 
 | Criterion | Why |

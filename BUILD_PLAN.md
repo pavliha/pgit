@@ -375,6 +375,19 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   bottleneck was never the language, it was using jsonb as the node format on the hot path. What is
   still missing is a packed binary node format — every resolution parses jsonb once at the end and
   every entry still carries its column names, and that last parse is what caps useful depth near 16.
+- **AC-PORT-02** — 12 checks in `test/rds_test.sh`, wired into `make test` (276 total across four
+  suites). A plain `LOGIN` role with no superuser rights runs the whole verb set — **stricter than
+  RDS**, where the master user is `rds_superuser`, so passing here covers RDS, Neon and Supabase by
+  construction.
+  The portability claim had been asserted in the README all night and never tested. Testing it found
+  a real dependency immediately: `session_replication_role` is superuser-only, so **`revert` and
+  `checkout` failed outright** while everything else already worked. `pgit.replay_begin()` now tries
+  the GUC and falls back on `insufficient_privilege` to disabling each non-pgit trigger by name,
+  restoring its exact prior state afterwards — asserted, since `ENABLE TRIGGER USER` would have
+  flattened an `ENABLE ALWAYS` trigger to `ENABLE`.
+  The fallback is arguably the better path: `DISABLE TRIGGER` skips internal triggers, so
+  **referential integrity stays enforced during replay**, closing the FK gap replica mode left open
+  and listed under Follow-ups. It costs an ACCESS EXCLUSIVE lock per tracked table.
 - **tooling** — the progress log above lost 11 entries to silent failure. They were appended with a
   Python `str.replace()` anchored on text that did not exist, and `replace()` returns the original
   string on no match, so every one reported success and wrote nothing. The `## Blocked` section

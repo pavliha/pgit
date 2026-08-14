@@ -941,6 +941,7 @@ DECLARE
   applied   int := 0;
   conflicts bigint;
   found_it  boolean;
+  guard     jsonb;
 BEGIN
   SELECT true, c.parent_sha INTO found_it, parent
   FROM pgit.commits c WHERE c.sha = target_sha;
@@ -963,7 +964,7 @@ BEGIN
     END IF;
   END LOOP;
 
-  PERFORM set_config('session_replication_role', 'replica', true);
+  guard := pgit.replay_begin();
   SET CONSTRAINTS ALL DEFERRED;
 
   FOR r IN SELECT DISTINCT t.tbl FROM pgit.trees t WHERE t.commit_sha = target_sha LOOP
@@ -971,7 +972,7 @@ BEGIN
   END LOOP;
 
   SET CONSTRAINTS ALL IMMEDIATE;
-  PERFORM set_config('session_replication_role', 'origin', true);
+  PERFORM pgit.replay_end(guard);
 
   RETURN applied;
 END $$;
@@ -1086,6 +1087,7 @@ DECLARE
   tgt     bytea := pgit.resolve(branch_name);
   r       record;
   applied int := 0;
+  guard   jsonb;
 BEGIN
   IF tgt IS NULL THEN
     RAISE EXCEPTION 'pgit: unknown branch %', branch_name;
@@ -1097,7 +1099,7 @@ BEGIN
     RAISE EXCEPTION 'pgit: uncommitted changes present, refusing to checkout %', branch_name;
   END IF;
 
-  PERFORM set_config('session_replication_role', 'replica', true);
+  guard := pgit.replay_begin();
   SET CONSTRAINTS ALL DEFERRED;
 
   FOR r IN SELECT DISTINCT t.tbl FROM pgit.trees t WHERE t.commit_sha IN (cur, tgt) LOOP
@@ -1105,7 +1107,7 @@ BEGIN
   END LOOP;
 
   SET CONSTRAINTS ALL IMMEDIATE;
-  PERFORM set_config('session_replication_role', 'origin', true);
+  PERFORM pgit.replay_end(guard);
 
   DELETE FROM pgit.changes WHERE commit_sha IS NULL;
   UPDATE pgit.meta SET value = branch_name WHERE key = 'head';
@@ -2024,4 +2026,52 @@ BEGIN
 
   GET DIAGNOSTICS n = ROW_COUNT;
   RETURN n;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.replay_begin() RETURNS jsonb
+LANGUAGE plpgsql AS $$
+DECLARE
+  saved jsonb := '[]'::jsonb;
+  r     record;
+BEGIN
+  BEGIN
+    PERFORM set_config('session_replication_role', 'replica', true);
+    RETURN jsonb_build_object('mode', 'session');
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+
+  FOR r IN
+    SELECT t.tbl::text AS tbl, tg.tgname, tg.tgenabled
+    FROM pgit.tracked t
+    JOIN pg_trigger tg ON tg.tgrelid = t.tbl AND NOT tg.tgisinternal
+    WHERE tg.tgname NOT LIKE 'pgit_journal%'
+  LOOP
+    saved := saved || jsonb_build_object('tbl', r.tbl, 'tg', r.tgname, 'en', r.tgenabled);
+    EXECUTE format('ALTER TABLE %s DISABLE TRIGGER %I', r.tbl, r.tgname);
+  END LOOP;
+
+  RETURN jsonb_build_object('mode', 'triggers', 'saved', saved);
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.replay_end(st jsonb) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+  e jsonb;
+BEGIN
+  IF st ->> 'mode' = 'session' THEN
+    PERFORM set_config('session_replication_role', 'origin', true);
+    RETURN;
+  END IF;
+
+  FOR e IN SELECT jsonb_array_elements(st -> 'saved') LOOP
+    EXECUTE format('ALTER TABLE %s %s TRIGGER %I',
+      e ->> 'tbl',
+      CASE e ->> 'en'
+        WHEN 'D' THEN 'DISABLE'
+        WHEN 'A' THEN 'ENABLE ALWAYS'
+        WHEN 'R' THEN 'ENABLE REPLICA'
+        ELSE 'ENABLE' END,
+      e ->> 'tg');
+  END LOOP;
 END $$;
