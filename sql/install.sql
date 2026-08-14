@@ -752,6 +752,7 @@ BEGIN
   CREATE TEMP TABLE IF NOT EXISTS pgit_hit   (rn bigint);
 
   CREATE TEMP TABLE IF NOT EXISTS pgit_chg   (k text COLLATE "C" PRIMARY KEY, h bytea, v jsonb, rn bigint);
+  CREATE TEMP TABLE IF NOT EXISTS pgit_plan  (tbl text, k text, action text, merged jsonb, conflict_col text);
 
   CREATE INDEX IF NOT EXISTS pgit_l1_k_idx  ON pgit_l1 (k);
   CREATE INDEX IF NOT EXISTS pgit_old_k_idx ON pgit_old (k);
@@ -1781,8 +1782,14 @@ BEGIN
 
   PERFORM pgit.assert_same_schema(target_sha, ours);
 
-  SELECT count(*) INTO n FROM pgit.merge_plan(base, ours, target_sha) mp
-  WHERE mp.action = 'conflict';
+  -- The plan is built once. Counting the conflicts and then applying it called
+  -- merge_plan twice, and merge_plan is the expensive part of a cherry pick:
+  -- 899 ms a call against 1,861 ms for the whole operation.
+  PERFORM pgit.ensure_scratch();
+  TRUNCATE pgit_plan;
+  INSERT INTO pgit_plan SELECT * FROM pgit.merge_plan(base, ours, target_sha);
+
+  SELECT count(*) INTO n FROM pgit_plan mp WHERE mp.action = 'conflict';
 
   IF n > 0 THEN
     PERFORM pgit.record_conflicts(nextval('pgit.merge_seq'), base, ours, target_sha);
@@ -1790,7 +1797,7 @@ BEGIN
   END IF;
 
   SET CONSTRAINTS ALL DEFERRED;
-  FOR p IN SELECT * FROM pgit.merge_plan(base, ours, target_sha) LOOP
+  FOR p IN SELECT * FROM pgit_plan LOOP
     PERFORM pgit.apply_row(p.tbl::regclass, p.action, p.merged);
   END LOOP;
   SET CONSTRAINTS ALL IMMEDIATE;
