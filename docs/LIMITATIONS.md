@@ -31,15 +31,29 @@ depending on row width — often smaller, since chunked images compress well. Hi
 part: 10,000 commits on a 1M-row table left the node store at 4.5× the table until `gc`, then 1.8× at
 the default depth and 1.2× at `--depth 50`. The journal adds about 300 bytes per changed row.
 
-## It is not as fast as git, and will not be
+## Faster than git above ~50 MB, slower below it
 
-Versioning the same 1.7M-row dataset over 30 commits, measured side by side, git commits in 492 ms
-against pgit's seconds and diffs in 391 ms. Git hashes and zlib-compresses a byte stream; pgit
-canonicalises every changed row, computes content-defined boundaries and writes nodes durably under
-MVCC. That is not a constant factor apart.
+Git's commit is O(file): it re-hashes and re-compresses the whole thing however little changed.
+pgit's is O(changed): it rewrites only the chunks holding changed rows. So there is a crossover, not
+a verdict.
 
-What *is* comparable is the scaling property the design exists for: diff cost tracks the size of the
-difference, not the history between two commits.
+| same 12.7M rows | git | pgit |
+| --- | --- | --- |
+| 28 MB of it, ~5,300 changed rows | **492 ms** | 1,801 ms |
+| all 1.0 GB of it, 100 changed rows | 12,062 ms | **527 ms** |
+
+Below roughly 50 MB git wins on constants — it hashes and zlib-compresses a byte stream, while pgit
+canonicalises every changed row and writes nodes durably under MVCC with WAL. Above it pgit wins on
+complexity, and the gap grows linearly.
+
+**Diff is the exception and is genuinely slower**: 391 ms against 51.7 s over the same 30 commits.
+That is the largest open gap in the project.
+
+> [!note]
+> This section said "it is not as fast as git, and will not be" for weeks. That was a 27× gap
+> generalised into a law, and it did not survive being challenged — the gap is now 3.7× on the same
+> fixture and inverted at 1 GB. Treat performance claims here as measurements with a date, not
+> properties of the design.
 
 The relevant comparison is not git. It is what else versions a *database* — Dolt and DoltgreSQL,
 temporal tables, audit triggers — or having no version control on your data at all.

@@ -1,5 +1,5 @@
 BEGIN;
-SELECT plan(16);
+SELECT plan(18);
 
 CREATE TEMP TABLE fix (label text PRIMARY KEY, base jsonb, target jsonb);
 INSERT INTO fix VALUES
@@ -119,6 +119,28 @@ DO $$ DECLARE i int; BEGIN
     PERFORM pgit.commit('c' || i, 'b');
   END LOOP;
 END $$;
+
+ANALYZE pgit.nodes;
+
+CREATE TEMP TABLE qplan (p text);
+DO $$
+DECLARE r record; fk text;
+BEGIN
+  SELECT n.keys[1] INTO fk FROM pgit.nodes n WHERE n.entries IS NOT NULL LIMIT 1;
+  FOR r IN EXECUTE format(
+    'EXPLAIN SELECT n.hash FROM pgit.nodes n WHERE n.level = 0 AND n.keys[1] = %L '
+    'AND n.entries IS NOT NULL ORDER BY n.seq DESC', fk)
+  LOOP
+    INSERT INTO qplan VALUES (r."QUERY PLAN");
+  END LOOP;
+END $$;
+
+SELECT cmp_ok((SELECT count(*) FROM pgit.nodes)::int, '>', 500,
+  'delta ops: the fixture is big enough that a sequential scan is not the planner''s obvious choice');
+
+SELECT ok(
+  EXISTS (SELECT 1 FROM qplan WHERE p LIKE '%nodes_group_idx%'),
+  'delta ops: the group lookup repack drives off resolves through nodes_group_idx, not a seq scan');
 
 CREATE TEMP TABLE before_entries AS SELECT hash, pgit.entries_of(hash) AS e FROM pgit.nodes;
 CREATE TEMP TABLE before_diff AS SELECT * FROM pgit.diff((SELECT sha FROM a), pgit.resolve('main'));

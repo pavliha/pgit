@@ -218,10 +218,6 @@ ALTER TABLE pgit.nodes ADD COLUMN IF NOT EXISTS keys   text[];
 
 CREATE INDEX IF NOT EXISTS nodes_base_idx ON pgit.nodes (base_hash);
 
--- repack walks one group of node versions at a time, keyed by level and first
--- key. Without this the filter on keys[1] cannot use an index and every group
--- costs a sequential scan: 2,761 groups over 20,583 nodes is 57 million row
--- examinations on a small fixture, and at 2 GB gc took 50 minutes.
 CREATE INDEX IF NOT EXISTS nodes_group_idx ON pgit.nodes (level, (keys[1]), seq DESC)
   WHERE entries IS NOT NULL;
 
@@ -2403,6 +2399,7 @@ DECLARE
   d            int;
   packed       int := 0;
   cand         jsonb;
+  parts        jsonb;
 BEGIN
   FOR grp IN
     SELECT n.level AS lv, n.keys[1] AS fk
@@ -2418,14 +2415,16 @@ BEGIN
       WHERE n.level = grp.lv AND n.keys[1] = grp.fk AND n.entries IS NOT NULL
       ORDER BY n.seq DESC
     LOOP
+      parts := pgit.node_parts(g.hashes, g.keys, g.entries);
+
       IF prev_hash IS NULL OR d >= max_depth THEN
         prev_hash := g.hash;
-        prev_entries := pgit.node_parts(g.hashes, g.keys, g.entries);
+        prev_entries := parts;
         d := 0;
         CONTINUE;
       END IF;
 
-      cand := pgit.make_delta(prev_entries, pgit.node_parts(g.hashes, g.keys, g.entries));
+      cand := pgit.make_delta(prev_entries, parts);
 
       IF pg_column_size(cand)
          < pg_column_size(g.entries) + pg_column_size(g.hashes) + pg_column_size(g.keys) THEN
@@ -2439,7 +2438,7 @@ BEGIN
       END IF;
 
       prev_hash := g.hash;
-      prev_entries := pgit.node_parts(g.hashes, g.keys, g.entries);
+      prev_entries := parts;
     END LOOP;
   END LOOP;
 

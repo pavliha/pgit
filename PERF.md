@@ -372,6 +372,26 @@ into an index scan.
 | `repack` before | 55 s |
 | `repack` after | **30 s**, same 58% off |
 
+**At 2 GB it now finishes.** This is what four earlier attempts could not measure — the first two were
+killed at 26 and 50 minutes, and both rolled back, so the `1599s` and `3003s` figures recorded earlier
+are cancellations, not results. On the 12.7M-row IMDb store, 359,549 nodes:
+
+| IMDb, 2 GB of nodes | |
+| --- | --- |
+| `repack` | **3 min 33 s**, 112,453 nodes packed |
+| store | 2059 MB → **1483 MB, 27% off** |
+| `fsck` | 0 problems |
+
+The index is not free: it is maintained on every node insert, so the commit path pays for the `gc`
+speedup. Measured on an idle machine, mean commit over 20 commits is **224/226 ms with the index
+against 217 ms without** — roughly 3–4%. Worth it, but it belongs in the ledger rather than being
+rediscovered later.
+
+> [!note]
+> The first with-index reading was 253 ms, which would have read as a 17% regression on the write
+> path. Two repeats gave 224 and 226. **A single benchmark run is not a measurement** — the same
+> lesson as the warning below, arrived at from the other direction.
+
 > [!warning]
 > Two of the measurements taken while diagnosing this were wrong, both the same way. `gc` appeared to
 > *grow* the store by 11%, twice, which sent me reverting a working change. It had not: live data was
@@ -541,19 +561,33 @@ The same 1.7M row IMDb ratings table, 30 commits, each changing ~5,300 scattered
 git repository, and as a tracked table in pgit. Identical change sets — git saw 152,349 modified
 rows, pgit 152,068.
 
-| | git | pgit | |
-| --- | --- | --- | --- |
-| baseline commit | **389 ms** | 17,259 ms | 44× |
-| mean commit over 30 | **492 ms** | 13,383 ms | 27× |
-| diff across all 30 commits | **391 ms** | 60,940 ms | **156×** |
-| store, loose | 316 MB | 1,742 MB | |
-| store, after gc | **10 MB** | — | |
-| gc | 11 s | 33 min (killed) | |
+| | git | pgit, as first measured | pgit, current | |
+| --- | --- | --- | --- | --- |
+| mean commit over 30 | **492 ms** | 13,383 ms — 27× | 1,801 ms | 3.7× |
+| diff across all 30 commits | **391 ms** | 60,940 ms — 156× | 51,746 ms | 132× |
+| store, loose | 316 MB | 1,742 MB | 2,030 MB | |
+| store, after gc | **10 MB** | — never completed | see below | |
+| gc | 11 s | 33 min, killed | see below | |
 
 Git's diff is a linear Myers diff over two sorted 28 MB text blobs; its commit is a hash and a zlib
 pass over the same. pgit canonicalises every changed row (`normalize`, `trim_scale`, sha256 each),
 computes content-defined boundaries, builds jsonb nodes, and writes them to a heap with WAL and
-index maintenance. That is not a constant factor away from a byte-stream hash and it will not close.
+index maintenance.
+
+> [!warning]
+> An earlier version of this section concluded "that is not a constant factor away from a byte-stream
+> hash and **it will not close**." That was wrong, and it was wrong in the way conclusions usually are
+> — it generalised a 27× gap on a 28 MB fixture into a law. The gap is now 3.7×, and on a 1 GB table
+> pgit commits **22.9× faster than git**, because git's commit is O(file) and pgit's is O(changed).
+> The crossover is around 50 MB. See "On parity with git" in `docs/DESIGN-STORAGE.md`.
+
+The `gc` and store rows are left pointing elsewhere on purpose: those figures were measured over the
+whole 2 GB IMDb node store — both tables, 359,549 nodes — while git's 10 MB is the 28 MB ratings TSV
+alone. They are not the same scope and putting them in one row is how three of today's wrong numbers
+were produced. The whole-store figures are in "gc was quadratic in the number of node groups" above.
+
+The diff row is the one still worth attacking: 51,746 ms is measured, but it predates nothing — the
+7.4× images fix is already in it. It is the largest remaining gap in this table.
 
 **What does hold is the scaling property the design was chosen for.** Diff cost tracks the size of
 the difference, not the history between two commits: 10 rows 10,000 commits apart costs 163 ms, the
