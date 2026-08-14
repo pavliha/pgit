@@ -812,16 +812,45 @@ END $$;
 CREATE OR REPLACE FUNCTION pgit.diff_tree(a bytea, b bytea)
 RETURNS TABLE (k text, op text, before jsonb, after jsonb)
 LANGUAGE sql STABLE AS $$
-  WITH candidates AS (SELECT DISTINCT d.k FROM pgit.diff_leaves(a, b) d)
-  SELECT c.k,
-         CASE WHEN la.rh IS NULL THEN 'INSERT'
-              WHEN lb.rh IS NULL THEN 'DELETE'
+  -- The descent already knows each candidate's row hash on both sides, so the
+  -- decision is a pivot rather than two point lookups per candidate. Only keys
+  -- that actually differ are then looked up for their images: on a diff of 30
+  -- nights of IMDb ratings that is 84k lookups instead of 3.4M candidates x 2.
+  -- The row images are deliberately not carried through the aggregate — there
+  -- are millions of candidates and the hash would spill to disk.
+  WITH d AS (
+    SELECT x.side, x.k, x.rh FROM pgit.diff_leaves(a, b) x
+  ),
+  pivoted AS (
+    SELECT d.k,
+           max(d.rh) FILTER (WHERE d.side = 'a') AS arh,
+           max(d.rh) FILTER (WHERE d.side = 'b') AS brh
+    FROM d GROUP BY d.k
+  ),
+  -- A key seen on both sides is decided by comparing row hashes, with no lookup.
+  -- A key seen on one side only is ambiguous and must be resolved: the descent
+  -- skips chunk pairs that are identical, so the other side's copy of an
+  -- unchanged row may simply never have been emitted. Treating a one sided key
+  -- as an insert or a delete reports rows that never changed — a range delete
+  -- makes it happen, and the oracle in test/diff_05 catches it.
+  resolved AS (
+    SELECT p.k,
+           CASE WHEN p.arh IS NOT NULL THEN p.arh
+                ELSE (SELECT l.rh FROM pgit.lookup(a, p.k) l) END AS arh,
+           CASE WHEN p.brh IS NOT NULL THEN p.brh
+                ELSE (SELECT l.rh FROM pgit.lookup(b, p.k) l) END AS brh
+    FROM pivoted p
+  )
+  -- CASE rather than a LEFT JOIN LATERAL with a condition: the join form still
+  -- evaluates the lateral and filters afterwards, so it would not skip the walk.
+  SELECT r.k,
+         CASE WHEN r.arh IS NULL THEN 'INSERT'
+              WHEN r.brh IS NULL THEN 'DELETE'
               ELSE 'UPDATE' END,
-         la.v, lb.v
-  FROM candidates c
-  LEFT JOIN LATERAL pgit.lookup(a, c.k) la ON true
-  LEFT JOIN LATERAL pgit.lookup(b, c.k) lb ON true
-  WHERE la.rh IS DISTINCT FROM lb.rh
+         CASE WHEN r.arh IS NOT NULL THEN (SELECT l.v FROM pgit.lookup(a, r.k) l) END,
+         CASE WHEN r.brh IS NOT NULL THEN (SELECT l.v FROM pgit.lookup(b, r.k) l) END
+  FROM resolved r
+  WHERE r.arh IS DISTINCT FROM r.brh
 $$;
 
 CREATE OR REPLACE FUNCTION pgit.row_matches(tbl_name text, image jsonb, want text)

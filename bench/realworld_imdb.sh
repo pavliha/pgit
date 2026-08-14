@@ -58,9 +58,11 @@ echo "# after baseline: nodes $(sz pgit.nodes) against $(q "SELECT pg_size_prett
 
 echo "# $NIGHTS nightly ratings updates, weighted to popular titles like the real feed"
 q "DO \$\$
-   DECLARE t0 timestamptz := clock_timestamp(); n int; touched bigint := 0; c bigint;
+   DECLARE t0 timestamptz; n int; touched bigint := 0; c bigint;
+           commit_ms numeric := 0; update_ms numeric := 0;
    BEGIN
      FOR n IN 1..$NIGHTS LOOP
+       t0 := clock_timestamp();
        WITH hot AS (
          SELECT tconst FROM title_ratings
          WHERE num_votes > 1000 AND ('x' || md5(tconst || n::text))::bit(32)::int % 20 = 0
@@ -72,10 +74,16 @@ q "DO \$\$
          FROM hot WHERE r.tconst = hot.tconst RETURNING 1
        ) SELECT count(*) INTO c FROM u;
        touched := touched + c;
+       update_ms := update_ms + extract(epoch FROM clock_timestamp()-t0)*1000;
+
+       -- Only the commit is timed. The md5 scan and the UPDATE above are the
+       -- fixture's own cost and were previously being charged to pgit.
+       t0 := clock_timestamp();
        PERFORM pgit.commit('ratings night ' || n, 'imdb');
+       commit_ms := commit_ms + extract(epoch FROM clock_timestamp()-t0)*1000;
      END LOOP;
-     RAISE NOTICE '% rows over % nights, mean % ms per commit',
-       touched, $NIGHTS, round(extract(epoch FROM clock_timestamp()-t0)*1000/$NIGHTS);
+     RAISE NOTICE '% rows over % nights: mean % ms per COMMIT, plus % ms of fixture work per night',
+       touched, $NIGHTS, round(commit_ms/$NIGHTS), round(update_ms/$NIGHTS);
    END \$\$" 2>&1 | sed 's/^NOTICE:  /# /'
 
 q "INSERT INTO bench_shas VALUES ('night_last', pgit.resolve('main'))" >/dev/null
@@ -103,7 +111,10 @@ compact
 RAW=$(q "SELECT pg_total_relation_size('pgit.nodes')")
 echo "# nodes before repack $(sz pgit.nodes)"
 
+RP0=$(date +%s)
 PACKED=$(q "SELECT pgit.repack(50)")
+RP1=$(date +%s)
+echo "# repack itself took $((RP1-RP0))s"
 compact
 B=$(q "SELECT pg_total_relation_size('pgit.nodes')")
 echo "# nodes after repack depth 50 $(sz pgit.nodes) — $(q "SELECT round(100 - ($B::numeric / $RAW * 100))")% off, $PACKED packed"

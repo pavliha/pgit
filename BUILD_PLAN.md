@@ -655,6 +655,27 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   it is *prefix every local and every alias mechanically*, including in trigger bodies, where the
   colliding name comes from a user's schema rather than from this codebase.
 
+- **diff was 16x slower than it needed to be** — `bench/realworld_imdb.sh`, versioning IMDb's nightly
+  ratings feed (12.7M + 1.7M rows, 2.6 GB). 10 pgTAP assertions.
+  Diffing 30 nights apart returned 83,798 changed rows in **608 s**, against a design goal of
+  O(difference). The descent was fine; the resolution was not. After 30 nights nearly every chunk
+  differs, so the descent yields ~3.4M candidate keys, and `diff_tree` discarded everything the
+  descent knew about them and did **two root-to-leaf walks per candidate** to decide. The descent
+  already carries each candidate's row hash on both sides, so a key present on both is decided by
+  comparing them. **608 s → 37 s**, same 83,798 rows, measured as an A/B on the same database with
+  only the function replaced.
+  **The obvious version of this is wrong, and it is worth writing down why.** A key seen on only one
+  side proves nothing: the descent skips chunk pairs that are *identical*, so an unchanged row can be
+  emitted from side `a` while its counterpart on side `b` sits in a chunk that was never visited.
+  Treating one sided keys as inserts or deletes reports rows that never changed — a contiguous range
+  delete triggers it. Those keys still need a lookup; only the two sided majority avoid one.
+  This was proposed on a reading of the pairing join that said the lookups were vestigial. They are
+  not, and `BUILD_PLAN` already said so. The first version passed all four existing diff tests
+  including the journal oracle, and was caught only by `test/diff_05_descent_oracle.sql`, which
+  computes the diff by full scanning both trees and joining on the key — **no shared code with the
+  thing under test**. A differential oracle earns its place precisely when the plausible-looking
+  change is wrong.
+
 ## Reference
 
 Postgres.md`.

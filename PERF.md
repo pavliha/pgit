@@ -247,6 +247,39 @@ Depth 16 is available for 64% at roughly 2× reads.
 Run-to-run variance on these timings is around 25% — the depth-0 baseline measured 167 ms and 213 ms
 on two runs — so only the large gaps here are meaningful.
 
+### Versioning a real 2.6 GB dataset
+
+IMDb republishes `title.ratings` every night, so "commit tonight's ratings" is the workload this
+exists for rather than a stand-in for it. `bench/realworld_imdb.sh` loads `title.basics` (12.7M rows,
+1.9 GB) and `title.ratings` (1.7M rows, 136 MB), then applies 30 nightly updates weighted to popular
+titles — about 5,300 scattered rows a night.
+
+| | before | after |
+| --- | --- | --- |
+| first commit, 14.4M rows | 349 s | 349 s |
+| node store after that commit | 1,888 MB against 2,595 MB of data — **0.73×** | |
+| mean nightly commit | 45,387 ms | **16,455 ms** |
+| diff across all 30 nights, 83,798 rows | 608,562 ms | **37,177 ms** |
+| diff of the 12.7M row table nobody touched | ~6 min | **100 ms** |
+
+The diff figures are a controlled A/B: same database, same trees, same 83,798 rows returned, only the
+function replaced. The nightly figure excludes the fixture's own scan and update, which are 707 ms a
+night — worth measuring separately, because the harness used to charge them to pgit and they turned
+out to be 1.5% of the total rather than the explanation.
+
+**Diff was doing two root-to-leaf walks per candidate row.** After 30 nights nearly every chunk
+differs, so the descent yields ~3.4M candidate keys to find 83,798 changed rows, and each candidate
+cost two tree walks to resolve. The descent already knows every candidate's row hash on both sides,
+so a key seen on both sides is decided by comparing them, with no walk at all.
+
+The subtlety that makes this a two-line fix rather than a one-line one: **a key seen on only one side
+proves nothing.** The descent skips chunk pairs that are identical, so an unchanged row can be
+emitted from side `a` while its counterpart on side `b` lives in a chunk that was never visited.
+Treating that as a delete reports rows that never changed, and a contiguous range delete triggers it.
+Those keys still need the lookup. The first version of this change did not, passed every existing
+diff test, and was caught only by `test/diff_05_descent_oracle.sql` — which computes the same diff by
+full-scanning both trees and joining on the key, sharing no code with the descent.
+
 ### Commit cost depends on the shape of the change, not just its size
 
 Every commit figure quoted above comes from a fixture that updates **ten adjacent rows**, which is
