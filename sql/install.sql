@@ -1566,14 +1566,25 @@ BEGIN
     SELECT x.root_hash INTO oroot FROM pgit.trees x WHERE x.commit_sha = our_sha   AND x.tbl = t.name;
     SELECT x.root_hash INTO troot FROM pgit.trees x WHERE x.commit_sha = their_sha AND x.tbl = t.name;
 
+    -- Both diffs already carry the images: diff_tree(base, ours) returns base's
+    -- row as before and ours as after, and likewise for theirs. Looking each key
+    -- up again cost three tree walks per candidate - 5,688 walks on a 100k row
+    -- cherry pick - to fetch rows the descent had just read. A key missing from
+    -- one diff means that side did not change it, so that side's image is the
+    -- base image.
     FOR key IN
-      SELECT d.k AS kk FROM pgit.diff_tree(broot, oroot) d
-      UNION
-      SELECT d.k AS kk FROM pgit.diff_tree(broot, troot) d
+      SELECT COALESCE(dobj.k, dthr.k) AS kk,
+             COALESCE(dobj.b, dthr.b) AS bimg,
+             CASE WHEN dobj.k IS NULL THEN dthr.b ELSE dobj.o END AS oimg,
+             CASE WHEN dthr.k IS NULL THEN dobj.b ELSE dthr.t END AS timg
+      FROM (SELECT d.k, d.before AS b, d.after AS o FROM pgit.diff_tree(broot, oroot) d) dobj
+      FULL OUTER JOIN
+           (SELECT d.k, d.before AS b, d.after AS t FROM pgit.diff_tree(broot, troot) d) dthr
+        ON dthr.k = dobj.k
     LOOP
-      SELECT l.v INTO bimg FROM pgit.lookup(broot, key.kk) l;
-      SELECT l.v INTO oimg FROM pgit.lookup(oroot, key.kk) l;
-      SELECT l.v INTO timg FROM pgit.lookup(troot, key.kk) l;
+      bimg := key.bimg;
+      oimg := key.oimg;
+      timg := key.timg;
 
       IF oimg IS NOT DISTINCT FROM timg THEN CONTINUE; END IF;
 
