@@ -357,6 +357,33 @@ remaining gap.
 Mean commit cost in one long transaction also grew from **16 ms at 500 commits to 34 ms at 10,000**,
 as `pgit.changes` accumulated 100,000 rows and the node table grew. Roughly 2× for 20× the commits.
 
+## Whole-node deltas
+
+`repack` used to delta the `entries` column alone. Once a node became three columns, the other two —
+`keys` and `hashes` — were stored in full for every version, and they are the *majority* of a node:
+78% on the delta fixture, 83% on narrow rows, 30–38% on wide ones. `gc` effectiveness collapsed from
+54–73% to **10%**.
+
+It now deltas the whole node, serialised as `[hashes, keys, images]` — three parts so the op list can
+align them, rather than one value where a changed hash near the front and a changed image further
+back force one splice to span everything between.
+
+| 200k rows, 22 commits | entries-only deltas | whole-node deltas |
+| --- | --- | --- |
+| node store after `gc` | 97 MB — 10% off | **46 MB — 58% off** |
+| `repack` runtime | 171 s | **55 s** |
+| commit, 100 adjacent / 2,000 scattered | 13 ms / 394 ms | 13 ms / 394 ms |
+
+On the delta test fixture: 1,381 kB → 506 kB, with a mean delta of **228 bytes against a 3,627 byte
+node**.
+
+Two things this cost, both worth recording. The parts must be embedded as jsonb, not as text: putting
+the images in as `entries::text` escapes every quote in every row image and inflates exactly the
+payload the delta has to carry. And `node_cols`, which resolves a node through its delta chain, must
+not be called for nodes that are not packed — putting it on the unconditional read path made the test
+suite time out, because every node access became a PL/pgSQL call. A `CASE` short-circuits it so only
+packed nodes pay.
+
 ## The packed node format
 
 A node used to be a jsonb array of `{k, h, v}`. It is now three columns: `keys text[]`, `hashes

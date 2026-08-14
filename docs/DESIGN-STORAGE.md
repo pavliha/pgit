@@ -138,9 +138,11 @@ target ever exists, the node codec is the first and probably only thing worth mo
 Each step is independently valuable and independently verifiable. `bench/quick.sh` runs the whole
 shape set in 23 seconds, so each can be measured before the next is started.
 
-1. **Delta the vectors in `repack`.** Smallest change that recovers `gc`. Verifies the diagnosis: if
-   effectiveness does not return to 50%+, the analysis above is wrong and the rest should not be
-   built. *Checkpoint: `GC=1 bench/quick.sh` returns to >50% off.*
+1. ~~**Delta the vectors in `repack`.**~~ **Done.** `repack` now deltas the whole node — the three
+   parts serialised as `[hashes, keys, images]` so the op list can align them — rather than the
+   entries column alone. *Checkpoint met: 10% off → **58% off**, and `repack` itself went 171 s →
+   55 s because it writes far less.* On the delta test fixture, 1,381 kB → 506 kB with a mean delta
+   of 228 B against a 3,627 B node.
 2. **Single byte string per node.** Subsumes step 1 and makes deltas whole-node by construction.
    Touches every consumer of `node_items`, which is now the single accessor — that refactor is
    already done, which is what makes this tractable.
@@ -164,10 +166,11 @@ recover `gc`? Measured over 3,000 consecutive node-version pairs from `bench/qui
 | today — delta over `entries`, vectors stored whole | 13 MB | **15% off** |
 | **delta over the whole node** | **8,147 kB** | **46% off** |
 
-**Confirmed: tripling effectiveness, 15% → 46%.** Steps 1 and 2 are worth building. It does not fully
-return to the 54–73% the pre-packed format reached, so the expectation in the table above — "back to
-git-like ratios" — is too optimistic and should be read as "roughly half the store, not nine tenths".
-Whether packs close the rest is exactly what step 3 would test.
+**Confirmed: tripling effectiveness, 15% → 46%** in the sampled pairs, and **58%** once built and
+measured end to end — better than the sample predicted, because `repack` also stops writing the
+vectors it used to keep in full. Step 1 is done. The expectation in the table above — "back to
+git-like ratios" — is still too optimistic; read it as "roughly half to three fifths of the store".
+Whether packs close the rest is what step 3 would test.
 
 One trap worth recording, because it produced a confident wrong answer first. Measuring the same
 thing with the node serialised as a **single** value gave 45 MB — three times *worse* than doing

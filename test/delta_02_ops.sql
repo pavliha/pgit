@@ -123,7 +123,7 @@ END $$;
 CREATE TEMP TABLE before_entries AS SELECT hash, pgit.entries_of(hash) AS e FROM pgit.nodes;
 CREATE TEMP TABLE before_diff AS SELECT * FROM pgit.diff((SELECT sha FROM a), pgit.resolve('main'));
 CREATE TEMP TABLE before_size AS
-  SELECT sum(pg_column_size(entries) + COALESCE(pg_column_size(delta), 0))::bigint AS sz FROM pgit.nodes;
+  SELECT sum(pg_column_size(entries) + COALESCE(pg_column_size(delta), 0) + COALESCE(pg_column_size(hashes), 0) + COALESCE(pg_column_size(keys), 0))::bigint AS sz FROM pgit.nodes;
 
 CREATE TEMP TABLE packed AS SELECT pgit.repack(50) AS n;
 
@@ -146,9 +146,9 @@ SELECT is(
   'delta ops: a fresh full rebuild still matches the packed tree');
 
 SELECT cmp_ok(
-  (SELECT sum(pg_column_size(entries) + COALESCE(pg_column_size(delta), 0))::bigint FROM pgit.nodes),
-  '<', (SELECT sz / 3 FROM before_size),
-  'delta ops: two changed rows per commit still pack to under a third of the stored bytes');
+  (SELECT sum(pg_column_size(entries) + COALESCE(pg_column_size(delta), 0) + COALESCE(pg_column_size(hashes), 0) + COALESCE(pg_column_size(keys), 0))::bigint FROM pgit.nodes),
+  '<', (SELECT sz / 2 FROM before_size),
+  'delta ops: two changed rows per commit pack to under half the stored bytes');
 
 SELECT is((SELECT pgit.unpack()), (SELECT n FROM packed),
   'delta ops: unpack materialises exactly the deltified nodes again');

@@ -18,7 +18,7 @@ CREATE TEMP TABLE before_trees   AS SELECT commit_sha, tbl, root_hash FROM pgit.
 CREATE TEMP TABLE before_diff    AS SELECT * FROM pgit.diff((SELECT sha FROM a), pgit.resolve('main'));
 CREATE TEMP TABLE before_blame   AS SELECT * FROM pgit.blame('t', '2100');
 CREATE TEMP TABLE before_size    AS
-  SELECT sum(pg_column_size(entries) + COALESCE(pg_column_size(delta), 0))::bigint AS sz,
+  SELECT sum(pg_column_size(entries) + COALESCE(pg_column_size(delta), 0) + COALESCE(pg_column_size(hashes), 0) + COALESCE(pg_column_size(keys), 0))::bigint AS sz,
          count(*) AS n FROM pgit.nodes;
 
 CREATE TEMP TABLE packed AS SELECT pgit.repack() AS n;
@@ -64,7 +64,7 @@ SELECT is(
 );
 
 SELECT cmp_ok(
-  (SELECT sum(pg_column_size(entries) + COALESCE(pg_column_size(delta), 0))::bigint FROM pgit.nodes),
+  (SELECT sum(pg_column_size(entries) + COALESCE(pg_column_size(delta), 0) + COALESCE(pg_column_size(hashes), 0) + COALESCE(pg_column_size(keys), 0))::bigint FROM pgit.nodes),
   '<', (SELECT sz * 3 / 4 FROM before_size),
   'repack: the default depth cuts stored bytes by at least a quarter'
 );

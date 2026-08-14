@@ -223,7 +223,7 @@ CREATE INDEX IF NOT EXISTS nodes_base_idx ON pgit.nodes (base_hash);
 -- install over them instead.
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM pgit.nodes WHERE keys IS NULL LIMIT 1) THEN
+  IF EXISTS (SELECT 1 FROM pgit.nodes WHERE keys IS NULL AND entries IS NOT NULL LIMIT 1) THEN
     RAISE EXCEPTION 'pgit: this database holds nodes from the pre-packed format. '
       'Rebuild them before upgrading: your tables are the source of truth, so '
       'SELECT pgit.write_tree(tbl) FROM pgit.tracked reproduces every tree.';
@@ -408,36 +408,60 @@ LANGUAGE sql IMMUTABLE AS $$
   SELECT pgit.apply_delta_txt(base::text, d)::jsonb
 $$;
 
-CREATE OR REPLACE FUNCTION pgit.entries_of(h bytea) RETURNS jsonb
+-- A node serialised as the three parts a delta can align on. Keeping them apart
+-- matters: with the whole node as one value, a changed hash near the front and a
+-- changed image further back force one splice to span everything between them,
+-- and the delta measured three times worse than storing the node whole.
+CREATE OR REPLACE FUNCTION pgit.node_parts(hs bytea, ks text[], es jsonb) RETURNS jsonb
+LANGUAGE sql IMMUTABLE AS $$
+  -- es goes in as jsonb, not as its text: embedding it as a string escapes every
+  -- quote in every row image, inflating exactly the part the delta has to carry.
+  SELECT jsonb_build_array(encode(hs, 'hex'), array_to_string(ks, E'\n'), es)
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.node_cols(h bytea)
+RETURNS TABLE (hashes bytea, keys text[], entries jsonb)
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
   chain jsonb[] := '{}';
   cur   bytea   := h;
-  acc   jsonb;
+  rec   record;
+  parts jsonb;
   txt   text;
-  nxt   bytea;
-  dl    jsonb;
   i     int;
 BEGIN
   LOOP
-    SELECT n.entries, n.base_hash, n.delta INTO acc, nxt, dl
-    FROM pgit.nodes n WHERE n.hash = cur;
-    IF NOT FOUND THEN RETURN NULL; END IF;
-    EXIT WHEN acc IS NOT NULL;
-    chain := chain || dl;
-    cur := nxt;
+    SELECT n.hashes AS hs, n.keys AS ks, n.entries AS es, n.base_hash AS bh, n.delta AS dl
+    INTO rec FROM pgit.nodes n WHERE n.hash = cur;
+    IF NOT FOUND THEN RETURN; END IF;
+    EXIT WHEN rec.es IS NOT NULL;
+    chain := chain || rec.dl;
+    cur := rec.bh;
   END LOOP;
 
-  IF array_length(chain, 1) IS NULL THEN RETURN acc; END IF;
+  IF array_length(chain, 1) IS NULL THEN
+    RETURN QUERY SELECT rec.hs, rec.ks, rec.es;
+    RETURN;
+  END IF;
 
-  txt := acc::text;
-
+  txt := pgit.node_parts(rec.hs, rec.ks, rec.es)::text;
   FOR i IN REVERSE array_length(chain, 1)..1 LOOP
     txt := pgit.apply_delta_txt(txt, chain[i]);
   END LOOP;
+  parts := txt::jsonb;
 
-  RETURN txt::jsonb;
+  RETURN QUERY SELECT decode(parts ->> 0, 'hex'),
+                      CASE WHEN parts ->> 1 = '' THEN '{}'::text[]
+                           ELSE string_to_array(parts ->> 1, E'\n') END,
+                      parts -> 2;
 END $$;
+
+CREATE OR REPLACE FUNCTION pgit.entries_of(h bytea) RETURNS jsonb
+LANGUAGE sql STABLE AS $$
+  -- Deltas cover the whole node, not the entries column alone, so resolving a
+  -- chain means resolving all three parts and taking one of them.
+  SELECT c.entries FROM pgit.node_cols(h) c
+$$;
 
 CREATE TABLE IF NOT EXISTS pgit.tracked (
   tbl     regclass PRIMARY KEY,
@@ -808,9 +832,16 @@ LANGUAGE sql STABLE AS $$
   -- keys[i] instead is quadratic: a text[] holds variable length elements, so
   -- Postgres walks from the start of the array for every subscript, and a 674
   -- entry node costs ~227,000 element steps to iterate.
+  -- An unpacked node reads its own columns; only a delta'd one pays for
+  -- resolution. CASE short-circuits, so the resolver is not called otherwise —
+  -- putting it on every read made the suite time out.
   WITH node AS MATERIALIZED (
-    SELECT n.keys AS keys, n.hashes AS hashes,
-           COALESCE(n.entries, pgit.entries_of(n.hash)) AS arr
+    SELECT CASE WHEN n.entries IS NOT NULL THEN n.keys
+                ELSE (SELECT c.keys FROM pgit.node_cols(n.hash) c) END AS keys,
+           CASE WHEN n.entries IS NOT NULL THEN n.hashes
+                ELSE (SELECT c.hashes FROM pgit.node_cols(n.hash) c) END AS hashes,
+           CASE WHEN n.entries IS NOT NULL THEN n.entries
+                ELSE (SELECT c.entries FROM pgit.node_cols(n.hash) c) END AS arr
     FROM pgit.nodes n WHERE n.hash = h
   ),
   ks AS (SELECT t.key, t.ord FROM node, unnest(node.keys) WITH ORDINALITY t(key, ord)),
@@ -2353,20 +2384,23 @@ BEGIN
     prev_hash := NULL; prev_entries := NULL; d := 0;
 
     FOR g IN
-      SELECT n.hash, n.entries FROM pgit.nodes n
+      SELECT n.hash, n.entries, n.hashes, n.keys FROM pgit.nodes n
       WHERE n.level = grp.lv AND n.keys[1] = grp.fk AND n.entries IS NOT NULL
       ORDER BY n.seq DESC
     LOOP
       IF prev_hash IS NULL OR d >= max_depth THEN
-        prev_hash := g.hash; prev_entries := g.entries; d := 0;
+        prev_hash := g.hash;
+        prev_entries := pgit.node_parts(g.hashes, g.keys, g.entries);
+        d := 0;
         CONTINUE;
       END IF;
 
-      cand := pgit.make_delta(prev_entries, g.entries);
+      cand := pgit.make_delta(prev_entries, pgit.node_parts(g.hashes, g.keys, g.entries));
 
-      IF pg_column_size(cand) < pg_column_size(g.entries) THEN
+      IF pg_column_size(cand)
+         < pg_column_size(g.entries) + pg_column_size(g.hashes) + pg_column_size(g.keys) THEN
         UPDATE pgit.nodes
-        SET delta = cand, base_hash = prev_hash, entries = NULL
+        SET delta = cand, base_hash = prev_hash, entries = NULL, hashes = NULL, keys = NULL
         WHERE hash = g.hash;
         packed := packed + 1;
         d := d + 1;
@@ -2374,7 +2408,8 @@ BEGIN
         d := 0;
       END IF;
 
-      prev_hash := g.hash; prev_entries := g.entries;
+      prev_hash := g.hash;
+      prev_entries := pgit.node_parts(g.hashes, g.keys, g.entries);
     END LOOP;
   END LOOP;
 
@@ -2387,10 +2422,12 @@ DECLARE
   n int;
 BEGIN
   WITH resolved AS (
-    SELECT x.hash, pgit.entries_of(x.hash) AS e FROM pgit.nodes x WHERE x.entries IS NULL
+    SELECT x.hash, c.hashes, c.keys, c.entries
+    FROM pgit.nodes x CROSS JOIN LATERAL pgit.node_cols(x.hash) c
+    WHERE x.entries IS NULL
   )
   UPDATE pgit.nodes t
-  SET entries = r.e, base_hash = NULL, delta = NULL
+  SET entries = r.entries, hashes = r.hashes, keys = r.keys, base_hash = NULL, delta = NULL
   FROM resolved r WHERE t.hash = r.hash;
 
   GET DIAGNOSTICS n = ROW_COUNT;
@@ -2942,16 +2979,17 @@ RETURNS TABLE (problem text, detail text)
 LANGUAGE sql STABLE AS $$
   SELECT 'node hash mismatch', encode(n.hash, 'hex')
   FROM pgit.nodes n
-  WHERE n.hash <> pgit.hash(COALESCE(n.hashes, ''::bytea))
+  WHERE n.hash <> pgit.hash(COALESCE((SELECT c.hashes FROM pgit.node_cols(n.hash) c), ''::bytea))
 
   UNION ALL
   SELECT 'node vectors disagree', encode(n.hash, 'hex')
   FROM pgit.nodes n
-  WHERE COALESCE(array_length(n.keys, 1), 0) * 32 <> COALESCE(octet_length(n.hashes), 0)
+  WHERE n.entries IS NOT NULL
+    AND COALESCE(array_length(n.keys, 1), 0) * 32 <> COALESCE(octet_length(n.hashes), 0)
 
   UNION ALL
   SELECT 'node has no key vector', encode(n.hash, 'hex')
-  FROM pgit.nodes n WHERE n.keys IS NULL
+  FROM pgit.nodes n WHERE n.entries IS NOT NULL AND n.keys IS NULL
 
   UNION ALL
   SELECT 'delta base missing', encode(n.hash, 'hex')
