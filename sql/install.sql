@@ -218,6 +218,18 @@ ALTER TABLE pgit.nodes ADD COLUMN IF NOT EXISTS keys   text[];
 
 CREATE INDEX IF NOT EXISTS nodes_base_idx ON pgit.nodes (base_hash);
 
+-- Nodes written before the packed format have no key vector, and every reader
+-- drives off it — they would read as empty rather than failing. Refuse to
+-- install over them instead.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pgit.nodes WHERE keys IS NULL LIMIT 1) THEN
+    RAISE EXCEPTION 'pgit: this database holds nodes from the pre-packed format. '
+      'Rebuild them before upgrading: your tables are the source of truth, so '
+      'SELECT pgit.write_tree(tbl) FROM pgit.tracked reproduces every tree.';
+  END IF;
+END $$;
+
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'nodes_stored_or_delta') THEN
@@ -792,13 +804,21 @@ END $$;
 CREATE OR REPLACE FUNCTION pgit.node_items(h bytea)
 RETURNS TABLE (k text, ch text, v jsonb)
 LANGUAGE sql STABLE AS $$
-  SELECT n.keys[i],
-         encode(substring(n.hashes FROM (i - 1) * 32 + 1 FOR 32), 'hex'),
-         e.arr -> (i - 1)
-  FROM pgit.nodes n
-  CROSS JOIN LATERAL (SELECT COALESCE(n.entries, pgit.entries_of(n.hash)) AS arr) e
-  CROSS JOIN generate_subscripts(n.keys, 1) i
-  WHERE n.hash = h
+  -- Both vectors are walked once with ORDINALITY and paired on it. Subscripting
+  -- keys[i] instead is quadratic: a text[] holds variable length elements, so
+  -- Postgres walks from the start of the array for every subscript, and a 674
+  -- entry node costs ~227,000 element steps to iterate.
+  WITH node AS MATERIALIZED (
+    SELECT n.keys AS keys, n.hashes AS hashes,
+           COALESCE(n.entries, pgit.entries_of(n.hash)) AS arr
+    FROM pgit.nodes n WHERE n.hash = h
+  ),
+  ks AS (SELECT t.key, t.ord FROM node, unnest(node.keys) WITH ORDINALITY t(key, ord)),
+  vs AS (SELECT t.el, t.ord FROM node, jsonb_array_elements(node.arr) WITH ORDINALITY t(el, ord))
+  SELECT ks.key,
+         encode(substring(node.hashes FROM (ks.ord - 1)::int * 32 + 1 FOR 32), 'hex'),
+         vs.el
+  FROM node, ks LEFT JOIN vs ON vs.ord = ks.ord
 $$;
 
 CREATE OR REPLACE FUNCTION pgit.lookup(root bytea, key_hex text)
@@ -2928,6 +2948,10 @@ LANGUAGE sql STABLE AS $$
   SELECT 'node vectors disagree', encode(n.hash, 'hex')
   FROM pgit.nodes n
   WHERE COALESCE(array_length(n.keys, 1), 0) * 32 <> COALESCE(octet_length(n.hashes), 0)
+
+  UNION ALL
+  SELECT 'node has no key vector', encode(n.hash, 'hex')
+  FROM pgit.nodes n WHERE n.keys IS NULL
 
   UNION ALL
   SELECT 'delta base missing', encode(n.hash, 'hex')
