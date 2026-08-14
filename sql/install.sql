@@ -889,25 +889,51 @@ LANGUAGE sql STABLE AS $$
   FROM node, ks LEFT JOIN vs ON vs.ord = ks.ord
 $$;
 
+-- A node's three columns, resolved through a delta chain only when it has one.
+-- Callers that compare hashes do not want them hex encoded first: node_items
+-- encodes every entry, and a leaf comparison discards all but the few that
+-- differ.
+CREATE OR REPLACE FUNCTION pgit.node_raw(h bytea)
+RETURNS TABLE (keys text[], hashes bytea, entries jsonb)
+LANGUAGE sql STABLE AS $$
+  SELECT CASE WHEN n.entries IS NOT NULL THEN n.keys
+              ELSE (SELECT c.keys FROM pgit.node_cols(n.hash) c) END,
+         CASE WHEN n.entries IS NOT NULL THEN n.hashes
+              ELSE (SELECT c.hashes FROM pgit.node_cols(n.hash) c) END,
+         CASE WHEN n.entries IS NOT NULL THEN n.entries
+              ELSE (SELECT c.entries FROM pgit.node_cols(n.hash) c) END
+  FROM pgit.nodes n WHERE n.hash = h
+$$;
+
 CREATE OR REPLACE FUNCTION pgit.leaf_diff(a bytea, b bytea)
 RETURNS TABLE (side text, k text, rh text, v jsonb)
 LANGUAGE sql STABLE AS $$
+  WITH an AS MATERIALIZED (SELECT * FROM pgit.node_raw(a)),
+       bn AS MATERIALIZED (SELECT * FROM pgit.node_raw(b)),
+       ae AS MATERIALIZED (
+         SELECT t.key, t.ord, substring(an.hashes FROM (t.ord - 1)::int * 32 + 1 FOR 32) AS h
+         FROM an, unnest(an.keys) WITH ORDINALITY t(key, ord)
+       ),
+       be AS MATERIALIZED (
+         SELECT t.key, t.ord, substring(bn.hashes FROM (t.ord - 1)::int * 32 + 1 FOR 32) AS h
+         FROM bn, unnest(bn.keys) WITH ORDINALITY t(key, ord)
+       ),
+       dd AS (
+         SELECT 'a'::text AS s, ae.key, ae.h, ae.ord FROM ae LEFT JOIN be ON be.key = ae.key
+           WHERE be.key IS NULL OR be.h IS DISTINCT FROM ae.h
+         UNION ALL
+         SELECT 'b'::text, be.key, be.h, be.ord FROM be LEFT JOIN ae ON ae.key = be.key
+           WHERE ae.key IS NULL OR ae.h IS DISTINCT FROM be.h
+       )
+  SELECT dd.s, dd.key, encode(dd.h, 'hex'),
+         CASE WHEN dd.s = 'a' THEN (SELECT an.entries -> (dd.ord - 1)::int FROM an)
+              ELSE (SELECT bn.entries -> (dd.ord - 1)::int FROM bn) END
+  FROM dd
+  WHERE a IS NOT NULL AND b IS NOT NULL
+  UNION ALL
   SELECT 'b'::text, l.k, l.rh, l.v FROM pgit.leaves(b) l WHERE a IS NULL
   UNION ALL
   SELECT 'a'::text, l.k, l.rh, l.v FROM pgit.leaves(a) l WHERE b IS NULL
-  UNION ALL
-  SELECT q.side, q.k, q.rh, q.v FROM (
-    WITH ai AS MATERIALIZED (SELECT i.k, i.ch, i.v FROM pgit.node_items(a) i),
-         bi AS MATERIALIZED (SELECT i.k, i.ch, i.v FROM pgit.node_items(b) i)
-    SELECT 'a'::text AS side, ai.k, ai.ch AS rh, ai.v
-      FROM ai LEFT JOIN bi ON bi.k = ai.k
-      WHERE bi.k IS NULL OR bi.ch IS DISTINCT FROM ai.ch
-    UNION ALL
-    SELECT 'b'::text, bi.k, bi.ch, bi.v
-      FROM bi LEFT JOIN ai ON ai.k = bi.k
-      WHERE ai.k IS NULL OR ai.ch IS DISTINCT FROM bi.ch
-  ) q
-  WHERE a IS NOT NULL AND b IS NOT NULL
 $$;
 
 -- The descent carries only node hashes, never row images. Returning images from
