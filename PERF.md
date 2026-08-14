@@ -357,6 +357,28 @@ remaining gap.
 Mean commit cost in one long transaction also grew from **16 ms at 500 commits to 34 ms at 10,000**,
 as `pgit.changes` accumulated 100,000 rows and the node table grew. Roughly 2× for 20× the commits.
 
+## What tracking a table actually costs
+
+Re-measured after the commit and diff work, on a 1M-row table with four columns.
+
+| | untracked | tracked | |
+| --- | --- | --- | --- |
+| `SELECT` scan + range scan | 26–31 ms | 26–29 ms | **free, within noise over 3 runs** |
+| `UPDATE` 10,000 rows | 26–30 ms | 146–183 ms | |
+| `INSERT` 10,000 rows | 6 ms | 91 ms | |
+| `DELETE` 10,000 rows | — | 100 ms | |
+| journal storage | — | **296 bytes per changed row** | before and after images |
+
+**Reads are unaffected**, which had been argued from structure and is now measured: pgit's triggers
+are write-side and the data never moves. It does add one expression index to the tracked table for
+canonical key lookups, which costs on the write path and in storage.
+
+**The write multiplier is not a stable number, and quoting one is misleading.** The tracked cost is
+steady at roughly **15 µs per changed row**; what moves is the baseline it is compared against. The
+same 10,000-row `UPDATE` measured 15 ms on freshly loaded pages and 26–30 ms once those rows had
+been updated before, so the same absolute overhead reads as anywhere from **5× to 12×**. The 10.1×
+below is one baseline, not a constant. Per changed row is the figure to design against.
+
 ## Why write amplification is still 10× (AC-PERF-05)
 
 Moving from a per-row trigger to `FOR EACH STATEMENT` with transition tables took 10,000 updates
