@@ -1958,10 +1958,17 @@ BEGIN
     INSERT INTO pgit_l1hit VALUES (1);
   END IF;
 
-  INSERT INTO pgit_l1hit
-  SELECT DISTINCT h.rn + d FROM pgit_l1hit h, (VALUES (-1), (1)) AS s(d)
-  WHERE h.rn + d BETWEEN 1 AND (SELECT max(rn) FROM pgit_l1)
-    AND h.rn + d NOT IN (SELECT rn FROM pgit_l1hit);
+  -- The neighbour on each side is only needed because a chunk boundary may have
+  -- moved, splitting or merging chunks. A boundary is is_boundary(key), so only
+  -- an inserted or deleted key can move one: for pure updates this widening
+  -- doubles the work for nothing. Measured, it was 11,308 chunks rebuilt to
+  -- change 5,000 rows.
+  IF NOT pure_updates THEN
+    INSERT INTO pgit_l1hit
+    SELECT DISTINCT h.rn + d FROM pgit_l1hit h, (VALUES (-1), (1)) AS s(d)
+    WHERE h.rn + d BETWEEN 1 AND (SELECT max(rn) FROM pgit_l1)
+      AND h.rn + d NOT IN (SELECT rn FROM pgit_l1hit);
+  END IF;
 
   TRUNCATE pgit_old;
   INSERT INTO pgit_old
@@ -1984,10 +1991,17 @@ BEGIN
     INSERT INTO pgit_hit VALUES (1);
   END IF;
 
-  INSERT INTO pgit_hit
-  SELECT DISTINCT h.rn + d FROM pgit_hit h, (VALUES (-1), (1)) AS s(d)
-  WHERE h.rn + d BETWEEN 1 AND (SELECT max(rn) FROM pgit_old)
-    AND h.rn + d NOT IN (SELECT rn FROM pgit_hit);
+  -- The neighbour on each side is only needed because a chunk boundary may have
+  -- moved, splitting or merging chunks. A boundary is is_boundary(key), so only
+  -- an inserted or deleted key can move one: for pure updates this widening
+  -- doubles the work for nothing. Measured, it was 11,308 chunks rebuilt to
+  -- change 5,000 rows.
+  IF NOT pure_updates THEN
+    INSERT INTO pgit_hit
+    SELECT DISTINCT h.rn + d FROM pgit_hit h, (VALUES (-1), (1)) AS s(d)
+    WHERE h.rn + d BETWEEN 1 AND (SELECT max(rn) FROM pgit_old)
+      AND h.rn + d NOT IN (SELECT rn FROM pgit_hit);
+  END IF;
 
   -- Splicing cost tracks the number of leaf chunks touched; a full rebuild is one
   -- sequential pass and is flat. Past about three quarters of the tree the rebuild
