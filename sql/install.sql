@@ -218,27 +218,61 @@ BEGIN
   END IF;
 END $$;
 
-CREATE OR REPLACE FUNCTION pgit.apply_delta(base jsonb, d jsonb) RETURNS jsonb
-LANGUAGE sql IMMUTABLE AS $$
-  SELECT COALESCE(jsonb_agg(e ORDER BY e ->> 'k'), '[]'::jsonb)
-  FROM (
-    SELECT b AS e FROM jsonb_array_elements(base) b
-    WHERE b ->> 'k' NOT IN (SELECT jsonb_array_elements_text(COALESCE(d -> 'del', '[]'::jsonb)))
-      AND b ->> 'k' NOT IN (SELECT x ->> 'k' FROM jsonb_array_elements(COALESCE(d -> 'set', '[]'::jsonb)) x)
-    UNION ALL
-    SELECT x FROM jsonb_array_elements(COALESCE(d -> 'set', '[]'::jsonb)) x
-  ) q
-$$;
+CREATE OR REPLACE FUNCTION pgit.common_prefix(a text, b text) RETURNS int
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+  lo int := 0;
+  hi int := least(length(a), length(b));
+  mid int;
+BEGIN
+  WHILE lo < hi LOOP
+    mid := (lo + hi + 1) / 2;
+    IF substr(a, 1, mid) = substr(b, 1, mid) THEN lo := mid; ELSE hi := mid - 1; END IF;
+  END LOOP;
+  RETURN lo;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.common_suffix(a text, b text, cap int) RETURNS int
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+  lo int := 0;
+  hi int := greatest(cap, 0);
+  mid int;
+BEGIN
+  WHILE lo < hi LOOP
+    mid := (lo + hi + 1) / 2;
+    IF right(a, mid) = right(b, mid) THEN lo := mid; ELSE hi := mid - 1; END IF;
+  END LOOP;
+  RETURN lo;
+END $$;
 
 CREATE OR REPLACE FUNCTION pgit.make_delta(base jsonb, target jsonb) RETURNS jsonb
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+  a text := base::text;
+  b text := target::text;
+  p int;
+  sfx int;
+BEGIN
+  p := pgit.common_prefix(a, b);
+  sfx := pgit.common_suffix(a, b, least(length(a), length(b)) - p);
+
+  RETURN jsonb_build_object(
+    'p', p,
+    's', sfx,
+    'm', substr(b, p + 1, length(b) - p - sfx));
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.apply_delta_txt(base text, d jsonb) RETURNS text
 LANGUAGE sql IMMUTABLE AS $$
-  SELECT jsonb_build_object(
-    'del', (SELECT COALESCE(jsonb_agg(b ->> 'k'), '[]'::jsonb)
-            FROM jsonb_array_elements(base) b
-            WHERE b ->> 'k' NOT IN (SELECT t ->> 'k' FROM jsonb_array_elements(target) t)),
-    'set', (SELECT COALESCE(jsonb_agg(t), '[]'::jsonb)
-            FROM jsonb_array_elements(target) t
-            WHERE t NOT IN (SELECT b FROM jsonb_array_elements(base) b)))
+  SELECT substr(base, 1, (d ->> 'p')::int)
+      || (d ->> 'm')
+      || right(base, (d ->> 's')::int)
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.apply_delta(base jsonb, d jsonb) RETURNS jsonb
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT pgit.apply_delta_txt(base::text, d)::jsonb
 $$;
 
 CREATE OR REPLACE FUNCTION pgit.entries_of(h bytea) RETURNS jsonb
@@ -247,6 +281,7 @@ DECLARE
   chain bytea[] := '{}';
   cur   bytea   := h;
   acc   jsonb;
+  txt   text;
   nxt   bytea;
   dl    jsonb;
   i     int;
@@ -261,12 +296,14 @@ BEGIN
 
   IF array_length(chain, 1) IS NULL THEN RETURN acc; END IF;
 
+  txt := acc::text;
+
   FOR i IN REVERSE array_length(chain, 1)..1 LOOP
     SELECT n.delta INTO dl FROM pgit.nodes n WHERE n.hash = chain[i];
-    acc := pgit.apply_delta(acc, dl);
+    txt := pgit.apply_delta_txt(txt, dl);
   END LOOP;
 
-  RETURN acc;
+  RETURN txt::jsonb;
 END $$;
 
 CREATE TABLE IF NOT EXISTS pgit.tracked (
@@ -1924,7 +1961,7 @@ BEGIN
   END IF;
 END $$;
 
-CREATE OR REPLACE FUNCTION pgit.repack(max_depth int DEFAULT 1) RETURNS int
+CREATE OR REPLACE FUNCTION pgit.repack(max_depth int DEFAULT 4) RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
   grp          record;

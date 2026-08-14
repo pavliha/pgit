@@ -176,32 +176,38 @@ Built as a **repack step**, the way git does it: the write path is untouched and
 against the next newer one. Content addressing is preserved because a node's hash stays the hash of
 its logical content; the delta is purely a storage form. `pgit.unpack()` reverses it.
 
-Measured on 20k rows and 300 commits, with `VACUUM FULL` so the on-disk numbers are real:
+Measured on 20k rows and 300 commits, with `VACUUM FULL` so the on-disk numbers are real.
 
-| max_depth | deltified | node storage | diff |
+**The delta format was rewritten from a relational rebuild to byte splices**, and it is the
+difference between the feature being usable and not. The first version applied a delta by expanding
+the entries to rows, anti-joining, and re-aggregating with a sort — O(chunk) relational work *per
+hop*. The second stores each delta as `(prefix_len, suffix_len, middle)` against the serialised
+node and applies it with `substr` and `||`, which are memcpy inside Postgres. A chain now splices
+text through every hop and parses jsonb **once at the end** instead of rebuilding at each step.
+
+| max_depth | node storage | diff, relational delta | diff, byte splice |
 | --- | --- | --- | --- |
-| 0 (off) | 0 | 7,856 kB | 167 ms |
-| **1 (default)** | 452 | **5,208 kB — 34% off** | **186 ms — 11% slower** |
-| 2 | 603 | 4,328 kB — 45% off | 311 ms — 86% slower |
-| 4 | 722 | 3,632 kB — 54% off | 359 ms — 115% slower |
-| 8 | 803 | 3,160 kB — 60% off | 851 ms — 5× slower |
-| 50 | 887 | 2,664 kB — 66% off | 7,071 ms — **42× slower** |
+| 0 (off) | 7,856 kB | 167 ms | 213 ms |
+| 1 | 5,192 kB — 34% off | 186 ms | 312 ms |
+| **4 (default)** | **3,608 kB — 54% off** | 359 ms | **251 ms** |
+| 16 | 2,856 kB — 64% off | — | 472 ms |
+| 50 | 2,632 kB — 66% off | **7,071 ms** | **1,248 ms** |
+| 200 | 2,560 kB — 67% off | — | 4,184 ms |
 
-**Depth 1 is the default because it is the only point on this curve that is nearly free**: a third
-of the storage for a tenth of the read cost. Everything past 2 degrades sharply, and depth 50 — the
-value first tried — is unusable.
+At depth 50 the rewrite is **5.7× faster**. That moved the practical default from 1 to **4**: 54% of
+the node store for a read cost inside run-to-run noise, where before 54% would have cost 2× on reads.
+Depth 16 is available for 64% at roughly 2× reads.
 
-The reason is that applying a delta here rebuilds a 64-entry jsonb array and re-sorts it, so every
-hop costs O(chunk). Git's packfiles apply deltas as byte-level copies, which is why git can afford
-chains of 50 and pgit cannot. Closing that gap needs a compact binary node encoding, not a deeper
-chain.
+Run-to-run variance on these timings is around 25% — the depth-0 baseline measured 167 ms and 213 ms
+on two runs — so only the large gaps here are meaningful.
 
-Correctness is pinned by 10 assertions: after a repack every node resolves to byte-identical
-entries, no tree root changes, `diff` and `blame` return exactly the same rows, a fresh full rebuild
-still matches, and unpack restores the original bytes.
+**This did not require C.** The bottleneck was never the language, it was using jsonb as the node
+format on the hot path. Byte-level delta application was available in plain SQL as soon as the delta
+stopped being a relational operation.
 
-What pgit still does not do that git does: **byte-level delta application**, which is what would
-make deep chains affordable. Three
+What pgit still does not do that git does: **a packed binary node format**. Deltas now apply as byte
+copies, but each resolution still parses jsonb once at the end, and every entry still carries its
+column names. That last parse is what caps useful depth around 16. Three
 hundred near-identical chunk versions are stored in full. That, not blob separation, is the
 remaining gap.
 

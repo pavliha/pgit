@@ -363,6 +363,18 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   because `UPDATE` leaves dead tuples, so the first storage assertion failed on the instrument rather
   than the optimisation (fixed by summing `pg_column_size`); and a timing query that computed
   `clock_timestamp()` and the measured query in the same `SELECT` reported 0 ms for everything.
+- **byte-splice deltas** — no new assertions (240 + 15 + 9 all still green); the delta *format*
+  changed underneath them, which is the point: the tests never had to know. Deltas were a relational
+  rebuild — expand entries to rows, anti-join, re-aggregate with a sort — costing O(chunk) **per hop**.
+  They are now `(prefix_len, suffix_len, middle)` against the serialised node, applied with `substr`
+  and `||`, which are memcpy inside Postgres. A chain splices text through every hop and parses jsonb
+  **once at the end** instead of rebuilding at each step.
+  **At depth 50 that is 7,071 ms → 1,248 ms, 5.7× faster**, which moved the default from 1 to **4**:
+  54% of the node store for a read cost inside run-to-run noise. Depth 16 buys 64% at roughly 2×.
+  Worth recording why: this was raised as the case for rewriting in C, and **it did not need C**. The
+  bottleneck was never the language, it was using jsonb as the node format on the hot path. What is
+  still missing is a packed binary node format — every resolution parses jsonb once at the end and
+  every entry still carries its column names, and that last parse is what caps useful depth near 16.
 - **tooling** — the progress log above lost 11 entries to silent failure. They were appended with a
   Python `str.replace()` anchored on text that did not exist, and `replace()` returns the original
   string on no match, so every one reported success and wrote nothing. The `## Blocked` section
