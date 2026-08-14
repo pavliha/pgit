@@ -97,17 +97,61 @@ changed rows plus its ancestors — roughly four nodes — and a level-0 node ca
 image** of all ~64 rows in its chunk. Ten thousand commits therefore rewrite ~640,000 row images
 even though only 100,000 row versions were actually written.
 
-Three consequences, none of them a bug, all of them things an adopter must know before turning this
-on:
+Storage grows with **number of commits**, not with data size. A busy table committed per request
+will outgrow itself quickly. There is no `pgit gc`, and for a linear history there would be nothing
+for it to collect — what is actually needed is a **retention policy**, which does not exist yet.
 
-- Storage grows with **number of commits**, not with data size. A busy table committed per request
-  will outgrow itself quickly.
-- Dropping the leaf `v` image would remove most of this, at the cost of `diff` no longer being able
-  to emit before/after images without reading the live table. That is the same trade-off as
-  AC-PERF-05 above, and the same decision.
-- There is no `pgit gc` and, for a linear history, nothing for it to collect. What is actually
-  needed is a **retention policy** — dropping unreachable nodes after history is truncated — which
-  does not exist yet.
+### Two things measured here, one of which overturned the obvious fix
+
+**Separating blobs from trees, git-style, makes it worse.** The obvious fix looks like git: leaf
+nodes should hold `(key, hash)` only, with row images in a separate content-addressed blob table, so
+changing one row does not rewrite its 63 unchanged neighbours. Measured on 20k rows and 300 commits:
+
+| Layout | Size |
+| --- | --- |
+| Current — images inline in the chunk | **7,784 kB** |
+| Git-style — nodes 7,120 kB + blobs 6,664 kB | **13 MB** |
+
+Worse by 1.7×. The reason is compression context: pglz compresses a whole 64-row chunk as one unit,
+while 20,300 individually-stored blobs are each far below the TOAST threshold and get no compression
+at all. **The inline layout is accidentally closer to a git *packfile* than to git's loose objects**
+— and batching for the compressor is exactly why git packs.
+
+**`chunk_target` — measured at both scales, and the answer inverts.** At 20k rows, 16 looked like a
+29% storage win over 64. At 1M rows it is a **loss on storage and a rout on commit speed**:
+
+| | target 64 | target 16 | verdict |
+| --- | --- | --- | --- |
+| Initial commit (full build) | 9,638 ms | 9,730 ms | same |
+| **Commit 10 rows** | **20 ms** | 98 ms | **64 wins, 4.9×** |
+| **Commit 1000 rows** | **133 ms** | 830 ms | **64 wins, 6.2×** |
+| **Mean per commit over 200** | **16 ms** | 92 ms | **64 wins, 5.8×** |
+| Diff 10 rows | 119 ms | **56 ms** | 16 wins, 2.1× |
+| Diff 1000 rows | 439 ms | **177 ms** | 16 wins, 2.5× |
+| Diff across 200 commits | 599 ms | **198 ms** | 16 wins, 3× |
+| **Node storage** | **104 MB** | 132 MB | **64 wins, 27%** |
+| Node count | 16,711 | 67,681 | — |
+| Tree depth | 3 | 4 | — |
+
+The mechanism is depth. A smaller chunk makes each leaf rewrite cheaper but makes the tree deeper,
+and **every commit rewrites one node per level**. At 20k rows the tree is shallow enough that the
+smaller leaf wins; at 1M rows the extra level plus 4× the nodes costs more than the leaf saves — and
+`nodes_at_level(root, 1)`, which the incremental splice enumerates on every commit, grows from ~244
+entries to ~3,900.
+
+Diff moves the other way because a smaller chunk is a finer candidate granularity: the descent
+gathers whole chunks as candidates, so smaller chunks mean fewer spurious rows to resolve by point
+lookup.
+
+**Conclusion: keep 64.** Commits are far more frequent than diffs on a write path, 64 wins commits
+by ~6× and storage by 27%, and 119 ms for a diff is already acceptable. The real lesson is that the
+optimum is **scale-dependent**, so any fixed constant is wrong in principle — auto-tuning
+`chunk_target` from table size would beat both. And if diff latency is what matters, the lever is
+narrowing the candidate set, not shrinking chunks.
+
+What pgit still does not do that git does: **delta compression between object versions**. Three
+hundred near-identical chunk versions are stored in full. That, not blob separation, is the
+remaining gap.
 
 Mean commit cost in one long transaction also grew from **16 ms at 500 commits to 34 ms at 10,000**,
 as `pgit.changes` accumulated 100,000 rows and the node table grew. Roughly 2× for 20× the commits.

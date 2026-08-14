@@ -101,7 +101,28 @@ run `make test` until green, then tick the box and append a line to **Progress l
 plan recorded as uncovered is done. What remains is under **Blocked** — two product decisions, not
 engineering.
 
+## Blocked
 
+- **AC-PERF-05 needs a decision, not more code.** Write amplification is 10.1× against a 2× target,
+  and the remaining cost is the journal's *content*: two jsonb images per changed row. Profiling
+  shows `to_jsonb` is only ~5% of it — the rest is heap writes, WAL and index maintenance on
+  `pgit.changes`, which no amount of optimisation avoids. Options: (a) drop the `before` image and
+  have `blame` and the revert guard read it from the parent tree, (b) journal only changed columns,
+  or (c) decide 2× was the wrong number for a journal that stores full row images.
+  **Not moving the target unilaterally.**
+- **Storage retention needs a decision.** Ten thousand commits grew `pgit.nodes` to **540 MB against
+  a 107 MB table**, and none of it is collectable — every commit is reachable from `main`. Storage
+  scales with **commit count**, not data size, because each commit rewrites a leaf node carrying the
+  full row images of its whole chunk.
+  Two things were measured and both killed the obvious fixes. **Separating blobs from trees,
+  git-style, makes it 1.7× worse** — chunk-level compression beats per-row storage, because pglz
+  compresses a whole chunk as one unit while individual row blobs fall below the TOAST threshold.
+  And **`chunk_target=16` is worse than 64 at 1M rows** (6× slower commits, 27% more storage),
+  inverting a 20k-row result that suggested otherwise.
+  What remains: auto-tune `chunk_target` from table size (the optimum is scale-dependent, so any
+  constant is wrong in principle), add a retention policy, or implement **delta compression between
+  node versions** — the actual git technique, and the one thing pgit still lacks. `PERF.md` has all
+  the numbers.
 
 ## Follow-ups raised while building
 
@@ -112,11 +133,10 @@ engineering.
   dangling reference undetected. Before shipping partial revert, either re-validate the touched
   constraints afterwards or use `ALTER TABLE … DISABLE TRIGGER USER`, which suppresses only user
   triggers and leaves RI active (at the cost of an ACCESS EXCLUSIVE lock).
-- **Checkout across a schema change is impossible today.** `checkout` materialises data, not shape.
-  If HEAD added a column, the working table still has it after checking out a commit that predates
-  it, so `is_dirty` is permanently true and checkout refuses. Options: version DDL and replay it on
-  checkout, or refuse with a message naming the schema difference instead of the generic dirty
-  error. The second is an afternoon; the first is a project.
+- **Checkout across a schema change still only refuses politely.** `pgit.assert_live_schema` now
+  names the table and both column lists instead of blaming uncommitted changes, but `checkout` still
+  materialises data and not shape. Actually versioning DDL and replaying it on checkout is a project,
+  not an afternoon, and remains undone.
 - **The conflict guard is O(table) per revert.** `pgit.live_hash` computes `row_hashes` over the whole
   table for each key it checks. Correct but wasteful; it should become a keyed lookup before the
   perf gates.
@@ -261,6 +281,76 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   green total, because it only counted `ok` lines. It now parses each file's `1..N` plan and fails
   the suite when fewer assertions ran than were planned. Worth knowing that the first version of
   the harness would have hidden exactly the kind of failure this project must not hide.
+- **perf-1m** — no new assertions; the deliverable is `bench/` and `PERF.md`. **The read side works
+  and the write side did not, both structurally.** Diffing 10 changed rows of a million took 189 ms
+  and 1000 took 451 ms — 100× the changes for 2.4× the time, the O(difference) property holding on
+  real data. Commit was **flat**: 15,852 ms for ten rows, 16,846 for a thousand, because
+  `write_tree` rebuilt the whole tree every time. Write amplification 15.6×. No target was moved.
+- **ddl** — 9 assertions. Every commit records the **shape** of each tracked table, and
+  `assert_same_schema` guards cherry-pick and merge (AC-REPLAY-10, AC-MERGE-12). Decision: **no
+  event trigger** — it needs superuser and buys nothing, since the fingerprint recorded at commit is
+  what every guard reads, so the AC-PORT-04 fallback became the only path. AC-DDL-01 measured:
+  `ADD COLUMN` on 1M rows costs 20.0 s and doubles node storage, because the new tree shares nothing.
+  Test-authoring trap: the first AC-MERGE-12 attempt failed because merging an *ancestor* returns
+  early before reaching the guard — the code was right and the test was wrong.
+- **cli** — 15 checks, green first run. Bash over psql, no build step. AC-CLI-02 took the design
+  work: every command declares its allowed flags and anything else exits **129 naming the flag**, so
+  an unimplemented git flag can never be silently ignored.
+- **incremental tree maintenance (leaf level)** — 4 assertions. **Commit of 10 rows: 15,852 ms →
+  394 ms.** Built test-first against the only property that matters: over 30 rounds of random
+  operations plus a bulk delete and an append, the incrementally maintained root must equal the full
+  rebuild's root, checked by hash every round. The subtlety is chunk boundaries — deleting a boundary
+  key merges chunks and inserting one splits them, so the rebuilt region is **widened by one chunk
+  each side**. Three Postgres lessons: index expressions must be IMMUTABLE; a data-modifying CTE
+  cannot sit inside an `INSERT`'s source; and a temp table dropped and recreated in one function
+  invalidates cached plans in another.
+- **incremental upper levels** — 3 assertions. **Commit of 10 rows: 394 ms → 25 ms; 1000 rows:
+  3,241 ms → 135 ms.** AC-PERF-04 passes at 1M and AC-PERF-02 passes outright. The shortcut: splice
+  at **level 1** (~244 nodes at 1M, not 15,600 leaves) and build up from there.
+  **The lesson was self-inflicted.** I had wrapped index creation in `EXCEPTION WHEN others THEN
+  RAISE NOTICE`, and because `convert_to` is STABLE the index **never got created on any table** for
+  a whole tick — every range read was a sequential scan. A swallowed exception turned total failure
+  into a filtered-out notice. Fixing it (index the canonical text with `COLLATE "C"`) took the
+  10-row commit from 310 ms to 25 ms on its own.
+- **reuse temp tables** — 3 assertions. **500 commits in one transaction: crashed on
+  `max_locks_per_transaction` → 16 ms mean per commit.** The keeper is `DELETE` versus `TRUNCATE`:
+  the first version used `DELETE FROM` and individual commits regressed **24×** (23 → 598 ms) while
+  every test stayed green, because the initial full build leaves a million dead tuples in the scratch
+  table and no autovacuum runs mid-transaction. **A correctness fix that silently costs 24× is only
+  visible if the benchmark is re-run.**
+- **AC-PERF-03** — 5 assertions, measured by **block counts rather than wall clock** using
+  `pg_stat_get_xact_blocks_fetched`, whose `_xact_` variants are visible inside the running
+  transaction. Across 50 tables, `diff --stat` fetches **494 blocks** when one table changed and
+  **24,700** when all fifty did — a ratio of exactly **50.0**.
+- **statement-level journal trigger** — 6 assertions. **19× → 10.1×.** Three `FOR EACH STATEMENT`
+  triggers with transition tables. The semantic worth pinning: matching old to new rows requires
+  joining the transition tables **on the primary key**, so an update that *changes* a primary key is
+  recorded as a **DELETE plus an INSERT** — correct, because the key is row identity.
+- **AC-REPLAY-11** — 9 checks in a two-session shell harness that kills a backend mid-rebase. Be
+  precise about what it proves: the criterion says "releases its **advisory** locks" and **pgit takes
+  no advisory locks anywhere**, so that half is vacuous, not passed. What it does show is that crash
+  safety is **inherited** — every ref move, node write and journal row is an ordinary table write in
+  the caller's transaction.
+- **AC-PERF-02 in full** — **163 ms for 10 rows 10,000 commits apart, against 179 ms one commit
+  apart.** Flat in history at the stated figure. The run also produced the most uncomfortable number
+  in the project: 10,000 commits grew `pgit.nodes` to **540 MB for a 107 MB table**, none of it
+  garbage. See Blocked.
+- **checkout across a schema change** — 5 assertions. `assert_live_schema` runs before the dirty
+  check and names the table and both column lists. Previously it failed with "uncommitted changes",
+  which was true but useless. **A misleading error is worse than a blunt one: it sends you looking
+  for changes you never made.** Three of the five assertions check the *wording*, because the wording
+  is the whole fix.
+- **storage investigation** — no code change; two hypotheses measured and both killed. Separating
+  blobs from trees git-style is **1.7× worse** (13 MB vs 7,784 kB), because chunk-level compression
+  beats per-row storage. And `chunk_target=16`, which looked like a 29% storage win at 20k rows, is
+  **worse on both axes at 1M** — 6× slower commits and 27% more storage. **Twice wrong about storage,
+  both times from extrapolating a small fixture.** Anything storage- or depth-related has to be
+  measured at target scale or not claimed.
+- **tooling** — the progress log above lost 11 entries to silent failure. They were appended with a
+  Python `str.replace()` anchored on text that did not exist, and `replace()` returns the original
+  string on no match, so every one reported success and wrote nothing. The `## Blocked` section
+  referenced from "Next" was never created either. Reconstructed from the session transcript.
+  **Use a tool that fails loudly, or assert the match count — never a silent string replace.**
 
 ## Reference
 
