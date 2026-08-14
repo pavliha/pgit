@@ -160,7 +160,61 @@ commit)
   echo "[$(q "SELECT pgit.head()") ${sha:0:7}] $msg"
   ;;
 
-merge|rebase|cherry-pick|revert|track|untrack)
+merge)
+  allow "-X -s --continue --abort" "$@"
+  mid=$(q "SELECT COALESCE(max(id)::text,'') FROM pgit.merges")
+
+  if [[ " $* " == *" --abort "* ]]; then
+    [ -n "$mid" ] || die "no merge in progress"
+    q "SELECT pgit.merge_abort($mid)" >/dev/null && echo "merge aborted"
+    exit 0
+  fi
+
+  if [[ " $* " == *" --continue "* ]]; then
+    [ -n "$mid" ] || die "no merge in progress"
+    q "SELECT pgit.merge_finish($mid)" >/dev/null || exit 1
+    echo "merge complete"
+    exit 0
+  fi
+
+  opt=""
+  prev=""
+  for a in "$@"; do
+    case "$prev" in
+      -X) opt="$a" ;;
+      -s) [ "$a" = "ours" ] && opt="ours-tree" || die "unsupported strategy $a" ;;
+    esac
+    prev="$a"
+  done
+
+  name=$(positional "$@" | head -1)
+  [ -n "$name" ] || die "merge needs a branch"
+  optsql="NULL"; [ -n "$opt" ] && optsql="'$(lit "$opt")'"
+  n=$(q "SELECT pgit.merge('$(lit "$name")', NULL, $optsql)") || exit 1
+  if [ "$n" = "0" ]; then echo "merged $name"; else
+    echo "$n conflict(s); resolve with 'pgit resolve', then 'pgit merge --continue'"; exit 1
+  fi
+  ;;
+
+conflicts)
+  allow "" "$@"
+  q "SELECT tbl || E'\t' || k || E'\t' || COALESCE(col,'(row)') || E'\t' ||
+            CASE WHEN resolved THEN 'resolved:' || resolution_kind ELSE 'UNRESOLVED' END
+     FROM pgit.conflicts ORDER BY id"
+  ;;
+
+resolve)
+  allow "" "$@"
+  mapfile -t args < <(positional "$@")
+  mid=$(q "SELECT COALESCE(max(id)::text,'') FROM pgit.merges")
+  [ -n "$mid" ] || die "no merge in progress"
+  [ -n "${args[0]:-}" ] && [ -n "${args[1]:-}" ] && [ -n "${args[2]:-}" ] \
+    || die "resolve needs <table> <key> <ours|theirs|base|delete>"
+  q "SELECT pgit.resolve_conflict($mid, '$(lit "${args[0]}")', '$(lit "${args[1]}")', '$(lit "${args[2]}")')" >/dev/null || exit 1
+  echo "resolved ${args[0]} ${args[1]} as ${args[2]}"
+  ;;
+
+rebase|cherry-pick|revert|track|untrack)
   case "$cmd" in
     rebase) allow "--abort" "$@" ;;
     *)      allow "" "$@" ;;
@@ -172,8 +226,6 @@ merge|rebase|cherry-pick|revert|track|untrack)
   arg=$(positional "$@" | head -1)
   [ -n "$arg" ] || die "$cmd needs an argument"
   case "$cmd" in
-    merge)       n=$(q "SELECT pgit.merge('$(lit "$arg")')")        || exit 1
-                 [ "$n" = "0" ] && echo "merged $arg" || { echo "$n conflict(s), nothing applied"; exit 1; } ;;
     rebase)      n=$(q "SELECT pgit.rebase('$(lit "$arg")')")       || exit 1
                  [ "$n" = "0" ] && echo "rebased onto $arg" || { echo "$n conflict(s), rebase stopped"; exit 1; } ;;
     cherry-pick) n=$(q "SELECT pgit.cherry_pick(decode('$(lit "$arg")','hex'))") || exit 1

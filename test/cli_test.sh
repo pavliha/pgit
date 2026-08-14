@@ -63,6 +63,30 @@ like "AC-CLI-01: branch marks the checked out branch with an asterisk" \
 is "AC-CLI-01: blame names the author of a column" \
    "$("$PGIT" blame t 1 | head -1 | grep -c 'hits')" "1"
 
+psql "$PGIT_DSN" -X -q >/dev/null 2>&1 <<'SQL'
+CREATE TABLE m (id int PRIMARY KEY, v text);
+SELECT pgit.track('m');
+INSERT INTO m VALUES (1,'orig');
+SELECT pgit.commit('m base','app');
+SELECT pgit.branch('cf');
+UPDATE m SET v='main' WHERE id=1;
+SELECT pgit.commit('m main','app');
+SELECT pgit.checkout('cf');
+UPDATE m SET v='feature' WHERE id=1;
+SELECT pgit.commit('m feature','app');
+SQL
+
+"$PGIT" merge main >/dev/null 2>&1; rc=$?
+is "AC-CLI-03: a conflicted merge exits non-zero" "$rc" "1"
+like "AC-CLI-01: conflicts lists the unresolved row" "$("$PGIT" conflicts | head -1)" 'UNRESOLVED'
+
+key=$(psql "$PGIT_DSN" -X -q -At -c "SELECT k FROM pgit.conflicts LIMIT 1")
+"$PGIT" resolve m "$key" theirs >/dev/null
+like "AC-CLI-01: conflicts shows the resolution" "$("$PGIT" conflicts | head -1)" 'resolved:theirs'
+"$PGIT" merge --continue >/dev/null
+is "AC-CLI-01: merge --continue applied the resolution" \
+   "$(psql "$PGIT_DSN" -X -q -At -c "SELECT v FROM m WHERE id=1")" "main"
+
 psql "$ADMIN" -X -q -c "DROP DATABASE pgit_cli" >/dev/null
 
 echo

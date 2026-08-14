@@ -388,6 +388,24 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   The fallback is arguably the better path: `DISABLE TRIGGER` skips internal triggers, so
   **referential integrity stays enforced during replay**, closing the FK gap replica mode left open
   and listed under Follow-ups. It costs an ACCESS EXCLUSIVE lock per tracked table.
+- **conflict resolution** — 19 new assertions (259 pgTAP + 19 CLI + 9 kill + 12 RDS = 299). Before
+  this, `pgit.conflicts` was **written and never read** — a conflicted merge reported a count,
+  applied nothing, and offered no way forward. Now: `pgit.merges` tracks an in-progress merge,
+  conflicts carry a resolution, and `resolve_conflict` / `resolve_all` / `merge_finish` /
+  `merge_abort` close the loop. CLI: `pgit conflicts`, `pgit resolve`, `pgit merge --continue`,
+  `pgit merge --abort`.
+  **`-X ours` / `-X theirs`** resolve every conflict to one side while still taking the other
+  branch's *non-conflicting* changes — the git semantic, and asserted as such, since the naive
+  reading ("take our whole tree") is a different feature. That different feature is `-s ours`,
+  implemented separately as `-s ours` / `opt='ours-tree'`.
+  **Criss-cross histories now merge instead of refusing.** With two merge bases, `merge_base`
+  synthesises a **virtual base**: it materialises one base's rows into a temp table shaped `LIKE` the
+  real one, applies the merge of the two bases to it, writes a tree, and registers it under a
+  synthetic sha with no commit row. The test builds a genuine criss-cross — two branches that merged
+  each other's tips independently — asserts there really are two merge bases, and that the base used
+  is synthetic. Conflicts *within* the virtual base take the first base's side, which is a heuristic
+  and is documented as one. More than two bases still refuses loudly.
+  Still absent, deliberately: octopus merges, `subtree`, `rerere`, and rename detection in merge.
 - **tooling** — the progress log above lost 11 entries to silent failure. They were appended with a
   Python `str.replace()` anchored on text that did not exist, and `replace()` returns the original
   string on no match, so every one reported success and wrote nothing. The `## Blocked` section

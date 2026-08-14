@@ -1152,10 +1152,9 @@ LANGUAGE sql STABLE AS $$
 $$;
 
 CREATE OR REPLACE FUNCTION pgit.merge_base(a_sha bytea, b_sha bytea) RETURNS bytea
-LANGUAGE plpgsql STABLE AS $$
+LANGUAGE plpgsql AS $$
 DECLARE
-  n   int;
-  res bytea;
+  arr bytea[];
 BEGIN
   WITH common AS (
     SELECT x.a AS s FROM pgit.ancestors(a_sha) x
@@ -1169,17 +1168,22 @@ BEGIN
       WHERE c2.s <> c.s AND c.s IN (SELECT z.a FROM pgit.ancestors(c2.s) z)
     )
   )
-  SELECT count(*), min(b.s) INTO n, res FROM best b;
+  SELECT array_agg(b.s ORDER BY b.s) INTO arr FROM best b;
 
-  IF n = 0 THEN
+  IF arr IS NULL OR cardinality(arr) = 0 THEN
     RAISE EXCEPTION 'pgit: the two commits share no history';
   END IF;
 
-  IF n > 1 THEN
-    RAISE EXCEPTION 'pgit: % merge bases (criss-cross history), refusing to guess', n;
+  IF cardinality(arr) = 1 THEN
+    RETURN arr[1];
   END IF;
 
-  RETURN res;
+  IF cardinality(arr) > 2 THEN
+    RAISE EXCEPTION 'pgit: % merge bases; only a criss-cross of two is resolved automatically',
+      cardinality(arr);
+  END IF;
+
+  RETURN pgit.virtual_merge(arr[1], arr[2]);
 END $$;
 
 CREATE OR REPLACE FUNCTION pgit.merge_plan(base_sha bytea, our_sha bytea, their_sha bytea)
@@ -1284,30 +1288,39 @@ BEGIN
   END IF;
 END $$;
 
-CREATE OR REPLACE FUNCTION pgit.merge(branch_name text, msg text DEFAULT NULL) RETURNS int
+DROP FUNCTION IF EXISTS pgit.merge(text, text);
+
+CREATE OR REPLACE FUNCTION pgit.merge(branch_name text, msg text DEFAULT NULL, opt text DEFAULT NULL)
+RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
-  ours    bytea := pgit.resolve(pgit.head());
-  theirs  bytea := pgit.resolve(branch_name);
-  base    bytea;
-  p       record;
-  r       record;
-  n       int := 0;
-  mid     bigint;
-  summary text;
-  roots   jsonb;
-  new_sha bytea;
-  ts      timestamptz := now();
-  who     text := COALESCE(pgit.actor(), 'merge');
+  ours   bytea := pgit.resolve(pgit.head());
+  theirs bytea := pgit.resolve(branch_name);
+  base   bytea;
+  r      record;
+  n      int := 0;
+  mid    bigint;
 BEGIN
   IF theirs IS NULL THEN
     RAISE EXCEPTION 'pgit: unknown branch %', branch_name;
   END IF;
 
+  IF opt IS NOT NULL AND opt NOT IN ('ours', 'theirs', 'ours-tree') THEN
+    RAISE EXCEPTION 'pgit: unknown strategy option %, expected ours, theirs or ours-tree', opt;
+  END IF;
+
+  PERFORM pgit.assert_same_schema(ours, theirs);
   base := pgit.merge_base(ours, theirs);
 
   IF base = theirs THEN
     RETURN 0;
+  END IF;
+
+  IF opt = 'ours-tree' THEN
+    mid := nextval('pgit.merge_seq');
+    INSERT INTO pgit.merges (id, branch, ours_sha, theirs_sha, base_sha, msg)
+    VALUES (mid, pgit.head(), ours, theirs, ours, COALESCE(msg, 'merge ' || branch_name || ' (ours tree)'));
+    RETURN pgit.merge_finish(mid);
   END IF;
 
   IF base = ours THEN
@@ -1321,52 +1334,22 @@ BEGIN
     RETURN 0;
   END IF;
 
-  PERFORM pgit.assert_same_schema(ours, theirs);
+  mid := nextval('pgit.merge_seq');
+  INSERT INTO pgit.merges (id, branch, ours_sha, theirs_sha, base_sha, msg)
+  VALUES (mid, pgit.head(), ours, theirs, base, COALESCE(msg, 'merge ' || branch_name));
 
-  SELECT count(*) INTO n FROM pgit.merge_plan(base, ours, theirs) mp WHERE mp.action = 'conflict';
+  n := pgit.record_conflicts(mid, base, ours, theirs);
+
+  IF n > 0 AND opt IN ('ours', 'theirs') THEN
+    PERFORM pgit.resolve_all(mid, opt);
+    n := 0;
+  END IF;
 
   IF n > 0 THEN
-    mid := nextval('pgit.merge_seq');
-    INSERT INTO pgit.conflicts (merge_id, tbl, k, col, base, ours, theirs)
-    SELECT mid, mp.tbl, mp.k, mp.conflict_col,
-      (SELECT l.v FROM pgit.lookup((SELECT x.root_hash FROM pgit.trees x
-                                    WHERE x.commit_sha = base AND x.tbl = mp.tbl), mp.k) l),
-      (SELECT l.v FROM pgit.lookup((SELECT x.root_hash FROM pgit.trees x
-                                    WHERE x.commit_sha = ours AND x.tbl = mp.tbl), mp.k) l),
-      (SELECT l.v FROM pgit.lookup((SELECT x.root_hash FROM pgit.trees x
-                                    WHERE x.commit_sha = theirs AND x.tbl = mp.tbl), mp.k) l)
-    FROM pgit.merge_plan(base, ours, theirs) mp
-    WHERE mp.action = 'conflict';
     RETURN n;
   END IF;
 
-  SET CONSTRAINTS ALL DEFERRED;
-  FOR p IN SELECT * FROM pgit.merge_plan(base, ours, theirs) LOOP
-    PERFORM pgit.apply_row(p.tbl::regclass, p.action, p.merged);
-  END LOOP;
-  SET CONSTRAINTS ALL IMMEDIATE;
-
-  roots   := pgit.snapshot_trees(ours);
-  summary := pgit.roots_summary(roots);
-  new_sha := pgit.hash(encode(ours, 'hex') || E'\n' || encode(theirs, 'hex') || E'\n' ||
-                       COALESCE(msg, 'merge ' || branch_name) || E'\n' ||
-                       to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') || E'\n' ||
-                       summary);
-
-  INSERT INTO pgit.commits (sha, parent_sha, parent2_sha, author, message, at)
-  VALUES (new_sha, ours, theirs, who, COALESCE(msg, 'merge ' || branch_name), ts)
-  ON CONFLICT (sha) DO NOTHING;
-
-  INSERT INTO pgit.trees (commit_sha, tbl, root_hash)
-  SELECT new_sha, e.key, decode(e.value, 'hex') FROM jsonb_each_text(roots) e
-  ON CONFLICT DO NOTHING;
-
-  PERFORM pgit.record_schemas(new_sha);
-
-  UPDATE pgit.changes SET commit_sha = new_sha WHERE commit_sha IS NULL;
-  PERFORM pgit.advance_ref(pgit.head(), ours, new_sha);
-
-  RETURN 0;
+  RETURN pgit.merge_finish(mid);
 END $$;
 
 CREATE TABLE IF NOT EXISTS pgit.rebase_state (
@@ -1375,12 +1358,13 @@ CREATE TABLE IF NOT EXISTS pgit.rebase_state (
   onto_sha     bytea NOT NULL
 );
 
-CREATE OR REPLACE FUNCTION pgit.record_conflicts(base_sha bytea, our_sha bytea, their_sha bytea)
+DROP FUNCTION IF EXISTS pgit.record_conflicts(bytea, bytea, bytea);
+
+CREATE OR REPLACE FUNCTION pgit.record_conflicts(mid bigint, base_sha bytea, our_sha bytea, their_sha bytea)
 RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
-  mid bigint := nextval('pgit.merge_seq');
-  n   int;
+  n int;
 BEGIN
   INSERT INTO pgit.conflicts (merge_id, tbl, k, col, base, ours, theirs)
   SELECT mid, mp.tbl, mp.k, mp.conflict_col,
@@ -1424,7 +1408,7 @@ BEGIN
   WHERE mp.action = 'conflict';
 
   IF n > 0 THEN
-    PERFORM pgit.record_conflicts(base, ours, target_sha);
+    PERFORM pgit.record_conflicts(nextval('pgit.merge_seq'), base, ours, target_sha);
     RETURN n;
   END IF;
 
@@ -2074,4 +2058,202 @@ BEGIN
         ELSE 'ENABLE' END,
       e ->> 'tg');
   END LOOP;
+END $$;
+
+CREATE TABLE IF NOT EXISTS pgit.merges (
+  id         bigint PRIMARY KEY,
+  branch     text        NOT NULL,
+  ours_sha   bytea       NOT NULL,
+  theirs_sha bytea       NOT NULL,
+  base_sha   bytea       NOT NULL,
+  msg        text,
+  started_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE pgit.conflicts ADD COLUMN IF NOT EXISTS resolution_kind text;
+ALTER TABLE pgit.conflicts ADD COLUMN IF NOT EXISTS resolution jsonb;
+ALTER TABLE pgit.conflicts ADD COLUMN IF NOT EXISTS resolved boolean NOT NULL DEFAULT false;
+
+CREATE OR REPLACE FUNCTION pgit.resolve_conflict(
+  mid bigint, target_tbl text, key_hex text, kind text, value jsonb DEFAULT NULL
+) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+  c record;
+  img jsonb;
+BEGIN
+  SELECT * INTO c FROM pgit.conflicts x
+  WHERE x.merge_id = mid AND x.tbl = target_tbl AND x.k = key_hex;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'pgit: no conflict on %.% in merge %', target_tbl, key_hex, mid;
+  END IF;
+
+  img := CASE kind
+           WHEN 'ours'   THEN c.ours
+           WHEN 'theirs' THEN c.theirs
+           WHEN 'base'   THEN c.base
+           WHEN 'delete' THEN NULL
+           WHEN 'custom' THEN value
+         END;
+
+  IF kind NOT IN ('ours', 'theirs', 'base', 'delete', 'custom') THEN
+    RAISE EXCEPTION 'pgit: unknown resolution %, expected ours, theirs, base, delete or custom', kind;
+  END IF;
+
+  IF kind = 'custom' AND value IS NULL THEN
+    RAISE EXCEPTION 'pgit: a custom resolution needs a row image';
+  END IF;
+
+  UPDATE pgit.conflicts
+  SET resolution_kind = kind, resolution = img, resolved = true
+  WHERE merge_id = mid AND tbl = target_tbl AND k = key_hex;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.resolve_all(mid bigint, kind text) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  n int;
+BEGIN
+  IF kind NOT IN ('ours', 'theirs', 'base') THEN
+    RAISE EXCEPTION 'pgit: resolve_all takes ours, theirs or base, not %', kind;
+  END IF;
+
+  UPDATE pgit.conflicts
+  SET resolution_kind = kind,
+      resolution = CASE kind WHEN 'ours' THEN ours WHEN 'theirs' THEN theirs ELSE base END,
+      resolved = true
+  WHERE merge_id = mid AND NOT resolved;
+
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.merge_abort(mid bigint) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pgit.merges WHERE id = mid) THEN
+    RAISE EXCEPTION 'pgit: no merge % in progress', mid;
+  END IF;
+
+  DELETE FROM pgit.conflicts WHERE merge_id = mid;
+  DELETE FROM pgit.merges WHERE id = mid;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.merge_finish(mid bigint) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  m       record;
+  p       record;
+  r       jsonb;
+  n       int;
+  summary text;
+  roots   jsonb;
+  new_sha bytea;
+  ts      timestamptz := now();
+  who     text := COALESCE(pgit.actor(), 'merge');
+BEGIN
+  SELECT * INTO m FROM pgit.merges WHERE id = mid;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'pgit: no merge % in progress', mid;
+  END IF;
+
+  SELECT count(*) INTO n FROM pgit.conflicts WHERE merge_id = mid AND NOT resolved;
+  IF n > 0 THEN
+    RAISE EXCEPTION 'pgit: % conflict(s) still unresolved in merge %', n, mid;
+  END IF;
+
+  IF pgit.resolve(m.branch) IS DISTINCT FROM m.ours_sha THEN
+    RAISE EXCEPTION 'pgit: % moved since the merge started, abort and retry', m.branch;
+  END IF;
+
+  SET CONSTRAINTS ALL DEFERRED;
+
+  FOR p IN SELECT * FROM pgit.merge_plan(m.base_sha, m.ours_sha, m.theirs_sha) LOOP
+    IF p.action = 'conflict' THEN
+      SELECT c.resolution INTO r FROM pgit.conflicts c
+      WHERE c.merge_id = mid AND c.tbl = p.tbl AND c.k = p.k;
+
+      IF r IS NULL THEN
+        PERFORM pgit.apply_row(p.tbl::regclass, 'delete',
+          (SELECT c.ours FROM pgit.conflicts c
+           WHERE c.merge_id = mid AND c.tbl = p.tbl AND c.k = p.k));
+      ELSE
+        PERFORM pgit.apply_row(p.tbl::regclass, 'upsert', r);
+      END IF;
+    ELSE
+      PERFORM pgit.apply_row(p.tbl::regclass, p.action, p.merged);
+    END IF;
+  END LOOP;
+
+  SET CONSTRAINTS ALL IMMEDIATE;
+
+  roots   := pgit.snapshot_trees(m.ours_sha);
+  summary := pgit.roots_summary(roots);
+  new_sha := pgit.hash(encode(m.ours_sha, 'hex') || E'\n' || encode(m.theirs_sha, 'hex') || E'\n' ||
+                       COALESCE(m.msg, 'merge') || E'\n' ||
+                       to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') || E'\n' || summary);
+
+  INSERT INTO pgit.commits (sha, parent_sha, parent2_sha, author, message, at)
+  VALUES (new_sha, m.ours_sha, m.theirs_sha, who, COALESCE(m.msg, 'merge'), ts)
+  ON CONFLICT (sha) DO NOTHING;
+
+  INSERT INTO pgit.trees (commit_sha, tbl, root_hash)
+  SELECT new_sha, e.key, decode(e.value, 'hex') FROM jsonb_each_text(roots) e
+  ON CONFLICT DO NOTHING;
+
+  PERFORM pgit.record_schemas(new_sha);
+  UPDATE pgit.changes SET commit_sha = new_sha WHERE commit_sha IS NULL;
+  PERFORM pgit.advance_ref(m.branch, m.ours_sha, new_sha);
+
+  DELETE FROM pgit.conflicts WHERE merge_id = mid;
+  DELETE FROM pgit.merges WHERE id = mid;
+
+  RETURN 0;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.virtual_merge(x bytea, y bytea) RETURNS bytea
+LANGUAGE plpgsql SET client_min_messages = warning AS $$
+DECLARE
+  vb     bytea := pgit.hash('virtual' || encode(x, 'hex') || encode(y, 'hex'));
+  xb     bytea;
+  t      record;
+  p      record;
+  root_x bytea;
+  root   bytea;
+  roots  jsonb := '{}'::jsonb;
+BEGIN
+  IF EXISTS (SELECT 1 FROM pgit.trees WHERE commit_sha = vb) THEN
+    RETURN vb;
+  END IF;
+
+  xb := pgit.merge_base(x, y);
+
+  FOR t IN SELECT DISTINCT tr.tbl FROM pgit.trees tr WHERE tr.commit_sha IN (x, y) LOOP
+    SELECT tr.root_hash INTO root_x FROM pgit.trees tr
+    WHERE tr.commit_sha = x AND tr.tbl = t.tbl;
+
+    EXECUTE 'DROP TABLE IF EXISTS pgit_vb';
+    EXECUTE format('CREATE TEMP TABLE pgit_vb (LIKE %s INCLUDING ALL)', t.tbl);
+    EXECUTE format(
+      'INSERT INTO pgit_vb SELECT (jsonb_populate_record(NULL::%s, l.v)).* FROM pgit.leaves($1) l',
+      t.tbl) USING root_x;
+
+    FOR p IN SELECT * FROM pgit.merge_plan(xb, x, y) mp WHERE mp.tbl = t.tbl LOOP
+      IF p.action <> 'conflict' THEN
+        PERFORM pgit.apply_row('pgit_vb'::regclass, p.action, p.merged);
+      END IF;
+    END LOOP;
+
+    root  := pgit.write_tree('pgit_vb'::regclass);
+    roots := roots || jsonb_build_object(t.tbl, encode(root, 'hex'));
+  END LOOP;
+
+  EXECUTE 'DROP TABLE IF EXISTS pgit_vb';
+
+  INSERT INTO pgit.trees (commit_sha, tbl, root_hash)
+  SELECT vb, e.key, decode(e.value, 'hex') FROM jsonb_each_text(roots) e
+  ON CONFLICT DO NOTHING;
+
+  RETURN vb;
 END $$;
