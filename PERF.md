@@ -405,14 +405,18 @@ rediscovered later.
 
 `gc` was measured on storage alone for weeks. It also makes reads slower, because resolving a packed
 node means walking its delta chain and every step is a jsonb parse and splice in SQL, not a byte
-copy. Measured directly on the IMDb store — 300 level-0 nodes materialised through `node_items`:
+copy. End to end, on the 200k fixture at the default depth:
 
-| 300 leaf nodes | |
-| --- | --- |
-| unpacked | **11 ms** |
-| packed, depth 50 | **565 ms** — 51× |
+| default depth 4 | unpacked | packed | |
+| --- | --- | --- | --- |
+| diff oldest→HEAD, 21,076 rows | 1,034 ms | 2,486 ms | 2.4× |
+| diff HEAD~1→HEAD, 1,011 rows | 579 ms | 1,039 ms | 1.8× |
 
-The full curve, same 200k-row fixture, same 21,076-row diff:
+The per-node cost at the *maximum* depth is far worse — 300 level-0 nodes materialise in 11 ms
+unpacked and 565 ms packed at depth 50, **51×** — but that is the deepest chain on the oldest nodes,
+not what a diff pays on average. Quote the 1.8–2.4× figure; the 51× is the tail.
+
+The depth curve, same fixture, same 21,076-row diff:
 
 | `gc --depth` | node store | diff |
 | --- | --- | --- |
@@ -422,15 +426,32 @@ The full curve, same 200k-row fixture, same 21,076-row diff:
 | 50 | 46 MB | 3,664 ms |
 
 **Depth 50 is dominated by depth 16** — identical storage, identical read cost, longer chains for
-nothing. And depth 16 buys 6 MB over the default for another 50% on every read. The default of 4 is
-the right default; the benchmarks in this file that quote `--depth 50` were picking the worst
-available point and paying for it in the diff column.
+nothing. The default of 4 is the right default, and the benches that quoted `--depth 50` were
+picking the worst available point.
 
 > [!warning]
-> This is the trade-off the storage sections above do not mention, and their "73% off" headline is a
-> storage number quoted without its read cost. Deep chains are cheap in git because applying a delta
-> is a memcpy; here it is a jsonb round trip. Making that a byte splice is exactly what step 2 of
-> `docs/DESIGN-STORAGE.md` is for, and this measurement is the argument for doing it.
+> I published the 51× as the cost of `gc` before checking it end to end. It is a real number for what
+> it measured — the oldest nodes at the deepest setting — and roughly 20× too pessimistic as a
+> description of what a diff pays. Fourth framing error of the day, same root cause each time:
+> **a measurement is not a claim until you have run the thing the claim is about.**
+
+### The accept threshold is not the lever, measured
+
+`repack` accepts any delta smaller than the node it replaces, which looked like the defect: a delta
+saving one byte still adds a chain hop that every later read pays for. Requiring the delta to be a
+*fraction* of the node should trade a little storage for shorter chains. It does not:
+
+| `min_gain` | packed | store | diff |
+| --- | --- | --- | --- |
+| 1.0 — current | 12,890 | 52 MB | 2,441 ms |
+| 0.75 | 12,535 | 53 MB | 2,359 ms |
+| 0.5 | 12,151 | 54 MB | 2,298 ms |
+| 0.25 | 11,654 | 56 MB | 2,225 ms |
+
+Four MB to save 9%. The mean delta is 492 B against a 4 kB node, so almost every delta clears any
+threshold worth setting — the chains are not made of marginal deltas. **No knob was added**, and
+`repack` needs no change here. The read cost is the jsonb hop itself, which is step 2 of
+`docs/DESIGN-STORAGE.md`, not the acceptance rule.
 
 ## Diff: leaf pairs emitted every row in both leaves
 

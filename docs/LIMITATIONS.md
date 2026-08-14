@@ -26,9 +26,10 @@ amount of tuning avoids. Whether to keep both images is an open decision recorde
 scattered rows cost 336 ms, 5,000 scattered rows 1.6 s, and building the whole tree from nothing
 12 s. Tables you did not touch cost nothing at all.
 
-**`gc` trades read speed for storage, and the trade is steep.** Resolving a packed node walks its
-delta chain, and every step is a jsonb parse and splice rather than a byte copy. 300 leaf nodes cost
-11 ms unpacked and 565 ms packed at depth 50 — **51×**. On a 200k-row fixture:
+**`gc` trades read speed for storage.** Resolving a packed node walks its delta chain, and every
+step is a jsonb parse and splice rather than a byte copy. At the default depth that costs **1.8–2.4×
+on a diff** — 1,034 ms unpacked against 2,486 ms packed for the same 21,076 rows. On a 200k-row
+fixture, by depth:
 
 | `gc --depth` | node store | the same diff |
 | --- | --- | --- |
@@ -61,8 +62,8 @@ Below roughly 50 MB git wins on constants — it hashes and zlib-compresses a by
 canonicalises every changed row and writes nodes durably under MVCC with WAL. Above it pgit wins on
 complexity, and the gap grows linearly.
 
-**Diff is the exception and is genuinely slower**: 391 ms against 51.7 s over the same 30 commits.
-That is the largest open gap in the project.
+**Diff is the exception and is genuinely slower**: 391 ms against 35.8 s over the same 30 commits.
+That is the largest open gap in the project, and the cost is delta application, not the descent.
 
 > [!note]
 > This section said "it is not as fast as git, and will not be" for weeks. That was a 27× gap
@@ -125,7 +126,7 @@ Octopus merges exist but follow git in refusing to resolve conflicts at all.
 
 ## Status
 
-Pre-alpha. 530 checks pass from an empty database, including 19 against a real 63-table application
+Pre-alpha. 532 checks pass from an empty database, including 19 against a real 63-table application
 schema, but nothing here has run in production and the on-disk format has changed twice this month.
 There is no upgrade path between format versions other than rebuilding from your tables, which is
 always possible because your tables are the source of truth — pgit never becomes the only copy.

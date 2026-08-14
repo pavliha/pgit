@@ -146,7 +146,7 @@ shape set in 23 seconds, so each can be measured before the next is started.
 2. **Single byte string per node.** Subsumes step 1 and makes deltas whole-node by construction.
    Touches every consumer of `node_items`, which is now the single accessor — that refactor is
    already done, which is what makes this tractable.
-   *Checkpoint: 530 checks green; commit and diff within noise of today.*
+   *Checkpoint: 532 checks green; commit and diff within noise of today.*
 3. **Packs.** Adds `pgit.packs`, `pgit.pack_index`, and a `gc` that writes packs.
    *Checkpoint: store after `gc` versus the 10 MB git achieves on the same data.*
 4. **Slim the journal.** Independent of 1–3, and the only thing that moves write amplification.
