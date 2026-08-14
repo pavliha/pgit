@@ -401,6 +401,43 @@ rediscovered later.
 > today that concurrent work has corrupted a storage measurement. **Storage numbers are only valid on
 > an idle machine.**
 
+## Delta hops were paying for UTF-8 character offsets
+
+A delta hop splits into a fixed cost and a per-hop cost, and profiling by chain depth separated them
+cleanly — 200 packed leaf nodes, resolved through `node_items`:
+
+| chain depth | text offsets | byte offsets |
+| --- | --- | --- |
+| unpacked | 4.4 ms | 4.8 ms |
+| 1 | 166.7 ms | **89.8 ms** |
+| 2 | 247.8 ms | **95.7 ms** |
+| 3 | 321.0 ms | **102.5 ms** |
+| 4 | 389.8 ms | **105.5 ms** |
+
+That is ~90 ms fixed plus **76 ms per hop** before, and ~85 ms fixed plus **~5 ms per hop** after.
+The per-hop term was `substring()` on UTF-8 `text`: Postgres walks the string to find a character
+offset, while the same call on `bytea` is pointer arithmetic. Measured directly, 4,000 substrings
+over 13 kB values cost 18.3 ms on `text` against 4.5 ms on `bytea`.
+
+Deltas now record **byte** offsets and apply with `pgit.apply_delta_bin` on `bytea`. Insert literals
+stay `text`, because the prefix and suffix are still found in characters — so a literal is always
+whole characters and valid UTF-8, and no base64 inflation is needed.
+
+| | before | after |
+| --- | --- | --- |
+| diff oldest→HEAD, packed | 2,486 ms | **1,569 ms** |
+| diff HEAD~1→HEAD, packed | 1,039 ms | **817 ms** |
+| read penalty from `gc` | 2.4× | **1.43×** |
+| node store after `gc` | 52 MB | 52 MB — unchanged |
+| `repack` runtime | 29 s | **24 s** |
+
+> [!warning]
+> Two measurements taken while finding this were wrong and neither was published. `SELECT count(*)
+> FROM t, LATERAL (SELECT expr)` reports ~0 ms because the unused expression is optimised away — it
+> measures nothing. And calling `node_items(pgit.hash(...))` per row timed my own harness at 267 ms
+> for work that actually costs 10 ms. **Check that a micro-benchmark consumes its result and does no
+> setup inside the timed statement**, or it will confidently answer a question you did not ask.
+
 ## gc charges the read path, and depth 50 is a dominated choice
 
 `gc` was measured on storage alone for weeks. It also makes reads slower, because resolving a packed

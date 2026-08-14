@@ -143,10 +143,25 @@ shape set in 23 seconds, so each can be measured before the next is started.
    entries column alone. *Checkpoint met: 10% off → **58% off**, and `repack` itself went 171 s →
    55 s because it writes far less.* On the delta test fixture, 1,381 kB → 506 kB with a mean delta
    of 228 B against a 3,627 B node.
-2. **Single byte string per node.** Subsumes step 1 and makes deltas whole-node by construction.
-   Touches every consumer of `node_items`, which is now the single accessor — that refactor is
-   already done, which is what makes this tractable.
-   *Checkpoint: 532 checks green; commit and diff within noise of today.*
+2. **Single byte string per node.** ~~Not started.~~ **Half done, and the measured half was the
+   valuable one.** Profiling a delta hop first split the cost in two: a fixed ~90 ms per 200 nodes for
+   the `jsonb → text → jsonb` round trip, and ~76 ms *per hop* for the splices. The per-hop term was
+   the whole scaling problem, and it did not need the format change — it was `substring` on UTF-8
+   `text`, which walks the string to find each offset, where `bytea` is pointer arithmetic. Deltas
+   now carry **byte** offsets and apply on `bytea`: per hop **76 ms → ~5 ms**, and a depth-4 leaf
+   resolves in 105 ms instead of 390 ms.
+
+   | default depth 4, 200 nodes | before | after |
+   | --- | --- | --- |
+   | depth 1 | 167 ms | **90 ms** |
+   | depth 4 | 390 ms | **105 ms** |
+   | end-to-end diff penalty from `gc` | 2.4× | **1.43×** |
+
+   What is left of this step is the fixed ~85 ms: the node is still serialised to text and parsed
+   back on every resolution. Only storing the node *as* bytes removes it. The read-path risk that
+   made this step look dangerous was measured and is not real — per-entry `substring` + cast against
+   one `jsonb_array_elements` is 2.7 ms vs 1.15 ms per 200 nodes, negligible beside the terms above.
+   *Checkpoint met: 532 checks green, storage unchanged at 53% off, `repack` 29 s → 24 s.*
 3. **Packs.** Adds `pgit.packs`, `pgit.pack_index`, and a `gc` that writes packs.
    *Checkpoint: store after `gc` versus the 10 MB git achieves on the same data.*
 4. **Slim the journal.** Independent of 1–3, and the only thing that moves write amplification.

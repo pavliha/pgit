@@ -221,6 +221,20 @@ CREATE INDEX IF NOT EXISTS nodes_base_idx ON pgit.nodes (base_hash);
 CREATE INDEX IF NOT EXISTS nodes_group_idx ON pgit.nodes (level, (keys[1]), seq DESC)
   WHERE entries IS NOT NULL;
 
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pgit.nodes WHERE delta IS NOT NULL LIMIT 1)
+     AND COALESCE((SELECT value FROM pgit.meta WHERE key = 'delta_format'), '1') <> '2' THEN
+    RAISE EXCEPTION 'pgit: this database holds deltas with character offsets, and this '
+      'version reads byte offsets. They would resolve to corrupt nodes rather than '
+      'failing. Run SELECT pgit.unpack(); on the current version first, then install '
+      'this one and SELECT pgit.repack();';
+  END IF;
+END $$;
+
+INSERT INTO pgit.meta (key, value) VALUES ('delta_format', '2')
+  ON CONFLICT (key) DO UPDATE SET value = '2';
+
 -- Nodes written before the packed format have no key vector, and every reader
 -- drives off it — they would read as empty rather than failing. Refuse to
 -- install over them instead.
@@ -310,31 +324,31 @@ BEGIN
   RETURN out_ops;
 END $$;
 
-CREATE OR REPLACE FUNCTION pgit.apply_delta_txt(base text, d jsonb) RETURNS text
-LANGUAGE plpgsql IMMUTABLE AS $$
-DECLARE
-  parts text[] := '{}';
-  e     jsonb;
-BEGIN
-  FOR e IN SELECT jsonb_array_elements(d) LOOP
-    parts := parts || CASE WHEN e ? 'c'
-      THEN substr(base, (e -> 'c' ->> 0)::int, (e -> 'c' ->> 1)::int)
-      ELSE (e ->> 'i') END;
-  END LOOP;
-
-  RETURN array_to_string(parts, '');
-END $$;
+DROP FUNCTION IF EXISTS pgit.apply_delta_txt(text, jsonb);
+CREATE OR REPLACE FUNCTION pgit.apply_delta_bin(base bytea, d jsonb) RETURNS bytea
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT COALESCE(string_agg(
+           CASE WHEN t.e ? 'c'
+             THEN substring(base FROM (t.e -> 'c' ->> 0)::int FOR (t.e -> 'c' ->> 1)::int)
+             ELSE convert_to(t.e ->> 'i', 'UTF8') END,
+           ''::bytea ORDER BY t.ord), ''::bytea)
+  FROM jsonb_array_elements(d) WITH ORDINALITY t(e, ord)
+$$;
 
 CREATE OR REPLACE FUNCTION pgit.make_delta(base jsonb, target jsonb) RETURNS jsonb
 LANGUAGE plpgsql IMMUTABLE AS $$
 DECLARE
-  bt      text := base::text;
-  tt      text := target::text;
+  bb      bytea := convert_to(base::text, 'UTF8');
+  tb      bytea := convert_to(target::text, 'UTF8');
+  tt      text  := target::text;
   ops     jsonb := '[]'::jsonb;
   r       record;
   p       int;
   s       int;
   n       int;
+  pb      int;
+  sb      int;
+  hb      int;
   sep_pos int;
   first   boolean := true;
 BEGIN
@@ -356,7 +370,7 @@ BEGIN
     ),
     bo AS (
       SELECT b.ord, b.t,
-             (2 + COALESCE(sum(length(b.t) + 2) OVER (
+             (2 + COALESCE(sum(octet_length(convert_to(b.t, 'UTF8')) + 2) OVER (
                    ORDER BY b.ord ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
                    EXCLUDE CURRENT ROW), 0))::int AS pos,
              (b.ord = count(*) OVER ()) AS is_last
@@ -378,28 +392,36 @@ BEGIN
     first := false;
 
     sep_pos := CASE WHEN r.have IS NOT NULL AND NOT r.is_last
-                    THEN r.pos + length(r.have) END;
+                    THEN r.pos + octet_length(convert_to(r.have, 'UTF8')) END;
 
     IF r.have IS NULL THEN
       ops := ops || jsonb_build_object('i', r.want);
     ELSIF r.have = r.want THEN
-      ops := ops || jsonb_build_object('c', jsonb_build_array(r.pos, length(r.have)));
+      ops := ops || jsonb_build_object('c',
+        jsonb_build_array(r.pos, octet_length(convert_to(r.have, 'UTF8'))));
     ELSE
-      p := pgit.common_prefix(r.have, r.want);
-      s := pgit.common_suffix(r.have, r.want, least(length(r.have), length(r.want)) - p);
-      n := length(r.want) - p - s;
+      -- The prefix and suffix are found in characters, so an insert literal is
+      -- always whole characters and stays valid UTF-8, but every copy offset the
+      -- op list emits is a byte offset: substring on bytea is pointer arithmetic
+      -- where substring on UTF-8 text walks the string to find each offset.
+      p  := pgit.common_prefix(r.have, r.want);
+      s  := pgit.common_suffix(r.have, r.want, least(length(r.have), length(r.want)) - p);
+      n  := length(r.want) - p - s;
+      pb := octet_length(convert_to(substr(r.have, 1, p), 'UTF8'));
+      sb := octet_length(convert_to(right(r.have, s), 'UTF8'));
+      hb := octet_length(convert_to(r.have, 'UTF8'));
 
-      IF p > 0 THEN ops := ops || jsonb_build_object('c', jsonb_build_array(r.pos, p)); END IF;
+      IF p > 0 THEN ops := ops || jsonb_build_object('c', jsonb_build_array(r.pos, pb)); END IF;
       IF n > 0 THEN ops := ops || jsonb_build_object('i', substr(r.want, p + 1, n)); END IF;
       IF s > 0 THEN
-        ops := ops || jsonb_build_object('c', jsonb_build_array(r.pos + length(r.have) - s, s));
+        ops := ops || jsonb_build_object('c', jsonb_build_array(r.pos + hb - sb, sb));
       END IF;
     END IF;
   END LOOP;
 
-  ops := pgit.coalesce_ops(ops || jsonb_build_object('c', jsonb_build_array(length(bt), 1)));
+  ops := pgit.coalesce_ops(ops || jsonb_build_object('c', jsonb_build_array(octet_length(bb), 1)));
 
-  IF pgit.apply_delta_txt(bt, ops) <> tt THEN
+  IF pgit.apply_delta_bin(bb, ops) <> tb THEN
     RETURN jsonb_build_array(jsonb_build_object('i', tt));
   END IF;
 
@@ -408,7 +430,7 @@ END $$;
 
 CREATE OR REPLACE FUNCTION pgit.apply_delta(base jsonb, d jsonb) RETURNS jsonb
 LANGUAGE sql IMMUTABLE AS $$
-  SELECT pgit.apply_delta_txt(base::text, d)::jsonb
+  SELECT convert_from(pgit.apply_delta_bin(convert_to(base::text, 'UTF8'), d), 'UTF8')::jsonb
 $$;
 
 -- A node serialised as the three parts a delta can align on. Keeping them apart
@@ -430,7 +452,7 @@ DECLARE
   cur   bytea   := h;
   rec   record;
   parts jsonb;
-  txt   text;
+  bin   bytea;
   i     int;
 BEGIN
   LOOP
@@ -447,11 +469,11 @@ BEGIN
     RETURN;
   END IF;
 
-  txt := pgit.node_parts(rec.hs, rec.ks, rec.es)::text;
+  bin := convert_to(pgit.node_parts(rec.hs, rec.ks, rec.es)::text, 'UTF8');
   FOR i IN REVERSE array_length(chain, 1)..1 LOOP
-    txt := pgit.apply_delta_txt(txt, chain[i]);
+    bin := pgit.apply_delta_bin(bin, chain[i]);
   END LOOP;
-  parts := txt::jsonb;
+  parts := convert_from(bin, 'UTF8')::jsonb;
 
   RETURN QUERY SELECT decode(parts ->> 0, 'hex'),
                       CASE WHEN parts ->> 1 = '' THEN '{}'::text[]

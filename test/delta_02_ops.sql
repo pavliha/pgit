@@ -49,9 +49,10 @@ SELECT is(
 
 SELECT is(
   (SELECT count(*) FROM fix
-   WHERE pgit.apply_delta_txt(base::text, pgit.make_delta(base, target)) IS DISTINCT FROM target::text),
+   WHERE pgit.apply_delta_bin(convert_to(base::text, 'UTF8'), pgit.make_delta(base, target))
+         IS DISTINCT FROM convert_to(target::text, 'UTF8')),
   0::bigint,
-  'delta ops: the spliced text is byte identical, not merely jsonb equal');
+  'delta ops: the spliced bytes are byte identical, not merely jsonb equal');
 
 CREATE TEMP VIEW payload AS
 SELECT f.label,
