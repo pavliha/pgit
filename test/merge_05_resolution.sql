@@ -35,7 +35,7 @@ SELECT is((SELECT name FROM t WHERE id=3), 'only main touched this',
   'a non conflicting change from the other branch still came across');
 SELECT is((SELECT hits FROM t WHERE id=2), 9, 'our own non conflicting change survived');
 SELECT is((SELECT count(*) FROM pgit.merges), 0::bigint, 'the merge state was cleared');
-SELECT isnt((SELECT parent2_sha FROM pgit.commits WHERE sha=pgit.resolve('feature')), NULL,
+SELECT is((SELECT count(*) FROM pgit.parents_of(pgit.resolve('feature'))), 2::bigint,
   'the result is a real merge commit with two parents');
 
 CREATE TABLE u (id int PRIMARY KEY, v text);

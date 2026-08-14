@@ -142,10 +142,6 @@ engineering.
   perf gates.
 - **Git verbs deliberately not built, with the reason.** The inventory is now closed except these,
   and each is a judgement rather than a backlog item.
-  - **Octopus merges** (>2 parents) — applies, and is the only one of these worth building. It needs
-    `pgit.commits.parent` to become a parents array, which ripples through `ancestors`, `merge_base`,
-    the bundle format and `fsck`. Left undone because the schema change wants a decision, not because
-    it is hard. A three-way branch merge is expressible today as two sequential merges.
   - **`subtree`, `submodule`** — no analogue. Both compose *repositories*; there is one database and
     one history here, and a nested history would be a second `pgit` schema with its own refs, which is
     just two databases and a bundle.
@@ -539,6 +535,33 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   now names both tables and the match percentage instead of blaming a shape change. Following a rename
   through a merge means mapping the old name to the new one across the diff, conflict and journal
   paths; that is a project, not an afternoon, and is deliberately not attempted.
+- **octopus merges** — `pgit merge a b c` and `pgit.merge_octopus(text[])`. 19 pgTAP assertions,
+  4 CLI checks, 5 remote checks. This closes the last verb in the inventory that applies here.
+  The schema change was the point of it: `parent2_sha` is **gone**, replaced by
+  `pgit.commit_parent (commit_sha, ord, parent_sha)` with `ord >= 2`, plus a `pgit.parent_edge` view
+  that unions the first parent with the rest and a `pgit.parents_of(sha)` accessor. Eight call sites
+  moved onto the view — `ancestors`, `rev` (`^N` now reaches any parent, not just the second),
+  `fsck`, `commits_to_send`, `bundle`, `unbundle`, `prune`, `merge_finish` — and the two tests that
+  read the old column. The bundle format carries a `parents` array; the wire format changed and there
+  is no reader for the old one, per the no-back-compat rule.
+  **The reason this stayed cheap is git's own choice: octopus refuses to resolve conflicts at all.**
+  Once that is accepted there is no sequential three-way state machine to build. `pgit.octopus_plan`
+  diffs every head against one common base, groups by `(table, key)`, and counts distinct resulting
+  images: one image means every head that touched the row agrees, so apply it; two or more means
+  refuse and name the row. Two heads making the *identical* edit is therefore not a conflict, which
+  matches git and is asserted.
+  One deliberate deviation, recorded because it is a real difference: git recomputes the merge base
+  per head against the accumulating set, and this takes a single base folded over all heads. That
+  base is the same for the case octopus exists to serve — N branches off one trunk — and is *older*
+  for tangled topologies, which means more rows look changed and the merge is more likely to be
+  refused. The failure direction is "refuses and tells you to merge one at a time", never a silent
+  wrong result.
+  Two test-side lessons. The refusal first named the row by its canonical key hash
+  (`t.69643d23313a357c`), which is unusable in an error message — it now renders the primary key
+  (`t(id=5)`). And the new remote checks failed at first for a reason that had nothing to do with
+  octopus: the earlier `receive --force` test leaves origin's live table out of step with its ref, so
+  `checkout` refused. The setup block was swallowing stderr with `2>&1 >/dev/null`, so a hard error
+  read as a wrong answer. Those blocks now run with `ON_ERROR_STOP=1` and only stdout suppressed.
 
 ## Reference
 

@@ -126,6 +126,31 @@ is "AC-CLI-03: renames with one revision exits 129" "$rc" "129"
 "$PGIT" notes list --graph >/dev/null 2>&1; rc=$?
 is "AC-CLI-03: an unsupported flag on notes exits 129" "$rc" "129"
 
+BR=$(psql "$PGIT_DSN" -X -q -At -c "SELECT pgit.head()")
+psql "$PGIT_DSN" -X -q >/dev/null 2>&1 <<SQL
+CREATE TABLE oct (id int PRIMARY KEY, v text);
+SELECT pgit.track('oct');
+INSERT INTO oct SELECT g, 'base' FROM generate_series(1,3) g;
+SELECT pgit.commit('oct base','app');
+SELECT pgit.branch('o1');
+SELECT pgit.branch('o2');
+SELECT pgit.checkout('o1');
+UPDATE oct SET v='one' WHERE id=1;
+SELECT pgit.commit('o1 edit','app');
+SELECT pgit.checkout('o2');
+UPDATE oct SET v='two' WHERE id=2;
+SELECT pgit.commit('o2 edit','app');
+SELECT pgit.checkout('$BR');
+SQL
+
+is "AC-CLI-01: merge with two branches runs an octopus merge" "$("$PGIT" merge o1 o2)" "merged o1 o2"
+is "AC-CLI-01: both branches landed in one commit" \
+   "$(psql "$PGIT_DSN" -X -q -At -c "SELECT string_agg(v,',' ORDER BY id) FROM oct")" "one,two,base"
+is "AC-CLI-01: the octopus commit has three parents" \
+   "$(psql "$PGIT_DSN" -X -q -At -c "SELECT count(*) FROM pgit.parents_of(pgit.resolve('$BR'))")" "3"
+"$PGIT" merge o1 o2 -X ours >/dev/null 2>&1; rc=$?
+is "AC-CLI-03: an octopus merge with a strategy option exits 129" "$rc" "129"
+
 psql "$ADMIN" -X -q -c "DROP DATABASE pgit_cli" >/dev/null
 
 echo

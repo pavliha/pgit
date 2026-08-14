@@ -115,7 +115,41 @@ OUT=$(runb "$V" /tmp/pgit_b4.json "SELECT pgit.clone_from(:'b'::jsonb);")
 is "clone: cloning over an existing history is refused" \
    "$(printf '%s' "$OUT" | grep -c 'needs an empty history')" "1"
 
-for d in pgit_origin pgit_clone pgit_bad pgit_virgin; do psql "$ADMIN" -X -q -c "DROP DATABASE $d" >/dev/null; done
+psql "$O" -X -q -v ON_ERROR_STOP=1 >/dev/null <<'SQL'
+SELECT pgit.reset('main','hard');
+SELECT pgit.branch('oct1');
+SELECT pgit.branch('oct2');
+SELECT pgit.checkout('oct1');
+UPDATE t SET name='from oct1' WHERE id=101;
+SELECT pgit.commit('oct1 edit','alice');
+SELECT pgit.checkout('oct2');
+UPDATE t SET name='from oct2' WHERE id=102;
+SELECT pgit.commit('oct2 edit','alice');
+SELECT pgit.checkout('main');
+SELECT pgit.merge_octopus(ARRAY['oct1','oct2']);
+SQL
+
+is "octopus: origin built a merge commit with three parents" \
+   "$(qo "SELECT count(*) FROM pgit.parents_of(pgit.resolve('main'))")" "3"
+
+psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_oct" -c "CREATE DATABASE pgit_oct" >/dev/null 2>&1
+P="postgresql://postgres:pgit@localhost:5460/pgit_oct"
+psql "$P" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null 2>&1
+qp(){ psql "$P" -X -q -At -c "$1" 2>&1; }
+
+qo "SELECT pgit.bundle(ARRAY['main','oct1','oct2'])" > /tmp/pgit_b5.json
+runb "$P" /tmp/pgit_b5.json "SELECT pgit.clone_from(:'b'::jsonb);" >/dev/null
+
+is "octopus: a bundle carries every parent of a merge, not just the first two" \
+   "$(qp "SELECT count(*) FROM pgit.parents_of(pgit.resolve('main'))")" "3"
+is "octopus: the received parents are the same commits origin recorded" \
+   "$(qp "SELECT string_agg(encode(p.parent,'hex'),',' ORDER BY p.ord) FROM pgit.parents_of(pgit.resolve('main')) p")" \
+   "$(qo "SELECT string_agg(encode(p.parent,'hex'),',' ORDER BY p.ord) FROM pgit.parents_of(pgit.resolve('main')) p")"
+is "octopus: fsck on the receiver sees no missing parent" "$(qp "SELECT count(*) FROM pgit.fsck()")" "0"
+is "octopus: both branches' rows survived the transfer" \
+   "$(qp "SELECT string_agg(name,',' ORDER BY id) FROM t WHERE id IN (101,102)")" "from oct1,from oct2"
+
+for d in pgit_origin pgit_clone pgit_bad pgit_virgin pgit_oct; do psql "$ADMIN" -X -q -c "DROP DATABASE $d" >/dev/null; done
 rm -f /tmp/pgit_b*.json
 
 echo

@@ -4,8 +4,8 @@ Git semantics over data in **stock PostgreSQL**, as a plain SQL plugin. No forke
 extension, no managed service. `commit`, `log`, `diff`, `blame`, `revert`, `branch`, `merge`,
 `rebase`, `cherry-pick` — with git's flag names and git's diff performance.
 
-**Status: pre-alpha, but the whole verb set works and is measured.** 406 checks green from an empty
-database (327 pgTAP + 36 CLI + 9 crash-safety + 12 non-superuser portability + 22 remote and clone).
+**Status: pre-alpha, but the whole verb set works and is measured.** 434 checks green from an empty
+database (346 pgTAP + 40 CLI + 9 crash-safety + 12 non-superuser portability + 27 remote and clone).
 
 **Runs on managed Postgres.** Every verb is exercised as a plain `LOGIN` role with no superuser
 rights — strictly fewer privileges than the RDS master user gets — so RDS, Neon and Supabase are
@@ -27,6 +27,7 @@ pgit show HEAD~2                # revisions: HEAD, HEAD~N, HEAD^, branch, short 
 pgit branch feature && pgit checkout feature
 pgit commit -m "..."
 pgit merge main                 # -X ours | -X theirs | -s ours
+pgit merge a b c                # octopus: one commit, N parents, refuses on conflict like git
 pgit conflicts                  # base/ours/theirs per conflict, queryable
 pgit resolve products 42 theirs # or ours | base | delete
 pgit merge --continue           # or --abort

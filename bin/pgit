@@ -208,8 +208,20 @@ merge)
     prev="$a"
   done
 
-  name=$(positional "$@" | head -1)
-  [ -n "$name" ] || die "merge needs a branch"
+  mapfile -t names < <(positional "$@")
+  [ -n "${names[0]:-}" ] || die "merge needs a branch"
+
+  if [ "${#names[@]}" -gt 1 ]; then
+    [ -z "$opt" ] || die "octopus merges take no strategy option"
+    arr=""
+    for a in "${names[@]}"; do arr="$arr,'$(lit "$a")'"; done
+    arr="ARRAY[${arr:1}]"
+    q "SELECT pgit.merge_octopus($arr)" >/dev/null || exit 1
+    echo "merged ${names[*]}"
+    exit 0
+  fi
+
+  name="${names[0]}"
   optsql="NULL"; [ -n "$opt" ] && optsql="'$(lit "$opt")'"
   n=$(q "SELECT pgit.merge('$(lit "$name")', NULL, $optsql)") || exit 1
   if [ "$n" = "0" ]; then echo "merged $name"; else

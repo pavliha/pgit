@@ -23,7 +23,7 @@ SELECT is(
 );
 
 SELECT is(
-  (SELECT parent2_sha FROM pgit.commits WHERE sha = pgit.resolve('feature')),
+  (SELECT p.parent FROM pgit.parents_of(pgit.resolve('feature')) p WHERE p.ord = 2),
   (SELECT sha FROM main_head),
   'merge: the merge commit records the second parent'
 );
@@ -31,7 +31,7 @@ SELECT is(
 SELECT is(pgit.merge('main'), 0, 'AC-MERGE-02: merging an already merged branch is a no-op');
 
 SELECT is(
-  (SELECT count(*) FROM pgit.commits WHERE parent2_sha IS NOT NULL), 1::bigint,
+  (SELECT count(DISTINCT commit_sha) FROM pgit.commit_parent), 1::bigint,
   'AC-MERGE-02: the second merge created no commit'
 );
 

@@ -1116,7 +1116,39 @@ BEGIN
   DELETE FROM pgit.refs r WHERE r.name = branch_name;
 END $$;
 
-ALTER TABLE pgit.commits ADD COLUMN IF NOT EXISTS parent2_sha bytea REFERENCES pgit.commits(sha);
+CREATE TABLE IF NOT EXISTS pgit.commit_parent (
+  commit_sha bytea NOT NULL REFERENCES pgit.commits(sha) ON DELETE CASCADE,
+  ord        int   NOT NULL CHECK (ord >= 2),
+  parent_sha bytea NOT NULL REFERENCES pgit.commits(sha) ON DELETE CASCADE,
+  PRIMARY KEY (commit_sha, ord)
+);
+
+CREATE INDEX IF NOT EXISTS pgit_commit_parent_parent_idx ON pgit.commit_parent (parent_sha);
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_schema = 'pgit' AND table_name = 'commits'
+               AND column_name = 'parent2_sha') THEN
+    EXECUTE $q$ INSERT INTO pgit.commit_parent (commit_sha, ord, parent_sha)
+                SELECT sha, 2, parent2_sha FROM pgit.commits WHERE parent2_sha IS NOT NULL
+                ON CONFLICT DO NOTHING $q$;
+    EXECUTE 'ALTER TABLE pgit.commits DROP COLUMN parent2_sha';
+  END IF;
+END $$;
+
+CREATE OR REPLACE VIEW pgit.parent_edge AS
+  SELECT c.sha AS child, c.parent_sha AS parent, 1 AS ord
+  FROM pgit.commits c WHERE c.parent_sha IS NOT NULL
+  UNION ALL
+  SELECT p.commit_sha, p.parent_sha, p.ord FROM pgit.commit_parent p;
+
+CREATE OR REPLACE FUNCTION pgit.parents_of(c_sha bytea)
+RETURNS TABLE (ord int, parent bytea)
+LANGUAGE sql STABLE AS $$
+  SELECT e.ord, e.parent FROM pgit.parent_edge e WHERE e.child = c_sha ORDER BY e.ord
+$$;
+
 CREATE SEQUENCE IF NOT EXISTS pgit.merge_seq;
 
 CREATE TABLE IF NOT EXISTS pgit.conflicts (
@@ -1134,10 +1166,9 @@ CREATE OR REPLACE FUNCTION pgit.ancestors(from_sha bytea)
 RETURNS TABLE (a bytea)
 LANGUAGE sql STABLE AS $$
   WITH RECURSIVE w AS (
-    SELECT c.sha, c.parent_sha, c.parent2_sha FROM pgit.commits c WHERE c.sha = from_sha
+    SELECT c.sha FROM pgit.commits c WHERE c.sha = from_sha
     UNION
-    SELECT c.sha, c.parent_sha, c.parent2_sha
-    FROM w JOIN pgit.commits c ON c.sha IN (w.parent_sha, w.parent2_sha)
+    SELECT e.parent FROM w JOIN pgit.parent_edge e ON e.child = w.sha
   )
   SELECT w.sha FROM w
 $$;
@@ -2201,9 +2232,13 @@ BEGIN
                        COALESCE(m.msg, 'merge') || E'\n' ||
                        to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') || E'\n' || summary);
 
-  INSERT INTO pgit.commits (sha, parent_sha, parent2_sha, author, message, at)
-  VALUES (new_sha, m.ours_sha, m.theirs_sha, who, COALESCE(m.msg, 'merge'), ts)
+  INSERT INTO pgit.commits (sha, parent_sha, author, message, at)
+  VALUES (new_sha, m.ours_sha, who, COALESCE(m.msg, 'merge'), ts)
   ON CONFLICT (sha) DO NOTHING;
+
+  INSERT INTO pgit.commit_parent (commit_sha, ord, parent_sha)
+  VALUES (new_sha, 2, m.theirs_sha)
+  ON CONFLICT DO NOTHING;
 
   INSERT INTO pgit.trees (commit_sha, tbl, root_hash)
   SELECT new_sha, e.key, decode(e.value, 'hex') FROM jsonb_each_text(roots) e
@@ -2458,11 +2493,7 @@ BEGIN
         IF cur IS NULL THEN RAISE EXCEPTION 'pgit: % goes past the root commit', spec; END IF;
       END LOOP;
     ELSE
-      IF n = 2 THEN
-        SELECT c.parent2_sha INTO cur FROM pgit.commits c WHERE c.sha = cur;
-      ELSE
-        SELECT c.parent_sha INTO cur FROM pgit.commits c WHERE c.sha = cur;
-      END IF;
+      SELECT p.parent INTO cur FROM pgit.parents_of(cur) p WHERE p.ord = n;
       IF cur IS NULL THEN RAISE EXCEPTION 'pgit: % has no such parent', spec; END IF;
     END IF;
   END LOOP;
@@ -2584,12 +2615,16 @@ LANGUAGE sql STABLE AS $$
   WHERE NOT EXISTS (SELECT 1 FROM pgit.commits c WHERE c.sha = r.sha)
 
   UNION ALL
-  SELECT 'commit parent missing', encode(c.sha, 'hex')
-  FROM pgit.commits c
-  WHERE (c.parent_sha IS NOT NULL
-         AND NOT EXISTS (SELECT 1 FROM pgit.commits p WHERE p.sha = c.parent_sha))
-     OR (c.parent2_sha IS NOT NULL
-         AND NOT EXISTS (SELECT 1 FROM pgit.commits p WHERE p.sha = c.parent2_sha))
+  SELECT 'commit parent missing', encode(e.child, 'hex') || ' ^' || e.ord
+  FROM pgit.parent_edge e
+  WHERE NOT EXISTS (SELECT 1 FROM pgit.commits p WHERE p.sha = e.parent)
+
+  UNION ALL
+  SELECT 'merge commit has a gap in its parents', encode(p.commit_sha, 'hex')
+  FROM pgit.commit_parent p
+  WHERE NOT EXISTS (SELECT 1 FROM pgit.commit_parent q
+                    WHERE q.commit_sha = p.commit_sha AND q.ord = p.ord - 1)
+    AND p.ord > 2
 
   UNION ALL
   SELECT 'tree root missing from the node store', t.commit_sha::text || ' ' || t.tbl
@@ -2636,14 +2671,10 @@ LANGUAGE sql STABLE AS $$
     SELECT r.sha FROM pgit.refs r WHERE r.name = ANY (ref_names)
   ),
   w AS (
-    SELECT t.sha, c.parent_sha, c.parent2_sha
-    FROM tips t JOIN pgit.commits c ON c.sha = t.sha
-    WHERE NOT (t.sha = ANY (have))
+    SELECT t.sha FROM tips t WHERE NOT (t.sha = ANY (have))
     UNION
-    SELECT c.sha, c.parent_sha, c.parent2_sha
-    FROM w
-    JOIN pgit.commits c ON c.sha IN (w.parent_sha, w.parent2_sha)
-    WHERE NOT (c.sha = ANY (have))
+    SELECT e.parent FROM w JOIN pgit.parent_edge e ON e.child = w.sha
+    WHERE NOT (e.parent = ANY (have))
   )
   SELECT DISTINCT w.sha FROM w
 $$;
@@ -2685,7 +2716,8 @@ BEGIN
     'commits', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
                   'sha', encode(c.sha, 'hex'),
                   'parent', encode(c.parent_sha, 'hex'),
-                  'parent2', encode(c.parent2_sha, 'hex'),
+                  'parents', (SELECT COALESCE(jsonb_agg(encode(p.parent_sha, 'hex') ORDER BY p.ord), '[]'::jsonb)
+                              FROM pgit.commit_parent p WHERE p.commit_sha = c.sha),
                   'author', c.author, 'message', c.message, 'at', c.at)), '[]'::jsonb)
                 FROM pgit.commits c WHERE c.sha = ANY (send)),
     'trees', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
@@ -2733,13 +2765,19 @@ BEGIN
     n := n + 1;
   END LOOP;
 
-  INSERT INTO pgit.commits (sha, parent_sha, parent2_sha, author, message, at)
+  INSERT INTO pgit.commits (sha, parent_sha, author, message, at)
   SELECT decode(x ->> 'sha', 'hex'), decode(x ->> 'parent', 'hex'),
-         decode(x ->> 'parent2', 'hex'), x ->> 'author', x ->> 'message',
-         (x ->> 'at')::timestamptz
+         x ->> 'author', x ->> 'message', (x ->> 'at')::timestamptz
   FROM jsonb_array_elements(b -> 'commits') x
   ORDER BY (x ->> 'at')::timestamptz
   ON CONFLICT (sha) DO NOTHING;
+
+  INSERT INTO pgit.commit_parent (commit_sha, ord, parent_sha)
+  SELECT decode(x ->> 'sha', 'hex'), (p.ord + 1)::int, decode(p.val, 'hex')
+  FROM jsonb_array_elements(b -> 'commits') x
+  CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(x -> 'parents', '[]'::jsonb))
+       WITH ORDINALITY p(val, ord)
+  ON CONFLICT DO NOTHING;
 
   INSERT INTO pgit.trees (commit_sha, tbl, root_hash)
   SELECT decode(x ->> 'commit', 'hex'), x ->> 'tbl', decode(x ->> 'root', 'hex')
@@ -3047,10 +3085,12 @@ BEGIN
     WHERE l.at >= before_at ORDER BY l.depth DESC LIMIT 1;
 
     IF cutoff IS NOT NULL THEN
-      UPDATE pgit.commits SET parent_sha = NULL, parent2_sha = NULL WHERE sha = cutoff;
+      UPDATE pgit.commits SET parent_sha = NULL WHERE sha = cutoff;
+      DELETE FROM pgit.commit_parent WHERE commit_sha = cutoff;
     ELSE
       INSERT INTO pgit_alive VALUES (r.sha) ON CONFLICT DO NOTHING;
-      UPDATE pgit.commits SET parent_sha = NULL, parent2_sha = NULL WHERE sha = r.sha;
+      UPDATE pgit.commits SET parent_sha = NULL WHERE sha = r.sha;
+      DELETE FROM pgit.commit_parent WHERE commit_sha = r.sha;
     END IF;
   END LOOP;
 
@@ -3245,3 +3285,124 @@ LANGUAGE sql STABLE AS $$
          CASE WHEN b.sim = 1.0 THEN 'identical' ELSE 'similar' END, b.sim
   FROM best b
 $$;
+
+CREATE OR REPLACE FUNCTION pgit.octopus_plan(base_sha bytea, heads bytea[])
+RETURNS TABLE (tbl text, k text, op text, before jsonb, after jsonb, sides int, conflicted boolean)
+LANGUAGE sql STABLE AS $$
+  WITH d AS (
+    SELECT h.ord, x.tbl, x.k, x.op, x.before, x.after
+    FROM unnest(heads) WITH ORDINALITY h(sha, ord)
+    CROSS JOIN LATERAL pgit.diff(base_sha, h.sha) x
+  )
+  SELECT d.tbl, d.k,
+         (array_agg(d.op     ORDER BY d.ord))[1],
+         (array_agg(d.before ORDER BY d.ord))[1],
+         (array_agg(d.after  ORDER BY d.ord))[1],
+         count(DISTINCT d.ord)::int,
+         count(DISTINCT d.op || '|' || COALESCE(d.after::text, '~')) > 1
+  FROM d GROUP BY d.tbl, d.k
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.merge_octopus(branch_names text[], msg text DEFAULT NULL)
+RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  oct_ours    bytea   := pgit.resolve(pgit.head());
+  oct_names   text[]  := '{}';
+  oct_heads   bytea[] := '{}';
+  oct_all     bytea[];
+  oct_base    bytea;
+  oct_b       text;
+  oct_h       bytea;
+  oct_msg     text;
+  oct_bad     record;
+  oct_key     text;
+  oct_p       record;
+  oct_roots   jsonb;
+  oct_summary text;
+  oct_new     bytea;
+  oct_ts      timestamptz := clock_timestamp();
+  oct_who     text := pgit.actor();
+BEGIN
+  IF COALESCE(array_length(branch_names, 1), 0) < 2 THEN
+    RAISE EXCEPTION 'pgit: an octopus merge needs at least two branches, use merge for one';
+  END IF;
+
+  FOREACH oct_b IN ARRAY branch_names LOOP
+    oct_h := pgit.resolve(oct_b);
+    IF oct_h IS NULL THEN RAISE EXCEPTION 'pgit: unknown branch %', oct_b; END IF;
+    PERFORM pgit.assert_same_schema(oct_ours, oct_h);
+
+    IF oct_h <> oct_ours AND NOT (oct_h = ANY (oct_heads))
+       AND pgit.merge_base(oct_ours, oct_h) <> oct_h THEN
+      oct_heads := oct_heads || oct_h;
+      oct_names := oct_names || oct_b;
+    END IF;
+  END LOOP;
+
+  IF COALESCE(array_length(oct_heads, 1), 0) = 0 THEN
+    RETURN 0;
+  END IF;
+
+  IF array_length(oct_heads, 1) = 1 THEN
+    RETURN pgit.merge(oct_names[1], msg);
+  END IF;
+
+  oct_msg  := COALESCE(msg, 'merge ' || array_to_string(oct_names, ' '));
+  oct_all  := ARRAY[oct_ours] || oct_heads;
+  oct_base := oct_ours;
+
+  FOREACH oct_h IN ARRAY oct_heads LOOP
+    oct_base := pgit.merge_base(oct_base, oct_h);
+  END LOOP;
+
+  SELECT * INTO oct_bad FROM pgit.octopus_plan(oct_base, oct_all) p
+  WHERE p.conflicted ORDER BY p.tbl, p.k LIMIT 1;
+
+  IF FOUND THEN
+    SELECT string_agg(c || '=' || COALESCE(COALESCE(oct_bad.after, oct_bad.before) ->> c, 'null'), ',' ORDER BY c)
+    INTO oct_key FROM unnest(pgit.pk_columns(oct_bad.tbl::regclass)) c;
+
+    RAISE EXCEPTION 'pgit: octopus refuses this merge, % of the % heads changed %(%) differently; merge them one at a time',
+      oct_bad.sides, array_length(oct_all, 1), oct_bad.tbl, oct_key;
+  END IF;
+
+  SET CONSTRAINTS ALL DEFERRED;
+
+  FOR oct_p IN SELECT * FROM pgit.octopus_plan(oct_base, oct_all) LOOP
+    IF oct_p.op = 'DELETE' THEN
+      PERFORM pgit.apply_row(oct_p.tbl::regclass, 'delete', oct_p.before);
+    ELSE
+      PERFORM pgit.apply_row(oct_p.tbl::regclass, 'upsert', oct_p.after);
+    END IF;
+  END LOOP;
+
+  SET CONSTRAINTS ALL IMMEDIATE;
+
+  oct_roots   := pgit.snapshot_trees(oct_ours);
+  oct_summary := pgit.roots_summary(oct_roots);
+  oct_new     := pgit.hash(
+    (SELECT string_agg(encode(x.sha, 'hex'), E'\n' ORDER BY x.ord)
+     FROM unnest(oct_all) WITH ORDINALITY x(sha, ord)) || E'\n' ||
+    oct_msg || E'\n' ||
+    to_char(oct_ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') || E'\n' || oct_summary);
+
+  INSERT INTO pgit.commits (sha, parent_sha, author, message, at)
+  VALUES (oct_new, oct_ours, oct_who, oct_msg, oct_ts)
+  ON CONFLICT (sha) DO NOTHING;
+
+  INSERT INTO pgit.commit_parent (commit_sha, ord, parent_sha)
+  SELECT oct_new, (x.ord + 1)::int, x.sha
+  FROM unnest(oct_heads) WITH ORDINALITY x(sha, ord)
+  ON CONFLICT DO NOTHING;
+
+  INSERT INTO pgit.trees (commit_sha, tbl, root_hash)
+  SELECT oct_new, e.key, decode(e.value, 'hex') FROM jsonb_each_text(oct_roots) e
+  ON CONFLICT DO NOTHING;
+
+  PERFORM pgit.record_schemas(oct_new);
+  UPDATE pgit.changes SET commit_sha = oct_new WHERE commit_sha IS NULL;
+  PERFORM pgit.advance_ref(pgit.head(), oct_ours, oct_new);
+
+  RETURN 0;
+END $$;
