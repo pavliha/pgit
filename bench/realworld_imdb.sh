@@ -112,12 +112,12 @@ RAW=$(q "SELECT pg_total_relation_size('pgit.nodes')")
 echo "# nodes before repack $(sz pgit.nodes)"
 
 RP0=$(date +%s)
-PACKED=$(q "SELECT pgit.repack(50)")
+PACKED=$(q "SELECT pgit.repack()")
 RP1=$(date +%s)
 echo "# repack itself took $((RP1-RP0))s"
 compact
 B=$(q "SELECT pg_total_relation_size('pgit.nodes')")
-echo "# nodes after repack depth 50 $(sz pgit.nodes) — $(q "SELECT round(100 - ($B::numeric / $RAW * 100))")% off, $PACKED packed"
+echo "# nodes after repack at the default depth $(sz pgit.nodes) — $(q "SELECT round(100 - ($B::numeric / $RAW * 100))")% off, $PACKED packed"
 
 echo "# fsck problems: $(q "SELECT count(*) FROM pgit.fsck()")"
 echo "# every table still rebuilds to its recorded root: $(q "

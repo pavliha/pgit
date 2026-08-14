@@ -26,6 +26,21 @@ amount of tuning avoids. Whether to keep both images is an open decision recorde
 scattered rows cost 336 ms, 5,000 scattered rows 1.6 s, and building the whole tree from nothing
 12 s. Tables you did not touch cost nothing at all.
 
+**`gc` trades read speed for storage, and the trade is steep.** Resolving a packed node walks its
+delta chain, and every step is a jsonb parse and splice rather than a byte copy. 300 leaf nodes cost
+11 ms unpacked and 565 ms packed at depth 50 — **51×**. On a 200k-row fixture:
+
+| `gc --depth` | node store | the same diff |
+| --- | --- | --- |
+| none | 109 MB | **958 ms** |
+| **4 (default)** | **52 MB** | 2,403 ms |
+| 16 | 46 MB | 3,651 ms |
+| 50 | 46 MB | 3,664 ms |
+
+Depth 50 is dominated by depth 16 — identical storage, identical read cost. Do not raise the depth
+past the default expecting a free win; past 4 you are paying most of the read cost for the last
+6 MB.
+
 **Storage is roughly 2–3× your data, once you run `gc`.** The base snapshot is 0.26–1.0× the table
 depending on row width — often smaller, since chunked images compress well. History is the variable
 part: 10,000 commits on a 1M-row table left the node store at 4.5× the table until `gc`, then 1.8× at

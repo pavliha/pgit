@@ -798,8 +798,16 @@ BEGIN
   IF lvl IS NULL THEN RETURN; END IF;
 
   IF lvl = 0 THEN
-    RETURN QUERY SELECT 'a'::text, l.k, l.rh, l.v FROM pgit.leaves(a) l;
-    RETURN QUERY SELECT 'b'::text, l.k, l.rh, l.v FROM pgit.leaves(b) l;
+    RETURN QUERY
+      WITH ai AS MATERIALIZED (SELECT i.k, i.ch, i.v FROM pgit.node_items(a) i),
+           bi AS MATERIALIZED (SELECT i.k, i.ch, i.v FROM pgit.node_items(b) i)
+      SELECT 'a'::text, ai.k, ai.ch, ai.v
+        FROM ai LEFT JOIN bi ON bi.k = ai.k
+        WHERE bi.k IS NULL OR bi.ch IS DISTINCT FROM ai.ch
+      UNION ALL
+      SELECT 'b'::text, bi.k, bi.ch, bi.v
+        FROM bi LEFT JOIN ai ON ai.k = bi.k
+        WHERE ai.k IS NULL OR ai.ch IS DISTINCT FROM bi.ch;
     RETURN;
   END IF;
 

@@ -57,7 +57,7 @@ if [ "${GC:-0}" != "1" ]; then
   exit 0
 fi
 echo "node store                 $(psql "$D" -X -q -At -c "SELECT pg_size_pretty($RAW::bigint)") against $(psql "$D" -X -q -At -c "SELECT pg_size_pretty(pg_total_relation_size('r'))") of data"
-T0=$(date +%s); P=$(psql "$D" -X -q -At -c "SELECT pgit.repack(50)"); T1=$(date +%s)
+T0=$(date +%s); P=$(psql "$D" -X -q -At -c "SELECT pgit.repack()"); T1=$(date +%s)
 psql "$D" -X -q -c "VACUUM FULL pgit.nodes" >/dev/null
 B=$(psql "$D" -X -q -At -c "SELECT pg_total_relation_size('pgit.nodes')")
 echo "after gc                   $(psql "$D" -X -q -At -c "SELECT pg_size_pretty($B::bigint)") — $(psql "$D" -X -q -At -c "SELECT round(100 - ($B::numeric/$RAW*100))")% off, $P packed, $((T1-T0))s"

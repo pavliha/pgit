@@ -401,6 +401,53 @@ rediscovered later.
 > today that concurrent work has corrupted a storage measurement. **Storage numbers are only valid on
 > an idle machine.**
 
+## gc charges the read path, and depth 50 is a dominated choice
+
+`gc` was measured on storage alone for weeks. It also makes reads slower, because resolving a packed
+node means walking its delta chain and every step is a jsonb parse and splice in SQL, not a byte
+copy. Measured directly on the IMDb store — 300 level-0 nodes materialised through `node_items`:
+
+| 300 leaf nodes | |
+| --- | --- |
+| unpacked | **11 ms** |
+| packed, depth 50 | **565 ms** — 51× |
+
+The full curve, same 200k-row fixture, same 21,076-row diff:
+
+| `gc --depth` | node store | diff |
+| --- | --- | --- |
+| none | 109 MB | **958 ms** |
+| **4 (the default)** | **52 MB** | 2,403 ms |
+| 16 | 46 MB | 3,651 ms |
+| 50 | 46 MB | 3,664 ms |
+
+**Depth 50 is dominated by depth 16** — identical storage, identical read cost, longer chains for
+nothing. And depth 16 buys 6 MB over the default for another 50% on every read. The default of 4 is
+the right default; the benchmarks in this file that quote `--depth 50` were picking the worst
+available point and paying for it in the diff column.
+
+> [!warning]
+> This is the trade-off the storage sections above do not mention, and their "73% off" headline is a
+> storage number quoted without its read cost. Deep chains are cheap in git because applying a delta
+> is a memcpy; here it is a jsonb round trip. Making that a byte splice is exactly what step 2 of
+> `docs/DESIGN-STORAGE.md` is for, and this measurement is the argument for doing it.
+
+## Diff: leaf pairs emitted every row in both leaves
+
+`diff_leaves` bottomed out at a differing leaf pair by emitting **every** entry from both nodes and
+leaving the caller to cancel the ones whose row hash matched. A 123-entry leaf with one changed row
+emitted 246 rows to cancel 244 of them. It now joins the two leaves on key and emits only entries
+that actually differ, plus one-sided keys.
+
+| 200k rows, 20 commits | |
+| --- | --- |
+| diff before | 1,197 ms |
+| diff after | **924 ms** |
+
+On IMDb this barely moved the total (38.0 s → 35.8 s), which is the useful part of the result: it
+proved the bottleneck is not the row volume but the 17,208 leaf materialisations behind it, at
+~1.9 ms each — the packed-node cost measured above.
+
 ## Diff: stop re-walking the tree for images the descent already has
 
 Profiling a diff of 21,076 changed rows, `pg_stat_statements` with nested tracking:
