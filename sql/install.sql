@@ -659,10 +659,16 @@ BEGIN
   CREATE TEMP TABLE IF NOT EXISTS pgit_grp   (key_bytes bytea, hash bytea, entries jsonb);
   CREATE TEMP TABLE IF NOT EXISTS pgit_built (key_bytes bytea, hash bytea);
   CREATE TEMP TABLE IF NOT EXISTS pgit_new   (key_bytes bytea, hash bytea);
-  CREATE TEMP TABLE IF NOT EXISTS pgit_l1    (k text, h text, nk text, rn bigint);
+  -- The keys are hex, and every other ordering in the tree is byte order, so
+  -- these are C collated both for correctness and so the indexes below are
+  -- usable for the range probes that locate a changed key's chunk.
+  CREATE TEMP TABLE IF NOT EXISTS pgit_l1    (k text COLLATE "C", h text, nk text COLLATE "C", rn bigint);
   CREATE TEMP TABLE IF NOT EXISTS pgit_l1hit (rn bigint);
-  CREATE TEMP TABLE IF NOT EXISTS pgit_old   (k text, h text, nk text, rn bigint);
+  CREATE TEMP TABLE IF NOT EXISTS pgit_old   (k text COLLATE "C", h text, nk text COLLATE "C", rn bigint);
   CREATE TEMP TABLE IF NOT EXISTS pgit_hit   (rn bigint);
+
+  CREATE INDEX IF NOT EXISTS pgit_l1_k_idx  ON pgit_l1 (k);
+  CREATE INDEX IF NOT EXISTS pgit_old_k_idx ON pgit_old (k);
 END $$;
 
 CREATE OR REPLACE FUNCTION pgit.write_tree(target regclass) RETURNS bytea
@@ -1881,11 +1887,16 @@ BEGIN
            row_number() OVER (ORDER BY l.k)
     FROM pgit.nodes_at_level(prev_root, 1) l;
 
+  -- One indexed probe per changed key. Testing every node against the whole
+  -- changed array instead is O(nodes x keys): on 1.7M rows that was 132 million
+  -- comparisons and 40 s of a 57 s commit.
   TRUNCATE pgit_l1hit;
   INSERT INTO pgit_l1hit
-    SELECT DISTINCT o.rn FROM pgit_l1 o
-    WHERE EXISTS (SELECT 1 FROM unnest(changed) c
-                  WHERE c >= o.k AND (o.nk IS NULL OR c < o.nk));
+    SELECT DISTINCT o.rn
+    FROM unnest(changed) c
+    CROSS JOIN LATERAL (
+      SELECT x.rn FROM pgit_l1 x WHERE x.k <= c ORDER BY x.k DESC LIMIT 1
+    ) o;
 
   IF NOT EXISTS (SELECT 1 FROM pgit_l1hit) THEN
     INSERT INTO pgit_l1hit VALUES (1);
@@ -1907,9 +1918,11 @@ BEGIN
 
   TRUNCATE pgit_hit;
   INSERT INTO pgit_hit
-    SELECT DISTINCT o.rn FROM pgit_old o
-    WHERE EXISTS (SELECT 1 FROM unnest(changed) c
-                  WHERE c >= o.k AND (o.nk IS NULL OR c < o.nk));
+    SELECT DISTINCT o.rn
+    FROM unnest(changed) c
+    CROSS JOIN LATERAL (
+      SELECT x.rn FROM pgit_old x WHERE x.k <= c ORDER BY x.k DESC LIMIT 1
+    ) o;
 
   IF NOT EXISTS (SELECT 1 FROM pgit_hit) THEN
     INSERT INTO pgit_hit VALUES (1);
@@ -1919,6 +1932,21 @@ BEGIN
   SELECT DISTINCT h.rn + d FROM pgit_hit h, (VALUES (-1), (1)) AS s(d)
   WHERE h.rn + d BETWEEN 1 AND (SELECT max(rn) FROM pgit_old)
     AND h.rn + d NOT IN (SELECT rn FROM pgit_hit);
+
+  -- Splicing cost tracks the number of leaf chunks touched; a full rebuild is one
+  -- sequential pass and is flat. Past about three quarters of the tree the rebuild
+  -- wins, so that is where this bails out — it exists to bound the worst case, not
+  -- to second guess the common one. Measured on 1.7M rows: 5,000 scattered rows
+  -- splice in 13.3 s against a 17.7 s rebuild, and 10,000 scattered rows are the
+  -- break even at 17.6 s. The changed row count cannot express this, since 5,000
+  -- adjacent rows and 5,000 scattered ones differ by 130x.
+  -- pgit_old holds the chunks of the hit level 1 nodes, so the whole tree is
+  -- estimated by scaling that back up.
+  IF (SELECT count(*) FROM pgit_hit) * 4 >
+     ((SELECT count(*) FROM pgit_old) * (SELECT count(*) FROM pgit_l1)
+       / GREATEST((SELECT count(*) FROM pgit_l1hit), 1)) * 3 THEN
+    RETURN pgit.write_tree(target);
+  END IF;
 
   TRUNCATE pgit_new;
 
@@ -2078,39 +2106,46 @@ END $$;
 CREATE OR REPLACE FUNCTION pgit.journal_stmt() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE
-  cols text[];
-  pred text;
+  j_cols text[];
+  j_pred text;
 BEGIN
-  SELECT pk_cols INTO cols FROM pgit.tracked WHERE tbl = TG_RELID::regclass;
+  SELECT pk_cols INTO j_cols FROM pgit.tracked WHERE tbl = TG_RELID::regclass;
 
+  -- Locals are prefixed and the transition tables are aliased pgit_nr/pgit_or,
+  -- never n/o/cols: a tracked table is free to have columns by those names, and
+  -- an unqualified reference resolves to the column, not to the alias or the
+  -- variable. In
+  -- "SELECT to_jsonb(n) FROM newrows n" a column of the tracked table named n
+  -- wins over the alias, so the journal silently records that column's value
+  -- instead of the whole row.
   IF TG_OP = 'INSERT' THEN
     INSERT INTO pgit.changes (txid, tbl, pk, op, before, after, actor, source)
-    SELECT txid_current(), TG_TABLE_NAME, pgit.pk_of(to_jsonb(n), cols),
-           'INSERT', NULL, to_jsonb(n), pgit.actor(), pgit.source()
-    FROM newrows n;
+    SELECT txid_current(), TG_TABLE_NAME, pgit.pk_of(to_jsonb(pgit_nr), j_cols),
+           'INSERT', NULL, to_jsonb(pgit_nr), pgit.actor(), pgit.source()
+    FROM newrows pgit_nr;
     RETURN NULL;
   END IF;
 
   IF TG_OP = 'DELETE' THEN
     INSERT INTO pgit.changes (txid, tbl, pk, op, before, after, actor, source)
-    SELECT txid_current(), TG_TABLE_NAME, pgit.pk_of(to_jsonb(o), cols),
-           'DELETE', to_jsonb(o), NULL, pgit.actor(), pgit.source()
-    FROM oldrows o;
+    SELECT txid_current(), TG_TABLE_NAME, pgit.pk_of(to_jsonb(pgit_or), j_cols),
+           'DELETE', to_jsonb(pgit_or), NULL, pgit.actor(), pgit.source()
+    FROM oldrows pgit_or;
     RETURN NULL;
   END IF;
 
-  SELECT string_agg(format('o.%I = n.%I', c, c), ' AND ') INTO pred FROM unnest(cols) c;
+  SELECT string_agg(format('pgit_or.%I = pgit_nr.%I', c, c), ' AND ') INTO j_pred FROM unnest(j_cols) c;
 
   EXECUTE format(
     'INSERT INTO pgit.changes (txid, tbl, pk, op, before, after, actor, source)
      SELECT txid_current(), %L,
-            pgit.pk_of(COALESCE(to_jsonb(n), to_jsonb(o)), %L::text[]),
-            CASE WHEN o IS NULL THEN ''INSERT''
-                 WHEN n IS NULL THEN ''DELETE''
+            pgit.pk_of(COALESCE(to_jsonb(pgit_nr), to_jsonb(pgit_or)), %L::text[]),
+            CASE WHEN pgit_or IS NULL THEN ''INSERT''
+                 WHEN pgit_nr IS NULL THEN ''DELETE''
                  ELSE ''UPDATE'' END,
-            to_jsonb(o), to_jsonb(n), pgit.actor(), pgit.source()
-     FROM oldrows o FULL OUTER JOIN newrows n ON %s',
-    TG_TABLE_NAME, cols, pred);
+            to_jsonb(pgit_or), to_jsonb(pgit_nr), pgit.actor(), pgit.source()
+     FROM oldrows pgit_or FULL OUTER JOIN newrows pgit_nr ON %s',
+    TG_TABLE_NAME, j_cols, j_pred);
 
   RETURN NULL;
 END $$;

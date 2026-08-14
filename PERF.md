@@ -247,6 +247,38 @@ Depth 16 is available for 64% at roughly 2× reads.
 Run-to-run variance on these timings is around 25% — the depth-0 baseline measured 167 ms and 213 ms
 on two runs — so only the large gaps here are meaningful.
 
+### Commit cost depends on the shape of the change, not just its size
+
+Every commit figure quoted above comes from a fixture that updates **ten adjacent rows**, which is
+the most favourable case there is. Versioning a real dataset showed how far that generalises. On a
+1.7M-row table with a text primary key:
+
+| change | before | after | |
+| --- | --- | --- | --- |
+| 100 adjacent rows | 45 ms | 50 ms | |
+| 5,000 adjacent rows | 1,402 ms | **125 ms** | 11× |
+| 500 scattered rows | 6,761 ms | **2,424 ms** | 2.8× |
+| 5,000 scattered rows | 53,183 ms | **13,368 ms** | 4.0× |
+| 50,000 scattered rows | — | 18,502 ms | bounded |
+| *full rebuild of the table, for reference* | *17,084 ms* | | |
+
+**Scattering 5,000 changed rows across the table cost 38× what changing 5,000 adjacent rows cost,
+and 3.1× what rebuilding the entire table from scratch cost.** The changed row count cannot express
+this — the two workloads differ only in where the rows are.
+
+Two causes, both now fixed. The first was quadratic: locating which chunk each changed key belongs to
+tested *every* chunk against the *whole* changed array, `O(chunks × keys)`. At 1.7M rows that is 132
+million comparisons and it was 40 s of a 57 s commit. It is now one indexed range probe per changed
+key. The scratch tables carry a `COLLATE "C"` index for it, which the keys wanted anyway — they are
+hex, and every other ordering in the tree is byte order, so the default collation was a latent
+inconsistency as well as an unusable index.
+
+The second is that splicing cost tracks chunks touched while a rebuild is one flat sequential pass,
+so past about three quarters of the tree the rebuild simply wins. There is now a bail-out at that
+point. It is deliberately not tuned tighter: an earlier attempt bailed at one sixth and made 500
+scattered rows **2.5× slower** (6.8 s → 17.2 s) by forcing a rebuild that was not yet worth it. The
+threshold exists to bound the worst case, not to second-guess the common one.
+
 ### At 1M rows and 10,000 commits — the number the README used to get wrong
 
 The 20k figures above are a fixture. This is the real one: a 1M-row table, 10,000 commits each

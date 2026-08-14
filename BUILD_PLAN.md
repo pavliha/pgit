@@ -631,6 +631,30 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   is machine independent; it is the only one that goes red when the guard is removed.
   `test/incremental_05_untouched_tables.sql`, 10 assertions.
 
+- **commit cost depended on the shape of a change, and the journal lost rows on some schemas** —
+  three more findings from real data, 16 pgTAP assertions.
+  **Scattered changes were quadratic.** Locating which chunk each changed key belongs to tested every
+  chunk against the whole changed array — `O(chunks × keys)`, 132 million comparisons at 1.7M rows,
+  40 s of a 57 s commit. Now one indexed range probe per key. The scratch tables gained a
+  `COLLATE "C"` index, which the hex keys wanted regardless: every other ordering in the tree is byte
+  order, so the default collation was both a latent inconsistency and an unusable index.
+  Full table in `PERF.md`; the short version is 5,000 scattered rows went 53.2 s → 13.4 s, 5,000
+  adjacent rows 1.4 s → 125 ms, and the worst case is now bounded by a full rebuild.
+  **A threshold tuned by guesswork made things worse.** The first bail-out fired at one sixth
+  coverage and cost 500 scattered rows 2.5× (6.8 s → 17.2 s) by forcing a rebuild that had not become
+  worthwhile. Measuring the crossover moved it to three quarters. Worth remembering that the guard
+  was *added* as a fix and was itself a regression until measured.
+  **The journal silently recorded a scalar instead of the row** when a tracked table had a column
+  named `n` or `o`: the statement trigger read `to_jsonb(n)` over `FROM newrows n`, and an
+  unqualified name resolves to the column, not the alias. Nothing failed at write time — the commit
+  blew up later with `cannot call populate_composite on a scalar`, pointing at a query that looked
+  fine. A column named `cols` broke it a third way, colliding with the trigger's own plpgsql local.
+  Aliases are now `pgit_nr`/`pgit_or` and locals are prefixed.
+  **This is the fifth and sixth time an unprefixed identifier has cost real debugging time**, after
+  the four parameter/local shadowing incidents already recorded. The rule is not "remember to check" —
+  it is *prefix every local and every alias mechanically*, including in trigger bodies, where the
+  colliding name comes from a user's schema rather than from this codebase.
+
 ## Reference
 
 Postgres.md`.
