@@ -116,6 +116,15 @@ independent: the same content always produces the same root hash, whatever order
 Which is what buys git's defining property — **`diff A B` costs O(size of the difference)**, not
 O(history between them) and not O(table size).
 
+## Documentation
+
+| | |
+| --- | --- |
+| [docs/USAGE.md](docs/USAGE.md) | install, track a table, commit, branch, merge, resolve conflicts, move history between databases |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | the canonical row form, content-defined chunking, the packed node format, how commit and diff actually work, and the invariants each test defends |
+| [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | what it costs, what it refuses, and what it will never do |
+| [PERF.md](PERF.md) | every measurement, including the ones that overturned an earlier conclusion |
+
 ## Run the tests
 
 ```bash
