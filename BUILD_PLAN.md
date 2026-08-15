@@ -830,6 +830,33 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   and 195. So the first read of this - "18 fails, 16 and 17 pass, therefore version specific" - was
   wrong. It was never about the version. Three of the last five runs on master failed and one passed,
   purely on which random seeds each drew. All three seeds pass with the fix and all three are pinned.
+- **dropping a tracked table stopped all versioning, silently** — a migration that drops a tracked
+  table leaves its oid in `pgit.tracked`, and from then on **every** `pgit.commit()` fails with
+  `pgit: table 3592960 has no primary key`. The oid because the name is gone, and the wrong diagnosis
+  because the real problem is that the table does not exist. `fsck` reported **0 problems** and
+  `needs_attention()` was empty, so nothing anywhere said versioning had stopped. For a project whose
+  schema is owned by drizzle migrations, dropping a table is routine.
+  `pgit.tracked` now records `name_at_track` so the table can still be named after it is gone,
+  `pgit.missing_tracked()` finds them, `pgit.untrack_missing()` clears them, `fsck` reports
+  "tracked table no longer exists", `needs_attention` surfaces it, and the commit error says which
+  table and what to run. The dropped table's recorded history is kept, so its old rows are still
+  readable through `diff` and `restore`. 8 assertions in `ddl_03_dropped_tracked_table.sql`.
+  Two self-inflicted errors on the way, both caught by the suite rather than by me. Naming the new
+  column `tbl_name` collided with the **parameter** of that name in `pgit.blame` and
+  `pgit.row_matches`, making `WHERE tbl::text = tbl_name` ambiguous and breaking four unrelated test
+  files. And `missing_tracked()` returning a column called `tbl_name` collided with the same column
+  inside its own body. Adding a column to a shared metadata table is not a local change.
+- **the chunk_target=4 divergence does not reach the default** — 3000 operations at `chunk_target=64`
+  over 8000 row tables came back clean, so the level 1 regrouping defect found by `hunt.sh` is
+  confined to very small chunk targets. Recorded rather than fixed: `build_one_level(1)` re-chunks
+  only the leaves under hit level 1 nodes and trusts a plus-or-minus-one neighbour expansion for
+  context, and nothing proves one neighbour is always enough. At a target of 4 an L1 node holds about
+  four leaves, so a change reaches past its neighbour.
+- **a reproduction that was my own contamination** — the "deterministic minimal repro" of that
+  divergence, 220 rows and a delete of ids 34 to 38, turned out to be an artifact: the search loop
+  dropped and recreated the table while it was still tracked. On a clean database the same case
+  passes. It was worth checking rather than reporting, and the contamination is what exposed the
+  dropped-table bug above.
 
 ## Reference
 

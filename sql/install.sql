@@ -529,6 +529,8 @@ CREATE TABLE IF NOT EXISTS pgit.tracked (
   pk_cols text[]   NOT NULL
 );
 
+ALTER TABLE pgit.tracked ADD COLUMN IF NOT EXISTS name_at_track text NOT NULL DEFAULT '';
+
 CREATE TABLE IF NOT EXISTS pgit.changes (
   id     bigserial PRIMARY KEY,
   txid   bigint      NOT NULL,
@@ -609,8 +611,8 @@ BEGIN
       target::text;
   END IF;
 
-  INSERT INTO pgit.tracked (tbl, pk_cols) VALUES (target, cols)
-  ON CONFLICT (tbl) DO UPDATE SET pk_cols = EXCLUDED.pk_cols;
+  INSERT INTO pgit.tracked (tbl, pk_cols, name_at_track) VALUES (target, cols, target::text)
+  ON CONFLICT (tbl) DO UPDATE SET pk_cols = EXCLUDED.pk_cols, name_at_track = EXCLUDED.name_at_track;
 
   EXECUTE format('DROP TRIGGER IF EXISTS pgit_journal_ins ON %s', target::text);
   EXECUTE format('DROP TRIGGER IF EXISTS pgit_journal_upd ON %s', target::text);
@@ -2502,6 +2504,34 @@ END $$;
 
 DROP FUNCTION IF EXISTS pgit.snapshot_trees(bytea);
 
+CREATE OR REPLACE FUNCTION pgit.missing_tracked() RETURNS TABLE (gone_table text, gone_oid text)
+LANGUAGE sql STABLE AS $$
+  SELECT COALESCE(NULLIF(t.name_at_track, ''), t.tbl::text), t.tbl::text
+  FROM pgit.tracked t
+  WHERE NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = t.tbl)
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.untrack_missing() RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  started timestamptz := clock_timestamp();
+  gone    text[];
+  n       int;
+BEGIN
+  SELECT array_agg(m.gone_table) INTO gone FROM pgit.missing_tracked() m;
+
+  DELETE FROM pgit.tracked t
+  WHERE NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = t.tbl);
+  GET DIAGNOSTICS n = ROW_COUNT;
+
+  IF n > 0 THEN
+    PERFORM pgit.emit('untrack_missing', started,
+      jsonb_build_object('tables', to_jsonb(gone), 'count', n));
+  END IF;
+
+  RETURN n;
+END $$;
+
 CREATE OR REPLACE FUNCTION pgit.snapshot_trees(parent bytea) RETURNS jsonb
 LANGUAGE plpgsql SET client_min_messages = warning AS $$
 DECLARE
@@ -2511,6 +2541,13 @@ DECLARE
   prev_fp  bytea;
   roots    jsonb := '{}'::jsonb;
 BEGIN
+  IF EXISTS (SELECT 1 FROM pgit.missing_tracked()) THEN
+    RAISE EXCEPTION 'pgit: tracked table(s) no longer exist: %',
+      (SELECT string_agg(m.gone_table, ', ') FROM pgit.missing_tracked() m)
+      USING HINT = 'they were dropped while tracked; run SELECT pgit.untrack_missing() '
+                   'to stop tracking them, then commit again';
+  END IF;
+
   FOR r IN SELECT t.tbl FROM pgit.tracked t ORDER BY t.tbl::text LOOP
     SELECT x.root_hash INTO prev FROM pgit.trees x
     WHERE x.commit_sha = parent AND x.tbl = r.tbl::text;
@@ -3278,6 +3315,10 @@ LANGUAGE sql STABLE AS $$
   UNION ALL
   SELECT 'node has no key vector', encode(n.hash, 'hex')
   FROM pgit.nodes n WHERE n.entries IS NOT NULL AND n.keys IS NULL
+
+  UNION ALL
+  SELECT 'tracked table no longer exists', m.gone_table
+  FROM pgit.missing_tracked() m
 
   UNION ALL
   SELECT 'delta base missing', encode(n.hash, 'hex')
@@ -4221,7 +4262,7 @@ CREATE OR REPLACE FUNCTION pgit.admin_only_verbs() RETURNS text[]
 LANGUAGE sql IMMUTABLE AS $$
   SELECT ARRAY['track','untrack','prune','gc_nodes','repack','unpack','reset',
                'delete_branch','unbundle','clone_from','receive','create_from_schema',
-               'remote_add','grant_read','grant_write','grant_admin','log_rotate']
+               'remote_add','grant_read','grant_write','grant_admin','log_rotate','untrack_missing']
 $$;
 
 CREATE OR REPLACE FUNCTION pgit.write_verbs() RETURNS text[]
@@ -4327,6 +4368,9 @@ LANGUAGE sql STABLE AS $$
   UNION ALL SELECT 'bisect in progress',
                    COALESCE((SELECT b.orig_ref FROM pgit.bisect b LIMIT 1), 'no'),
                    EXISTS (SELECT 1 FROM pgit.bisect)
+  UNION ALL SELECT 'tracked tables missing',
+                   COALESCE((SELECT string_agg(m.gone_table, ', ') FROM pgit.missing_tracked() m), 'none'),
+                   EXISTS (SELECT 1 FROM pgit.missing_tracked())
   UNION ALL SELECT 'rebase in progress',
                    COALESCE((SELECT r.branch FROM pgit.rebase_state r LIMIT 1), 'no'),
                    EXISTS (SELECT 1 FROM pgit.rebase_state)
