@@ -945,7 +945,7 @@ Three ways to close it, none of them free, none taken:
    reconstruct full images.
 3. **Accept it and document it.** A journal that captures full row images cannot plausibly cost
    2% of the write it describes; a 2× target may simply be the wrong number. **That is a judgement
-   for Pavlo, not something to quietly rewrite in the criteria.**
+   call about the target, not something to quietly rewrite in the criteria.**
 
 ## The two fixes, in priority order
 

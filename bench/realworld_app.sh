@@ -2,7 +2,7 @@
 set -uo pipefail
 
 ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
-DSN="${PGIT_REAL_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_intoge}"
+DSN="${PGIT_REAL_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_realapp}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DUMP="${DUMP:-}"
 . "$(dirname "$0")/../test/lib.sh"
@@ -11,7 +11,7 @@ qs(){ psql "$DSN" -X -q -At -v ON_ERROR_STOP=1 -c "$1" 2>&1; }
 
 if [ -n "$DUMP" ]; then
   [ -f "$DUMP" ] || { echo "dump not found: $DUMP" >&2; exit 66; }
-  psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_intoge" -c "CREATE DATABASE pgit_intoge" >/dev/null 2>&1
+  psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_realapp" -c "CREATE DATABASE pgit_realapp" >/dev/null 2>&1
   pg_restore --no-owner --no-privileges -d "$DSN" "$DUMP" >/dev/null 2>&1
 fi
 
