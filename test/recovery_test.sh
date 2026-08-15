@@ -27,7 +27,7 @@ docker run -d --name "$NAME" -e POSTGRES_PASSWORD=pgit -e POSTGRES_DB=pgit_test 
 
 wait_ready() {
   for _ in $(seq 1 90); do
-    docker exec "$NAME" pg_isready -U postgres -d pgit_test >/dev/null 2>&1 && return 0
+    psql "$ADMIN" -X -q -At -c "SELECT 1" >/dev/null 2>&1 && return 0
     sleep 1
   done
   return 1
@@ -35,12 +35,17 @@ wait_ready() {
 
 if ! wait_ready; then nok "recovery: server never became ready"; suite_end RECOVERY 1; fi
 
-psql "$ADMIN" -X -q -c "CREATE DATABASE pgit_rec" >/dev/null 2>&1
-psql "$D" -X -q -v ON_ERROR_STOP=1 -f "$DIR/../sql/install.sql" >/dev/null 2>&1
-psql "$D" -X -q -c "CREATE TABLE r (id int PRIMARY KEY, v text, n int)" >/dev/null
-psql "$D" -X -q -At -c "SELECT pgit.track('r')" >/dev/null
-psql "$D" -X -q -c "INSERT INTO r SELECT g,'v'||g,0 FROM generate_series(1,20000) g" >/dev/null
-psql "$D" -X -q -At -c "SELECT pgit.commit('base','main')" >/dev/null
+setup() {
+  psql "$ADMIN" -X -q -v ON_ERROR_STOP=1 -c "CREATE DATABASE pgit_rec" || return 1
+  psql "$D" -X -q -v ON_ERROR_STOP=1 -f "$DIR/../sql/install.sql" >/dev/null || return 1
+  psql "$D" -X -q -v ON_ERROR_STOP=1 \
+    -c "CREATE TABLE r (id int PRIMARY KEY, v text, n int)" \
+    -c "SELECT pgit.track('r')" \
+    -c "INSERT INTO r SELECT g,'v'||g,0 FROM generate_series(1,20000) g" \
+    -c "SELECT pgit.commit('base','main')" >/dev/null || return 1
+}
+
+if ! setup; then nok "recovery: could not build the fixture database"; suite_end RECOVERY 1; fi
 
 BEFORE=$(psql "$D" -X -At -c "SELECT encode(pgit.resolve('main'),'hex')")
 
@@ -76,7 +81,7 @@ for i in $(seq 1 "$KILLS"); do
               AND pgit.write_tree(t.tbl::regclass) IS DISTINCT FROM t.root_hash)" 2>&1)
   if [ "$BAD" != "0" ]; then
     violations=$((violations + 1))
-    echo "  kill $i: invariants broken after recovery (fsck+mismatch = $BAD)"
+    printf '# kill %s: invariants broken after recovery (fsck+mismatch = %s)\n' "$i" "$BAD"
   fi
 done
 
