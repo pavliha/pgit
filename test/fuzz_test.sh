@@ -14,6 +14,8 @@ REGRESSION_SEEDS="0.772185 0.775743 0.319870"
 
 
 ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
+FDB="pgit_fuzz_$$"
+trap 'psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS $FDB WITH (FORCE)" >/dev/null 2>&1' EXIT
 
 seeds=()
 if [ -n "$SEED" ]; then
@@ -28,11 +30,11 @@ fi
 survived=0
 for s in "${seeds[@]}"; do
 
-  D="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_fuzz"
+  D="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/$FDB"
   prepare() {
     psql "$ADMIN" -X -q -v ON_ERROR_STOP=1 \
-      -c "DROP DATABASE IF EXISTS pgit_fuzz WITH (FORCE)" \
-      -c "CREATE DATABASE pgit_fuzz" 2>&1 || return 1
+      -c "DROP DATABASE IF EXISTS $FDB WITH (FORCE)" \
+      -c "CREATE DATABASE $FDB" 2>&1 || return 1
     psql "$D" -X -q -v ON_ERROR_STOP=1 -f "$DIR/../sql/install.sql" 2>&1 || return 1
   }
   if ! prep=$(prepare); then

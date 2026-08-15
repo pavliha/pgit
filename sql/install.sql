@@ -3405,6 +3405,13 @@ LANGUAGE sql STABLE AS $$
   SELECT COALESCE(array_agg(c.sha), '{}'::bytea[]) FROM pgit.commits c
 $$;
 
+CREATE OR REPLACE FUNCTION pgit.canon_settings() RETURNS jsonb
+LANGUAGE sql STABLE AS $$
+  SELECT jsonb_object_agg(m.key, m.value)
+  FROM pgit.meta m
+  WHERE m.key IN ('canon_version', 'hash_algo', 'chunk_target', 'format_version')
+$$;
+
 CREATE OR REPLACE FUNCTION pgit.bundle(ref_names text[], have bytea[] DEFAULT '{}'::bytea[])
 RETURNS jsonb
 LANGUAGE plpgsql STABLE AS $$
@@ -3422,7 +3429,8 @@ BEGIN
       SELECT COALESCE(jsonb_object_agg(r.name, encode(r.sha, 'hex')), '{}'::jsonb)
       FROM pgit.refs r WHERE r.name = ANY (ref_names)),
       'commits', '[]'::jsonb, 'trees', '[]'::jsonb,
-      'schemas', '[]'::jsonb, 'nodes', '[]'::jsonb);
+      'schemas', '[]'::jsonb, 'nodes', '[]'::jsonb,
+      'settings', pgit.canon_settings());
   END IF;
 
   SELECT COALESCE(array_agg(DISTINCT t.root_hash), '{}'::bytea[]) INTO keep
@@ -3432,6 +3440,7 @@ BEGIN
   FROM pgit.trees t WHERE t.commit_sha = ANY (have);
 
   SELECT jsonb_build_object(
+    'settings', pgit.canon_settings(),
     'refs', (SELECT COALESCE(jsonb_object_agg(r.name, encode(r.sha, 'hex')), '{}'::jsonb)
              FROM pgit.refs r WHERE r.name = ANY (ref_names)),
     'commits', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
@@ -3470,7 +3479,26 @@ DECLARE
   n      int := 0;
   h      bytea;
   calc   bytea;
+  theirs jsonb := b -> 'settings';
+  mine   jsonb := pgit.canon_settings();
+  k      text;
+  fresh  boolean := NOT EXISTS (SELECT 1 FROM pgit.nodes);
 BEGIN
+  IF theirs IS NOT NULL THEN
+    FOR k IN SELECT jsonb_object_keys(theirs) LOOP
+      IF theirs ->> k IS DISTINCT FROM mine ->> k THEN
+        IF fresh AND k = 'chunk_target' THEN
+          UPDATE pgit.meta SET value = theirs ->> k WHERE key = k;
+        ELSE
+          RAISE EXCEPTION 'pgit: this bundle was written with % = %, this database uses %',
+            k, theirs ->> k, mine ->> k
+            USING HINT = 'trees built under different canonical settings cannot be mixed; '
+                         'clone into an empty database instead of receiving into this one';
+        END IF;
+      END IF;
+    END LOOP;
+  END IF;
+
   FOR e IN SELECT jsonb_array_elements(b -> 'nodes') LOOP
     h := decode(e ->> 'hash', 'hex');
 

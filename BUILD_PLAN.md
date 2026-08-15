@@ -857,6 +857,27 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   dropped and recreated the table while it was still tracked. On a clean database the same case
   passes. It was worth checking rather than reporting, and the contamination is what exposed the
   dropped-table bug above.
+- **a bundle did not say what it was built with** — a new round-trip hunt (`roundtrip_test.sh`: fuzz a
+  database, bundle it, clone into a fresh one, compare) failed on its first three seeds. The clone
+  received **bit identical roots** and was **fsck clean**, and every one of the 600 rows matched its
+  recorded image exactly, yet `write_tree` in the clone disagreed with the history it had just
+  received. The bundle carries `refs, nodes, trees, commits, schemas` and **no settings**, so a source
+  chunking at 8 cloned into a database defaulting to 64 produces trees that can never agree. Nothing
+  warned; only the invariant query catches it, and only if you run it.
+  `pgit.canon_settings()` now travels in every bundle, `unbundle` adopts `chunk_target` when the
+  target database is empty (which is what cloning means) and refuses otherwise, naming both values.
+  `canon_version`, `hash_algo` and `format_version` always refuse, because no reconciliation of those
+  is meaningful. Verified both directions: clone into empty adopts 8 and the tree matches; receive
+  into a database at 32 refuses.
+  Worth noting how long this hid. `remote_test.sh` has covered clone since the start and passes,
+  because it never varies `chunk_target`. The bug needed a *property* test over generated states, not
+  another example.
+- **the fuzzer could not run twice at once** — `fuzz_test.sh` hardcoded the database `pgit_fuzz`, so
+  two runs raced on `CREATE DATABASE` and both produced nonsense
+  (`duplicate key value violates unique constraint "pg_database_datname_index"`). I did this to myself
+  by running `all.sh` while a hunt batch was going, and briefly read the result as a real failure.
+  Same defect and same fix as `run.sh` earlier tonight: `pgit_fuzz_$$` plus a trap that drops it.
+  Two concurrent runs are now both green and leave nothing behind.
 
 ## Reference
 

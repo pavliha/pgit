@@ -10,9 +10,9 @@ echo "# pgit hunt started $(date -u +%FT%TZ), $BATCHES batches" | tee -a "$LOG"
 found=0
 batch=0
 
-for ops in 250 600; do
-  for rows in 400 2500; do
-    for chunk in 4 8 32; do
+for ops in 400 900; do
+  for rows in 2500 12000; do
+    for chunk in 8 32 64; do
       batch=$((batch + 1))
       [ "$batch" -gt "$BATCHES" ] && break 3
 
