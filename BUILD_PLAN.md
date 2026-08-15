@@ -826,6 +826,10 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   test that passes either way, seed 0.772185 is pinned in `fuzz_test.sh` as a regression seed that
   runs on every invocation. It is red without the fix and green with it, which is the property a
   regression test has to have.
+  Two other CI runs had failed the same way on **PG 16**, seeds 0.775743 and 0.319870, at ops 116
+  and 195. So the first read of this - "18 fails, 16 and 17 pass, therefore version specific" - was
+  wrong. It was never about the version. Three of the last five runs on master failed and one passed,
+  purely on which random seeds each drew. All three seeds pass with the fix and all three are pinned.
 
 ## Reference
 
