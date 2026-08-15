@@ -18,7 +18,11 @@ run_suite() {
   t0=$(date +%s)
   out=$("$script" "$@" 2>&1); rc=$?
   t1=$(date +%s)
-  printf '%s\n' "$out" | grep -E '^(not ok|# )' | head -20
+  if [ $rc -ne 0 ]; then
+    printf '%s\n' "$out" | grep -vE '^ok ' | sed 's/^/    | /'
+  else
+    printf '%s\n' "$out" | grep -E '^(not ok|# )' | head -20
+  fi
   local line
   line=$(printf '%s\n' "$out" | grep -E '(GREEN|RED)' | tail -1)
   echo "    ${line:-no summary line — suite produced no verdict}   [$((t1-t0))s]"
