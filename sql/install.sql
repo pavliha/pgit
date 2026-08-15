@@ -240,6 +240,29 @@ BEGIN
   END IF;
 END $$;
 
+DO $$
+DECLARE
+  ours   int := 3;
+  theirs int := COALESCE((SELECT value FROM pgit.meta WHERE key = 'format_version')::int, 0);
+  has_data boolean := EXISTS (SELECT 1 FROM pgit.nodes LIMIT 1);
+BEGIN
+  IF theirs > ours THEN
+    RAISE EXCEPTION 'pgit: this database was written by a newer pgit (on-disk format %, this one '
+      'reads %). Installing over it would corrupt it. Use the newer pgit, or rebuild: your tables '
+      'are the source of truth.', theirs, ours;
+  END IF;
+
+  IF theirs > 0 AND theirs < ours AND has_data THEN
+    RAISE EXCEPTION 'pgit: this database is on on-disk format % and this pgit writes %. There is no '
+      'in-place migration. Either stay on the older pgit, or drop the history and rebuild it - '
+      'TRUNCATE pgit.nodes, pgit.trees, pgit.commits, pgit.commit_parent, pgit.changes CASCADE; '
+      'then commit again.', theirs, ours;
+  END IF;
+
+  INSERT INTO pgit.meta (key, value) VALUES ('format_version', ours::text)
+    ON CONFLICT (key) DO UPDATE SET value = ours::text;
+END $$;
+
 INSERT INTO pgit.meta (key, value) VALUES ('delta_format', '2')
   ON CONFLICT (key) DO UPDATE SET value = '2';
 
@@ -3919,3 +3942,115 @@ BEGIN
 
   RETURN 0;
 END $$;
+
+REVOKE ALL ON SCHEMA pgit FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA pgit FROM PUBLIC;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA pgit FROM PUBLIC;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA pgit FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION pgit.admin_only_verbs() RETURNS text[]
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT ARRAY['track','untrack','prune','gc_nodes','repack','unpack','reset',
+               'delete_branch','unbundle','clone_from','receive','create_from_schema',
+               'remote_add','grant_read','grant_write','grant_admin']
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.write_verbs() RETURNS text[]
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT ARRAY['commit','branch','checkout','merge','merge_octopus','merge_finish',
+               'merge_abort','merge_continue','cherry_pick','revert','rebase','rebase_abort',
+               'tag','tag_delete','note_add','note_delete','stash_push','stash_pop',
+               'bisect_start','bisect_good','bisect_bad','bisect_next','bisect_reset',
+               'advance_ref','apply_row','apply_diff','materialise','replay_begin',
+               'replay_end','record_conflicts','record_schemas','record_trees','resolve_all',
+               'rerere_learn','rerere_apply','rerere_forget','write_tree',
+               'write_tree_incremental','snapshot_trees','ensure_scratch','ensure_key_index',
+               'build_up','build_one_level','locate_touched_chunks','splice_touched_chunks',
+               'rebuild_touched_ranges','assemble_above_leaves','journal_stmt','journal_truncate']
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.grant_level(role_name text, level text) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  fn    record;
+  n     int := 0;
+  admin text[] := pgit.admin_only_verbs();
+  wr    text[] := pgit.write_verbs();
+BEGIN
+  IF level NOT IN ('read', 'write', 'admin') THEN
+    RAISE EXCEPTION 'pgit: level must be read, write or admin, not %', level;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+    RAISE EXCEPTION 'pgit: role % does not exist; create it first', role_name;
+  END IF;
+
+  EXECUTE format('GRANT USAGE ON SCHEMA pgit TO %I', role_name);
+  EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA pgit TO %I', role_name);
+
+  IF level <> 'read' THEN
+    EXECUTE format('GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA pgit TO %I', role_name);
+    EXECUTE format('GRANT USAGE ON ALL SEQUENCES IN SCHEMA pgit TO %I', role_name);
+  END IF;
+
+  FOR fn IN
+    SELECT p.oid, p.proname, pg_get_function_identity_arguments(p.oid) AS args
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'pgit'
+  LOOP
+    CONTINUE WHEN level = 'read'  AND (fn.proname = ANY (admin) OR fn.proname = ANY (wr));
+    CONTINUE WHEN level = 'write' AND fn.proname = ANY (admin);
+    EXECUTE format('GRANT EXECUTE ON FUNCTION pgit.%I(%s) TO %I', fn.proname, fn.args, role_name);
+    n := n + 1;
+  END LOOP;
+
+  RETURN n;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.grant_read(role_name text) RETURNS int
+LANGUAGE sql AS $$ SELECT pgit.grant_level(role_name, 'read') $$;
+
+CREATE OR REPLACE FUNCTION pgit.grant_write(role_name text) RETURNS int
+LANGUAGE sql AS $$ SELECT pgit.grant_level(role_name, 'write') $$;
+
+CREATE OR REPLACE FUNCTION pgit.grant_admin(role_name text) RETURNS int
+LANGUAGE sql AS $$ SELECT pgit.grant_level(role_name, 'admin') $$;
+
+CREATE OR REPLACE FUNCTION pgit.health()
+RETURNS TABLE (metric text, value text, attention boolean)
+LANGUAGE sql STABLE AS $$
+  WITH n AS (
+    SELECT count(*) AS total,
+           count(*) FILTER (WHERE entries IS NULL) AS packed,
+           pg_total_relation_size('pgit.nodes') AS bytes
+    FROM pgit.nodes
+  ),
+  j AS (
+    SELECT count(*) FILTER (WHERE commit_sha IS NULL) AS pending,
+           count(*) AS total,
+           pg_total_relation_size('pgit.changes') AS bytes
+    FROM pgit.changes
+  ),
+  c AS (SELECT count(*) AS commits, max(at) AS newest FROM pgit.commits),
+  t AS (SELECT count(*) AS tracked FROM pgit.tracked),
+  f AS (SELECT count(*) AS problems FROM pgit.fsck())
+  SELECT 'tracked tables', t.tracked::text, t.tracked = 0 FROM t
+  UNION ALL SELECT 'commits', c.commits::text, false FROM c
+  UNION ALL SELECT 'newest commit', COALESCE(c.newest::text, 'none'), false FROM c
+  UNION ALL SELECT 'nodes', n.total::text, false FROM n
+  UNION ALL SELECT 'node store', pg_size_pretty(n.bytes), false FROM n
+  UNION ALL SELECT 'nodes packed by gc',
+                   CASE WHEN n.total = 0 THEN '0%'
+                        ELSE round(n.packed * 100.0 / n.total)::text || '%' END,
+                   n.total > 5000 AND n.packed * 4 < n.total
+            FROM n
+  UNION ALL SELECT 'journal rows', j.total::text, false FROM j
+  UNION ALL SELECT 'journal awaiting commit', j.pending::text, j.pending > 100000 FROM j
+  UNION ALL SELECT 'journal size', pg_size_pretty(j.bytes), false FROM j
+  UNION ALL SELECT 'fsck problems', f.problems::text, f.problems > 0 FROM f
+  UNION ALL SELECT 'head', COALESCE(pgit.head(), 'none'), false
+$$;
+
+CREATE OR REPLACE FUNCTION pgit.needs_attention() RETURNS TABLE (metric text, value text)
+LANGUAGE sql STABLE AS $$
+  SELECT h.metric, h.value FROM pgit.health() h WHERE h.attention
+$$;

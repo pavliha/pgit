@@ -38,6 +38,8 @@ run_suite "remote       " "$DIR/remote_test.sh"
 run_suite "fuzz         " "$DIR/fuzz_test.sh"
 run_suite "concurrency  " "$DIR/concurrency_test.sh"
 run_suite "crash-fuzz   " "$DIR/crash_fuzz_test.sh"
+run_suite "privileges   " "$DIR/privileges_test.sh"
+run_suite "recovery     " "$DIR/recovery_test.sh"
 
 if [ -n "${DUMP:-}" ]; then
   run_suite "real-schema  " "$ROOT/bench/realworld_intoge.sh"
