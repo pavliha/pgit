@@ -3817,106 +3817,130 @@ LANGUAGE sql STABLE AS $$
   FROM d GROUP BY d.tbl, d.k
 $$;
 
+CREATE OR REPLACE FUNCTION pgit.octopus_head_names(ours bytea, branch_names text[])
+RETURNS text[]
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  names text[]   := '{}';
+  heads bytea[]  := '{}';
+  b     text;
+  h     bytea;
+BEGIN
+  FOREACH b IN ARRAY branch_names LOOP
+    h := pgit.resolve(b);
+    IF h IS NULL THEN RAISE EXCEPTION 'pgit: unknown branch %', b; END IF;
+    PERFORM pgit.assert_same_schema(ours, h);
+
+    IF h <> ours AND NOT (h = ANY (heads)) AND pgit.merge_base(ours, h) <> h THEN
+      heads := heads || h;
+      names := names || b;
+    END IF;
+  END LOOP;
+
+  RETURN names;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.octopus_refuse_if_conflicted(base bytea, all_heads bytea[])
+RETURNS void
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  bad record;
+  key text;
+BEGIN
+  SELECT * INTO bad FROM pgit.octopus_plan(base, all_heads) p
+  WHERE p.conflicted ORDER BY p.tbl, p.k LIMIT 1;
+
+  IF NOT FOUND THEN RETURN; END IF;
+
+  SELECT string_agg(c || '=' || COALESCE(COALESCE(bad.after, bad.before) ->> c, 'null'), ',' ORDER BY c)
+  INTO key FROM unnest(pgit.pk_columns(bad.tbl::regclass)) c;
+
+  RAISE EXCEPTION 'pgit: octopus refuses this merge, % of the % heads changed %(%) differently; merge them one at a time',
+    bad.sides, array_length(all_heads, 1), bad.tbl, key;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.octopus_commit_sha(
+  all_heads bytea[], msg text, ts timestamptz, summary text) RETURNS bytea
+LANGUAGE sql STABLE AS $$
+  SELECT pgit.hash(
+    (SELECT string_agg(encode(x.sha, 'hex'), E'\n' ORDER BY x.ord)
+     FROM unnest(all_heads) WITH ORDINALITY x(sha, ord)) || E'\n' ||
+    msg || E'\n' ||
+    to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') || E'\n' || summary)
+$$;
+
 CREATE OR REPLACE FUNCTION pgit.merge_octopus(branch_names text[], msg text DEFAULT NULL)
 RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
-  oct_ours    bytea   := pgit.resolve(pgit.head());
-  oct_names   text[]  := '{}';
-  oct_heads   bytea[] := '{}';
-  oct_all     bytea[];
-  oct_base    bytea;
-  oct_b       text;
-  oct_h       bytea;
-  oct_msg     text;
-  oct_bad     record;
-  oct_key     text;
-  oct_p       record;
-  oct_roots   jsonb;
-  oct_summary text;
-  oct_new     bytea;
-  oct_ts      timestamptz := clock_timestamp();
-  oct_who     text := pgit.actor();
+  ours    bytea   := pgit.resolve(pgit.head());
+  names   text[]  := pgit.octopus_head_names(pgit.resolve(pgit.head()), branch_names);
+  heads   bytea[];
+  all_h   bytea[];
+  base    bytea;
+  h       bytea;
+  full_msg text;
+  plan_row record;
+  roots   jsonb;
+  new_sha bytea;
+  ts      timestamptz := clock_timestamp();
 BEGIN
   IF COALESCE(array_length(branch_names, 1), 0) < 2 THEN
     RAISE EXCEPTION 'pgit: an octopus merge needs at least two branches, use merge for one';
   END IF;
 
-  FOREACH oct_b IN ARRAY branch_names LOOP
-    oct_h := pgit.resolve(oct_b);
-    IF oct_h IS NULL THEN RAISE EXCEPTION 'pgit: unknown branch %', oct_b; END IF;
-    PERFORM pgit.assert_same_schema(oct_ours, oct_h);
-
-    IF oct_h <> oct_ours AND NOT (oct_h = ANY (oct_heads))
-       AND pgit.merge_base(oct_ours, oct_h) <> oct_h THEN
-      oct_heads := oct_heads || oct_h;
-      oct_names := oct_names || oct_b;
-    END IF;
-  END LOOP;
-
-  IF COALESCE(array_length(oct_heads, 1), 0) = 0 THEN
+  IF COALESCE(array_length(names, 1), 0) = 0 THEN
     RETURN 0;
   END IF;
 
-  IF array_length(oct_heads, 1) = 1 THEN
-    RETURN pgit.merge(oct_names[1], msg);
+  IF array_length(names, 1) = 1 THEN
+    RETURN pgit.merge(names[1], msg);
   END IF;
 
-  oct_msg  := COALESCE(msg, 'merge ' || array_to_string(oct_names, ' '));
-  oct_all  := ARRAY[oct_ours] || oct_heads;
-  oct_base := oct_ours;
+  SELECT array_agg(pgit.resolve(n) ORDER BY o) INTO heads
+  FROM unnest(names) WITH ORDINALITY x(n, o);
 
-  FOREACH oct_h IN ARRAY oct_heads LOOP
-    oct_base := pgit.merge_base(oct_base, oct_h);
+  full_msg := COALESCE(msg, 'merge ' || array_to_string(names, ' '));
+  all_h    := ARRAY[ours] || heads;
+  base     := ours;
+
+  FOREACH h IN ARRAY heads LOOP
+    base := pgit.merge_base(base, h);
   END LOOP;
 
-  SELECT * INTO oct_bad FROM pgit.octopus_plan(oct_base, oct_all) p
-  WHERE p.conflicted ORDER BY p.tbl, p.k LIMIT 1;
-
-  IF FOUND THEN
-    SELECT string_agg(c || '=' || COALESCE(COALESCE(oct_bad.after, oct_bad.before) ->> c, 'null'), ',' ORDER BY c)
-    INTO oct_key FROM unnest(pgit.pk_columns(oct_bad.tbl::regclass)) c;
-
-    RAISE EXCEPTION 'pgit: octopus refuses this merge, % of the % heads changed %(%) differently; merge them one at a time',
-      oct_bad.sides, array_length(oct_all, 1), oct_bad.tbl, oct_key;
-  END IF;
+  PERFORM pgit.octopus_refuse_if_conflicted(base, all_h);
 
   SET CONSTRAINTS ALL DEFERRED;
 
-  FOR oct_p IN SELECT * FROM pgit.octopus_plan(oct_base, oct_all) LOOP
-    IF oct_p.op = 'DELETE' THEN
-      PERFORM pgit.apply_row(oct_p.tbl::regclass, 'delete', oct_p.before);
+  FOR plan_row IN SELECT * FROM pgit.octopus_plan(base, all_h) LOOP
+    IF plan_row.op = 'DELETE' THEN
+      PERFORM pgit.apply_row(plan_row.tbl::regclass, 'delete', plan_row.before);
     ELSE
-      PERFORM pgit.apply_row(oct_p.tbl::regclass, 'upsert', oct_p.after);
+      PERFORM pgit.apply_row(plan_row.tbl::regclass, 'upsert', plan_row.after);
     END IF;
   END LOOP;
 
   SET CONSTRAINTS ALL IMMEDIATE;
 
-  oct_roots   := pgit.snapshot_trees(oct_ours);
-  oct_summary := pgit.roots_summary(oct_roots);
-  oct_new     := pgit.hash(
-    (SELECT string_agg(encode(x.sha, 'hex'), E'\n' ORDER BY x.ord)
-     FROM unnest(oct_all) WITH ORDINALITY x(sha, ord)) || E'\n' ||
-    oct_msg || E'\n' ||
-    to_char(oct_ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') || E'\n' || oct_summary);
+  roots   := pgit.snapshot_trees(ours);
+  new_sha := pgit.octopus_commit_sha(all_h, full_msg, ts, pgit.roots_summary(roots));
 
   INSERT INTO pgit.commits (sha, parent_sha, author, message, at)
-  VALUES (oct_new, oct_ours, oct_who, oct_msg, oct_ts)
+  VALUES (new_sha, ours, pgit.actor(), full_msg, ts)
   ON CONFLICT (sha) DO NOTHING;
 
   INSERT INTO pgit.commit_parent (commit_sha, ord, parent_sha)
-  SELECT oct_new, (x.ord + 1)::int, x.sha
-  FROM unnest(oct_heads) WITH ORDINALITY x(sha, ord)
+  SELECT new_sha, (x.ord + 1)::int, x.sha
+  FROM unnest(heads) WITH ORDINALITY x(sha, ord)
   ON CONFLICT DO NOTHING;
 
   INSERT INTO pgit.trees (commit_sha, tbl, root_hash)
-  SELECT oct_new, e.key, decode(e.value, 'hex') FROM jsonb_each_text(oct_roots) e
+  SELECT new_sha, e.key, decode(e.value, 'hex') FROM jsonb_each_text(roots) e
   ON CONFLICT DO NOTHING;
 
-  PERFORM pgit.record_schemas(oct_new);
-  UPDATE pgit.changes SET commit_sha = oct_new WHERE commit_sha IS NULL;
-  PERFORM pgit.advance_ref(pgit.head(), oct_ours, oct_new);
+  PERFORM pgit.record_schemas(new_sha);
+  UPDATE pgit.changes SET commit_sha = new_sha WHERE commit_sha IS NULL;
+  PERFORM pgit.advance_ref(pgit.head(), ours, new_sha);
 
   RETURN 0;
 END $$;
