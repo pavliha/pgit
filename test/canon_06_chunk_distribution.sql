@@ -1,5 +1,5 @@
 BEGIN;
-SELECT plan(4);
+SELECT plan(8);
 
 CREATE TABLE seq_keys (id bigint PRIMARY KEY, v text);
 INSERT INTO seq_keys SELECT g, 'x' FROM generate_series(1, 20000) g;
@@ -39,6 +39,44 @@ SELECT ok(
   (SELECT rows::numeric / chunks BETWEEN 16 AND 256 FROM dist WHERE shape = 'common-prefix'),
   'AC-CANON-06: keys sharing a 25-character prefix chunk within 4x of the 64 target'
 );
+
+-- A chunk's key is its first key, which is the key that followed a boundary, so
+-- when every key of a level is a boundary the next level holds exactly the same
+-- keys and the build loop spins to the depth cap. Two rows whose first key is a
+-- boundary are enough, which is one table in chunk_target. This one is such a
+-- table: the column name is deliberate, it is what makes the first key hash to a
+-- boundary.
+CREATE TABLE spin ("Id Col" int PRIMARY KEY, v text);
+SELECT pgit.track('spin');
+INSERT INTO spin VALUES (1, 'a'), (2, 'b');
+
+SELECT ok(
+  pgit.is_boundary(convert_to('Id Col=#1:1|', 'UTF8'), pgit.setting('chunk_target')::int),
+  'AC-CANON-06: the fixture really is the pathological shape, first key on a boundary');
+
+CREATE TEMP TABLE spin_c AS SELECT pgit.commit('spin base', 'main') AS sha;
+
+SELECT is(
+  pgit.write_tree('spin'),
+  (SELECT root_hash FROM pgit.trees WHERE commit_sha = (SELECT sha FROM spin_c) AND tbl = 'spin'),
+  'AC-CANON-06: a level that cannot shrink still builds, and matches a rebuild');
+
+UPDATE spin SET v = 'z' WHERE "Id Col" = 1;
+SELECT pgit.commit('spin update', 'main');
+
+SELECT is(
+  pgit.write_tree('spin'),
+  (SELECT root_hash FROM pgit.trees WHERE commit_sha = pgit.resolve('main') AND tbl = 'spin'),
+  'AC-CANON-06: and the incremental path agrees with a full rebuild on it');
+
+INSERT INTO spin VALUES (3, 'c');
+DELETE FROM spin WHERE "Id Col" = 2;
+SELECT pgit.commit('spin churn', 'main');
+
+SELECT is(
+  pgit.write_tree('spin'),
+  (SELECT root_hash FROM pgit.trees WHERE commit_sha = pgit.resolve('main') AND tbl = 'spin'),
+  'AC-CANON-06: through an insert and a delete as well');
 
 SELECT * FROM finish();
 ROLLBACK;

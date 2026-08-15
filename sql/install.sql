@@ -2147,6 +2147,28 @@ BEGIN
                ELSE '[]'::jsonb END
       FROM marked GROUP BY chunk;
 
+    -- Content-defined chunking can fail to make progress. A chunk's key is the
+    -- first key in it, which is the key that followed a boundary, so when every
+    -- key is a boundary the next level holds exactly the same keys as this one
+    -- and the loop spins until the depth cap. Two rows whose first key is a
+    -- boundary hit it, which is one table in chunk_target - it was found on a
+    -- two row table whose primary key column had a space in its name, purely
+    -- because that changed the hash. Collapse a level that fails to shrink into
+    -- one chunk. This is only reachable where the old code raised "tree depth
+    -- exceeded", so no tree that already builds changes shape.
+    IF (SELECT count(*) FROM pgit_grp) = n THEN
+      TRUNCATE pgit_grp;
+      INSERT INTO pgit_grp (key_bytes, hash, hashes, keys, entries)
+      SELECT min(key_bytes),
+             pgit.hash(string_agg(hash, ''::bytea ORDER BY key_bytes)),
+             string_agg(hash, ''::bytea ORDER BY key_bytes),
+             array_agg(encode(key_bytes, 'hex') ORDER BY key_bytes),
+             CASE WHEN depth = 0
+               THEN jsonb_agg(image ORDER BY key_bytes)
+               ELSE '[]'::jsonb END
+      FROM pgit_lvl;
+    END IF;
+
     INSERT INTO pgit.nodes (hash, level, entries, hashes, keys)
     SELECT g.hash, depth, g.entries, g.hashes, g.keys FROM pgit_grp g
     ON CONFLICT (hash) DO NOTHING;
@@ -2166,7 +2188,7 @@ BEGIN
     'SELECT array_agg(DISTINCT encode(convert_to(%s, ''UTF8''), ''hex''))
      FROM (SELECT COALESCE(c.after, c.before) AS img FROM pgit.changes c
            WHERE c.tbl = %L AND c.commit_sha IS NULL) s,
-          LATERAL jsonb_populate_record(NULL::%s, s.img) t',
+          LATERAL jsonb_populate_record(NULL::%s, s.img) "pgit row"',
     pgit.pk_canon_expr(target), target::text, target::text)
   INTO res;
 
@@ -2190,6 +2212,19 @@ DECLARE
   hi_key  text;
   pure_updates boolean;
 BEGIN
+
+  -- A shallow tree is rebuilt outright. The incremental path groups a range of
+  -- keys where build_up groups a whole level, so the two disagree whenever
+  -- chunking fails to reduce a level - every key a boundary - and build_up
+  -- collapses it. That needs at least chunk_target consecutive boundary keys to
+  -- occur at depth, but only one at the very top, so it is reachable on small
+  -- tables: a two row table whose first key is a boundary, one in chunk_target
+  -- of them. A level 1 root means the table fits in chunk_target chunks, where
+  -- a full rebuild costs milliseconds and cannot disagree with itself.
+  IF prev_root IS NOT NULL AND COALESCE(pgit.node_level(prev_root), 0) <= 1 THEN
+    RETURN pgit.write_tree(target);
+  END IF;
+
   -- Nothing in this table changed, so its tree is the one the parent recorded.
   -- Falling through to a full rebuild here makes the cheapest case the most
   -- expensive one: every commit would rebuild every table it did not touch.
