@@ -3610,11 +3610,23 @@ CREATE TABLE IF NOT EXISTS pgit.bisect (
   CONSTRAINT bisect_single CHECK (id = 1)
 );
 
+-- Where the branch was when the bisect started. bisect_next hard resets the
+-- current branch onto each candidate, so without this the branch tip is simply
+-- abandoned and gc collects it.
+ALTER TABLE pgit.bisect ADD COLUMN IF NOT EXISTS orig_ref text;
+ALTER TABLE pgit.bisect ADD COLUMN IF NOT EXISTS orig_sha bytea;
+
 CREATE OR REPLACE FUNCTION pgit.bisect_start(good_spec text, bad_spec text) RETURNS bytea
 LANGUAGE plpgsql AS $$
+DECLARE
+  ref text := pgit.head();
 BEGIN
   DELETE FROM pgit.bisect;
-  INSERT INTO pgit.bisect (id, good, bad) VALUES (1, pgit.rev(good_spec), pgit.rev(bad_spec));
+  -- git bisects on a detached HEAD and puts the branch back on reset. There is
+  -- no detached HEAD here, so bisect_next hard resets the branch itself and the
+  -- tip has to be remembered or it is lost.
+  INSERT INTO pgit.bisect (id, good, bad, orig_ref, orig_sha)
+  VALUES (1, pgit.rev(good_spec), pgit.rev(bad_spec), ref, pgit.resolve(ref));
   RETURN pgit.bisect_next();
 END $$;
 
@@ -3657,8 +3669,22 @@ BEGIN
   RETURN pgit.bisect_next();
 END $$;
 
+-- Puts the branch back where bisect_start found it, the way git bisect reset
+-- does. Without this a finished bisect leaves the branch parked on whichever
+-- candidate was examined last and every commit after it unreachable.
 CREATE OR REPLACE FUNCTION pgit.bisect_reset() RETURNS void
-LANGUAGE sql AS $$ DELETE FROM pgit.bisect $$;
+LANGUAGE plpgsql AS $$
+DECLARE
+  b record;
+BEGIN
+  SELECT * INTO b FROM pgit.bisect WHERE id = 1;
+
+  IF FOUND AND b.orig_sha IS NOT NULL AND pgit.resolve(b.orig_ref) IS DISTINCT FROM b.orig_sha THEN
+    PERFORM pgit.reset(encode(b.orig_sha, 'hex'), 'hard');
+  END IF;
+
+  DELETE FROM pgit.bisect;
+END $$;
 
 CREATE OR REPLACE FUNCTION pgit.gc_nodes() RETURNS int
 LANGUAGE plpgsql AS $$

@@ -1,5 +1,5 @@
 BEGIN;
-SELECT plan(20);
+SELECT plan(23);
 
 CREATE TABLE t (id int PRIMARY KEY, name text, hits int);
 SELECT pgit.track('t');
@@ -75,6 +75,42 @@ SELECT is((SELECT count(*) FROM pgit.fsck()), 0::bigint,
 SELECT is(pgit.write_tree('t'),
   (SELECT root_hash FROM pgit.trees WHERE commit_sha = pgit.resolve('main') AND tbl='t'),
   'prune: the surviving tip still describes the live table exactly');
+
+-- bisect_next hard resets the current branch onto each candidate, because there
+-- is no detached HEAD here. Nothing recorded where the branch started, so a
+-- bisect left it parked on the last candidate examined and every commit after
+-- that unreachable - and then gc collected them.
+CREATE TABLE bis (id int PRIMARY KEY, v text);
+SELECT pgit.track('bis');
+INSERT INTO bis SELECT g, 'v' || g FROM generate_series(1, 10) g;
+SELECT pgit.commit('bis 0', 'main');
+DO $$ DECLARE i int; BEGIN
+  FOR i IN 1..5 LOOP
+    UPDATE bis SET v = 'r' || i WHERE id = i;
+    PERFORM pgit.commit('bis ' || i, 'main');
+  END LOOP;
+END $$;
+
+CREATE TEMP TABLE bis_tip AS SELECT pgit.resolve('main') AS sha,
+                                    (SELECT count(*) FROM pgit.commits) AS total;
+
+SELECT pgit.bisect_start('main~4', 'main');
+SELECT pgit.bisect_bad('main');
+
+SELECT isnt(
+  pgit.resolve('main'), (SELECT sha FROM bis_tip),
+  'extras: a bisect in progress does move the branch, so the restore below is not vacuous');
+
+SELECT pgit.bisect_reset();
+
+SELECT is(
+  pgit.resolve('main'), (SELECT sha FROM bis_tip),
+  'extras: bisect_reset puts the branch back where bisect_start found it');
+
+SELECT is(
+  (SELECT count(*) FROM pgit.log(pgit.resolve('main')))::int,
+  (SELECT total FROM bis_tip)::int,
+  'extras: and every commit is reachable again, so gc cannot collect the tip');
 
 SELECT * FROM finish();
 ROLLBACK;
