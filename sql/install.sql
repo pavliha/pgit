@@ -169,7 +169,15 @@ DROP FUNCTION IF EXISTS pgit.tree_root(regclass);
 CREATE OR REPLACE FUNCTION pgit.row_hashes_sql(tbl regclass) RETURNS text
 LANGUAGE sql STABLE AS $$
   SELECT format(
-    'SELECT convert_to(%s, ''UTF8'') AS key_bytes, pgit.hash(%s) AS hash, to_jsonb(t) AS image FROM %s t',
+    -- The alias is quoted and contains a space, so no unquoted column name can
+    -- ever equal it. to_jsonb(t) over "FROM tbl t" resolves to a COLUMN named t
+    -- when the table has one, and every row image then became that column's
+    -- scalar value instead of the row; replay failed with "cannot call
+    -- populate_composite on a scalar" and the stored tree was wrong. Prefixing
+    -- the alias only moves the collision to the prefix, as a column named pgit_t
+    -- showed, so the alias has to be unwritable rather than merely unusual.
+    'SELECT convert_to(%s, ''UTF8'') AS key_bytes, pgit.hash(%s) AS hash,'
+    ' to_jsonb("pgit row") AS image FROM %s "pgit row"',
     pgit.pk_canon_expr(tbl), pgit.row_canon_expr(tbl), tbl::text
   )
 $$;
@@ -592,9 +600,9 @@ BEGIN
 
   EXECUTE format(
     'INSERT INTO pgit.changes (txid, tbl, pk, op, before, after, actor, source)
-     SELECT txid_current(), %L, pgit.pk_of(to_jsonb(t), %L::text[]), ''DELETE'',
-            to_jsonb(t), NULL, pgit.actor(), pgit.source()
-     FROM %s t',
+     SELECT txid_current(), %L, pgit.pk_of(to_jsonb("pgit row"), %L::text[]), ''DELETE'',
+            to_jsonb("pgit row"), NULL, pgit.actor(), pgit.source()
+     FROM %s "pgit row"',
     TG_TABLE_NAME, cols, TG_RELID::regclass::text
   );
 
@@ -619,6 +627,21 @@ DECLARE
 BEGIN
   IF cols IS NULL THEN
     RAISE EXCEPTION 'pgit: table % has no primary key', target::text;
+  END IF;
+
+  -- The generated SQL aliases the row as "pgit row" and the populated record as
+  -- "pgit img". Both contain a space, so no unquoted column name can equal them,
+  -- but a quoted one could - and the failure would be silent: to_jsonb() would
+  -- resolve to the column instead of the row and every stored image would be a
+  -- scalar. Refuse instead.
+  IF EXISTS (
+    SELECT 1 FROM pg_attribute a
+    WHERE a.attrelid = target AND a.attnum > 0 AND NOT a.attisdropped
+      AND a.attname IN ('pgit row', 'pgit img')
+  ) THEN
+    RAISE EXCEPTION 'pgit: table % has a column named "pgit row" or "pgit img", '
+      'which collide with the aliases pgit generates. Rename it before tracking.',
+      target::text;
   END IF;
 
   INSERT INTO pgit.tracked (tbl, pk_cols) VALUES (target, cols)
@@ -1675,32 +1698,37 @@ DECLARE
   upd_assign text;
   touched  int;
 BEGIN
-  SELECT string_agg(format('t.%I = s.%I', c, c), ' AND ') INTO pk_pred FROM unnest(pk) c;
+  -- Both aliases are prefixed. They used to be t and s, and a tracked table with
+  -- a column of either name broke every replay path - checkout, merge, revert,
+  -- cherry-pick - with "cannot call populate_composite on a scalar", because the
+  -- alias shadowed the table name in NULL::<table>. Same class as the trigger's
+  -- n, o and cols collisions.
+  SELECT string_agg(format('"pgit row".%I = "pgit img".%I', c, c), ' AND ') INTO pk_pred FROM unnest(pk) c;
   SELECT string_agg(format('%I', c), ', ')  INTO set_cols FROM unnest(cols) c;
-  SELECT string_agg(format('s.%I', c), ', ') INTO set_vals FROM unnest(cols) c;
+  SELECT string_agg(format('"pgit img".%I', c), ', ') INTO set_vals FROM unnest(cols) c;
 
   IF action = 'delete' THEN
-    EXECUTE format('DELETE FROM %s t USING jsonb_populate_record(NULL::%s, $1) s WHERE %s',
+    EXECUTE format('DELETE FROM %s "pgit row" USING jsonb_populate_record(NULL::%s, $1) "pgit img" WHERE %s',
                    target::text, target::text, pk_pred) USING img;
     RETURN;
   END IF;
 
   -- The key columns are already matched in the WHERE clause, so assigning them is
   -- pointless, and an identity key cannot be assigned at all.
-  SELECT string_agg(format('%I = s.%I', c, c), ', ') INTO upd_assign
+  SELECT string_agg(format('%I = "pgit img".%I', c, c), ', ') INTO upd_assign
   FROM unnest(cols) c WHERE NOT (c = ANY (pk));
 
   IF upd_assign IS NULL THEN
-    EXECUTE format('SELECT 1 FROM %s t, jsonb_populate_record(NULL::%s, $1) s WHERE %s',
+    EXECUTE format('SELECT 1 FROM %s "pgit row", jsonb_populate_record(NULL::%s, $1) "pgit img" WHERE %s',
                    target::text, target::text, pk_pred) USING img;
   ELSE
-    EXECUTE format('UPDATE %s t SET %s FROM jsonb_populate_record(NULL::%s, $1) s WHERE %s',
+    EXECUTE format('UPDATE %s "pgit row" SET %s FROM jsonb_populate_record(NULL::%s, $1) "pgit img" WHERE %s',
                    target::text, upd_assign, target::text, pk_pred) USING img;
   END IF;
   GET DIAGNOSTICS touched = ROW_COUNT;
 
   IF touched = 0 THEN
-    EXECUTE format('INSERT INTO %s (%s)%s SELECT %s FROM jsonb_populate_record(NULL::%s, $1) s',
+    EXECUTE format('INSERT INTO %s (%s)%s SELECT %s FROM jsonb_populate_record(NULL::%s, $1) "pgit img"',
                    target::text, set_cols, override, set_vals, target::text) USING img;
   END IF;
 END $$;
@@ -2026,9 +2054,9 @@ BEGIN
   -- same keys as "= ANY(array)" lets the planner pick a sequential scan instead,
   -- which on 1.7M rows cost more than the whole-range rescan this replaces.
   RETURN QUERY EXECUTE format(
-    'SELECT convert_to(%s, ''UTF8''), pgit.hash(%s), to_jsonb(t)
+    'SELECT convert_to(%s, ''UTF8''), pgit.hash(%s), to_jsonb("pgit row")
      FROM unnest($1) AS pgit_kk(pgit_key)
-     JOIN %s t ON (%s) COLLATE "C" = pgit_kk.pgit_key',
+     JOIN %s "pgit row" ON (%s) COLLATE "C" = pgit_kk.pgit_key',
     pk, pgit.row_canon_expr(target), target::text, pk)
   USING (SELECT array_agg(convert_from(decode(k, 'hex'), 'UTF8')) FROM unnest(keys) k);
 END $$;
@@ -2051,8 +2079,8 @@ DECLARE
   pk text := pgit.pk_canon_expr(target);
 BEGIN
   RETURN QUERY EXECUTE format(
-    'SELECT convert_to(%s, ''UTF8''), pgit.hash(%s), to_jsonb(t)
-     FROM %s t
+    'SELECT convert_to(%s, ''UTF8''), pgit.hash(%s), to_jsonb("pgit row")
+     FROM %s "pgit row"
      WHERE (%s) COLLATE "C" >= $1
        AND ($2 IS NULL OR (%s) COLLATE "C" < $2)',
     pk, pgit.row_canon_expr(target), target::text, pk, pk)
