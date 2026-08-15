@@ -43,8 +43,64 @@ positional() {
   printf "%s\n" "${out[@]:-}"
 }
 
+usage() {
+  cat <<'EOF'
+usage: pgit <command> [<args>]
+
+record
+   track <table>          start journalling a table
+   untrack <table>        stop journalling it
+   status                 branch, and whether anything is uncommitted
+   commit -m <msg>        commit every tracked change
+   log [--oneline] [-n N] [--author A] [--since T] [-- <table>]
+   show <rev>             one commit, and what it touched
+   blame <table> <key>    who last wrote each column
+   reflog                 every ref move, newest first
+
+inspect and move
+   diff <a> [<b>] [--stat] [--name-only] [-- <table>]
+   branch [<name>] | branch -d <name>
+   checkout [-f] <branch|rev>
+   tag [<name> [<rev>]] [-f] | tag -d <name>
+   reset <rev> [--soft|--hard]
+   restore <rev> -- <table>
+   stash push|pop|list
+   bisect start <good> <bad> | bisect good|bad|reset
+
+combine
+   merge <branch> [-s <strategy>] [-X <option>] [--continue|--abort]
+   rebase <onto> | rebase --abort
+   cherry-pick <rev>
+   revert <rev>
+   conflicts              what a merge left open
+   resolve <table> <key> <ours|theirs|base|delete>
+   rerere status|forget   resolutions it has memorised
+   renames <a> <b>        tables one commit renamed into another
+
+move between databases
+   remote add <name> <url> | remote          add one, or list them
+   have                   what this database already holds, as json
+   bundle <ref> [--have <file>]              write a bundle to stdout
+   clone <bundle-file> [--branch <name>]
+   fetch <remote> <bundle-file>
+   receive <bundle-file> [--force]
+
+maintain
+   gc [--depth N]         pack node versions as deltas
+   unpack                 materialise them again
+   prune [--before <t>]   drop unreachable history
+   fsck                   verify hashes and reachability
+   notes add <rev> -m <text> | notes show|rm [<rev>] | notes list
+
+Connects with $PGIT_DSN, or $PGIT_HOST against the local test database.
+EOF
+}
+
 cmd="${1:-}"
-[ -n "$cmd" ] || die "usage: pgit <command> [<args>]"
+case "$cmd" in
+  -h|--help|help) usage; exit 0 ;;
+  "")             usage >&2; exit 129 ;;
+esac
 shift
 
 case "$cmd" in
@@ -455,6 +511,6 @@ rebase|cherry-pick|revert|track|untrack)
   ;;
 
 *)
-  die "'$cmd' is not a pgit command"
+  die "'$cmd' is not a pgit command. See 'pgit help'."
   ;;
 esac

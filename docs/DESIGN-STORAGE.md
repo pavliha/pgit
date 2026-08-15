@@ -114,7 +114,8 @@ differently and there is a crossover, not a verdict:
 | all 1.0 GB of it, 100 changed rows | 12,062 ms | **527 ms** |
 
 **git's commit is O(file)** — it re-hashes and re-compresses everything however little changed.
-**pgit's is O(changed)** — it rewrites only the chunks holding changed rows. Below roughly 50 MB git
+**pgit's is O(changed)** — it rewrites only the chunks holding changed rows. Below roughly 18 MB for
+a 100-row change git
 wins on constants; above it pgit wins on complexity, and the gap grows linearly. At 1 GB pgit is
 **22.9× faster**, and that is the size range a database lives in.
 

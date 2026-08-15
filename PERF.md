@@ -828,6 +828,45 @@ holds: at 1.7M rows, a 5,000 row scattered commit costs 4,049 ms at target 64, 4
 5,462 ms at 16, with the node store growing from 209 MB to 241 MB. More, smaller nodes cost more
 tree levels and more nodes to write than they save in bytes copied.
 
+## Against git, reproducibly
+
+Everything below this heading was measured ad hoc on fixtures that no longer exist, which is why two
+of its numbers disagree with each other. `bench/vs_git.sh` replaces that: same generated data, same
+change sets, medians of three, one command (`make bench-git`). git 2.55.0, Postgres 18, 100 changed
+rows per commit.
+
+| rows | as a TSV | first commit | commit 100 rows | diff one commit | store after gc |
+| ---: | ---: | --- | --- | --- | --- |
+| 50,000 | 1.7 MB | git 81 ms / pgit 388 ms | git 75 ms / pgit 114 ms | git 33 ms / pgit 118 ms | git 488 kB / pgit 4.2 MB |
+| 500,000 | 18 MB | git 139 ms / pgit 2,603 ms | git 235 ms / **pgit 211 ms** | git 126 ms / pgit 146 ms | git 3.6 MB / pgit 33.6 MB |
+| 2,000,000 | 74 MB | git 373 ms / pgit 11,147 ms | git 931 ms / **pgit 436 ms** | git 519 ms / **pgit 169 ms** | git 14.6 MB / pgit 135 MB |
+
+**There are two crossovers, not one, and both depend on how much you changed rather than on size
+alone.** For a 100-row change, commit crosses at about 18 MB and diff at about 75 MB. The older
+figure of "around 50 MB" in this file came from a fixture changing 5,300 rows per commit, and it was
+quoted afterwards as though it were a property of the data size. It is not. git pays O(file) whatever
+you touched, so the smaller the change, the earlier pgit wins.
+
+**pgit's diff is close to flat and git's is not.** Across 40x more data, pgit's diff went 118 ms to
+146 ms to 169 ms; git's went 33 ms to 126 ms to 519 ms, which is linear in the file. This is the one
+result worth caring about, because it is the property the whole design was chosen for, and it is
+visible directly rather than inferred.
+
+**git wins the first commit every time, and the gap widens with size**: 4.7x, then 18.7x, then 29.8x.
+Building a tree from nothing canonicalises and hashes every row individually where git makes one pass
+over a byte stream. It is a one-time cost per table, and it is large.
+
+**git's store is about 9x smaller at every size**, which is the flattest ratio in the table: 488 kB
+against 4.2 MB, 3.6 MB against 33.6 MB, 14.6 MB against 135 MB. Both figures are after garbage
+collection. This is the honest weakness, it does not improve with scale, and `docs/DESIGN-STORAGE.md`
+is about what closing it would take.
+
+One asymmetry the script does not charge to either side: git is timed on `add` plus `commit` of a
+file that already exists on disk. Producing that file from the table takes pgit's `COPY` a second or
+two at 2M rows, and a real git-for-data workflow would pay it on every commit. Against that, the pgit
+copy is a queryable table the entire time and the git copy is a TSV you have to load before you can
+ask it anything.
+
 ## Where pgit beats git, and where it does not
 
 The comparison below this one used a 28 MB file, which flatters git: its commit cost is O(file), so a
@@ -841,7 +880,8 @@ small fixture hides it. The same 12.7M-row IMDb data at full size, same 100-row 
 | 28 MB slice, ~5,300 changed rows | **492 ms** | 1,801 ms |
 
 **git re-hashes and re-compresses the whole file on every commit**; pgit rewrites only the chunks
-holding changed rows. The crossover is around 50 MB. Below it git wins on constants, above it pgit
+holding changed rows. For a change this size the crossover is around 50 MB. Below it git wins on
+constants, above it pgit
 wins on complexity and the gap grows linearly with the data.
 
 git still wins the first commit outright — 10.8 s against 254 s — because a full tree build
@@ -874,7 +914,8 @@ index maintenance.
 > hash and **it will not close**." That was wrong, and it was wrong in the way conclusions usually are
 > — it generalised a 27× gap on a 28 MB fixture into a law. The gap is now 3.7×, and on a 1 GB table
 > pgit commits **22.9× faster than git**, because git's commit is O(file) and pgit's is O(changed).
-> The crossover is around 50 MB. See "On parity with git" in `docs/DESIGN-STORAGE.md`.
+> The crossover depends on the change size as well as the data size: for a 100-row change it is
+> about 18 MB for commit. See "Against git, reproducibly" above.
 
 The `gc` and store rows are left pointing elsewhere on purpose: those figures were measured over the
 whole 2 GB IMDb node store — both tables, 359,549 nodes — while git's 10 MB is the 28 MB ratings TSV

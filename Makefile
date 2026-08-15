@@ -1,6 +1,6 @@
 PSQL ?= psql "postgresql://postgres:pgit@localhost:5460/pgit_test"
 
-.PHONY: up down install test test-only test-fast verify psql reset bench
+.PHONY: up down install test test-only test-fast verify psql reset bench bench-git
 
 up:
 	docker compose up -d --build --wait
@@ -38,6 +38,9 @@ reset: down up install
 
 bench:
 	@./bench/run.sh
+
+bench-git:
+	@./bench/vs_git.sh
 
 psql:
 	$(PSQL)

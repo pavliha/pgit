@@ -39,22 +39,33 @@ Diffing 10 changed rows 10,000 commits apart takes **163 ms**. One commit apart 
 That is what the whole design is for. `diff A B` costs the size of the difference between A and B,
 not the number of commits between them, and not the size of the table.
 
-## Faster than git once the data gets big
+## Measured against git
 
-Same 12.7M-row IMDb dataset, committing a 100-row change:
+Run it yourself with `make bench-git`. Same generated data, same change sets, medians of three,
+100 changed rows per commit. git 2.55.0, Postgres 18.
 
-| | git | pgit | |
-| --- | ---: | ---: | --- |
-| commit 100 changed rows, 12.7M-row dataset | 12,062 ms | **527 ms** | pgit 22.9x faster |
-| commit 5,300 changed rows, 28 MB slice | **492 ms** | 1,801 ms | git 3.7x faster |
+| rows | as a TSV | first commit | commit 100 rows | diff one commit | store after gc |
+| ---: | ---: | --- | --- | --- | --- |
+| 50,000 | 1.7 MB | git **81 ms** / pgit 388 ms | git **75 ms** / pgit 114 ms | git **33 ms** / pgit 118 ms | git **488 kB** / pgit 4.2 MB |
+| 500,000 | 18 MB | git **139 ms** / pgit 2,603 ms | git 235 ms / pgit **211 ms** | git **126 ms** / pgit 146 ms | git **3.6 MB** / pgit 33.6 MB |
+| 2,000,000 | 74 MB | git **373 ms** / pgit 11,147 ms | git 931 ms / pgit **436 ms** | git 519 ms / pgit **169 ms** | git **14.6 MB** / pgit 135 MB |
 
-git's commit is O(file). It re-hashes and re-compresses everything however little changed. pgit's is
-O(changed). Below roughly 50 MB git wins on constants, above it pgit wins on complexity. The
-crossover sits lower than most people guess. `PERF.md` has both directions, because quoting only the
-first row would be quoting the best case.
+Read the diff column downwards. pgit goes 118, 146, 169 ms across 40x more data. git goes 33, 126,
+519 ms, which is linear in the file, because git diffs two whole blobs and pgit walks only the part
+of the tree that changed.
 
-git is also doing a different job. What it hands back is a file you have to materialise. What pgit
-hands back is still a database.
+Commit tells the same story more slowly. git's commit is O(file): it re-hashes and re-compresses
+everything however little changed. pgit's is O(changed). For a 100-row change they cross at about
+18 MB, and by 74 MB pgit is 2.1x ahead. Change 5,000 rows instead and the crossover moves up, so it
+depends on how much you touched and not on size alone.
+
+Two things git wins outright. **The first commit, always**, by 4.7x at 50k rows and 29.8x at 2M,
+because building a tree from nothing hashes every row individually where git makes one pass over a
+byte stream. And **storage, by about 9x at every size**, which is the flattest number in the table
+and does not improve with scale.
+
+git is also doing a different job. What it hands back is a file you have to load before you can ask
+it anything. What pgit hands back is still a database.
 
 ## Runs where your data already lives
 
