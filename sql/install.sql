@@ -265,32 +265,65 @@ BEGIN
   END IF;
 END $$;
 
+-- Both binary searches run on bytes. substr() and right() on UTF-8 text walk
+-- the string to find a character offset, and right() walks it from the start, so
+-- an O(log n) search did O(n log n) character stepping every call. On the strings
+-- make_delta actually passes - the whole entries text, ~16,700 characters - that
+-- was 0.18 ms for the prefix and 0.52 ms for the suffix, which is most of what
+-- repack spends. substring() on bytea is pointer arithmetic.
+--
+-- Both still return a count in CHARACTERS, because the caller slices insert
+-- literals with substr() and those must stay whole characters. The byte answer
+-- is snapped back to a character boundary before it is converted, so a match
+-- that ends inside a multi-byte sequence is never reported.
 CREATE OR REPLACE FUNCTION pgit.common_prefix(a text, b text) RETURNS int
-LANGUAGE plpgsql IMMUTABLE AS $$
+LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
 DECLARE
-  lo int := 0;
-  hi int := least(length(a), length(b));
+  ab  bytea := convert_to(a, 'UTF8');
+  bb  bytea := convert_to(b, 'UTF8');
+  lo  int := 0;
+  hi  int := least(octet_length(ab), octet_length(bb));
   mid int;
 BEGIN
   WHILE lo < hi LOOP
     mid := (lo + hi + 1) / 2;
-    IF substr(a, 1, mid) = substr(b, 1, mid) THEN lo := mid; ELSE hi := mid - 1; END IF;
+    IF substring(ab FROM 1 FOR mid) = substring(bb FROM 1 FOR mid)
+      THEN lo := mid; ELSE hi := mid - 1; END IF;
   END LOOP;
-  RETURN lo;
+
+  WHILE lo > 0 AND lo < octet_length(ab) AND (get_byte(ab, lo) & 192) = 128 LOOP
+    lo := lo - 1;
+  END LOOP;
+
+  RETURN length(convert_from(substring(ab FROM 1 FOR lo), 'UTF8'));
 END $$;
 
 CREATE OR REPLACE FUNCTION pgit.common_suffix(a text, b text, cap int) RETURNS int
-LANGUAGE plpgsql IMMUTABLE AS $$
+LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
 DECLARE
-  lo int := 0;
-  hi int := greatest(cap, 0);
+  ab  bytea := convert_to(a, 'UTF8');
+  bb  bytea := convert_to(b, 'UTF8');
+  la  int := octet_length(ab);
+  lb  int := octet_length(bb);
+  lo  int := 0;
+  hi  int := least(la, lb);
   mid int;
+  n   int;
 BEGIN
+  IF cap <= 0 THEN RETURN 0; END IF;
+
   WHILE lo < hi LOOP
     mid := (lo + hi + 1) / 2;
-    IF right(a, mid) = right(b, mid) THEN lo := mid; ELSE hi := mid - 1; END IF;
+    IF substring(ab FROM la - mid + 1 FOR mid) = substring(bb FROM lb - mid + 1 FOR mid)
+      THEN lo := mid; ELSE hi := mid - 1; END IF;
   END LOOP;
-  RETURN lo;
+
+  WHILE lo > 0 AND lo < la AND (get_byte(ab, la - lo) & 192) = 128 LOOP
+    lo := lo - 1;
+  END LOOP;
+
+  n := length(convert_from(substring(ab FROM la - lo + 1 FOR lo), 'UTF8'));
+  RETURN least(n, cap);
 END $$;
 
 DO $$
