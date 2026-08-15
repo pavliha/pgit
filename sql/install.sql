@@ -2244,7 +2244,7 @@ BEGIN
   TRUNCATE pgit_old;
   INSERT INTO pgit_old
     SELECT i.k, i.ch,
-           lead(i.k) OVER (ORDER BY i.k),
+           COALESCE(lead(i.k) OVER (PARTITION BY p.rn ORDER BY i.k), p.nk),
            row_number() OVER (ORDER BY i.k)
     FROM pgit_l1 p
     JOIN pgit_l1hit hit ON hit.rn = p.rn
@@ -2348,7 +2348,15 @@ DECLARE
 BEGIN
   FOR region IN
     WITH h AS (SELECT DISTINCT rn FROM pgit_hit),
-    grp AS (SELECT rn, rn - row_number() OVER (ORDER BY rn) AS g FROM h)
+    j AS (SELECT h.rn, o.k, o.nk FROM h JOIN pgit_old o ON o.rn = h.rn),
+    w AS (
+      SELECT rn,
+             CASE WHEN lag(rn) OVER (ORDER BY rn) = rn - 1
+                   AND lag(nk) OVER (ORDER BY rn) = k
+                  THEN 0 ELSE 1 END AS brk
+      FROM j
+    ),
+    grp AS (SELECT rn, sum(brk) OVER (ORDER BY rn ROWS UNBOUNDED PRECEDING) AS g FROM w)
     SELECT min(rn) AS lo_rn, max(rn) AS hi_rn FROM grp GROUP BY g ORDER BY 1
   LOOP
     SELECT o.nk INTO hi_key FROM pgit_old o WHERE o.rn = region.hi_rn;

@@ -804,6 +804,28 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   same machine state settled it: pre-instrumentation 939/307/512ms against instrumented
   **907/288/511ms**, so the instrumented build is equal or faster and the drift was the machine.
   Worth the two minutes; guessing either way would have been wrong.
+- **the fuzzer found a tree that disagreed with its own table, and CI caught it before a user did** —
+  PG 18 went red on master with `fuzz: op 240 left 1 tree(s) disagreeing with a rebuild`, seed
+  0.772185. 16 and 17 passed, which is the matrix earning its place. The recorded tree held **443
+  leaves, 378 distinct keys, 65 of them stored twice**: no data lost or altered, but the root hash
+  could never match a rebuild.
+  `locate_touched_chunks` sets each leaf chunk's upper bound with `lead(k) OVER (ORDER BY k)`
+  computed across the items of the **hit** level 1 nodes only. When the hit nodes are not adjacent,
+  the last chunk of one gets an upper bound taken from the first chunk of the next hit node, which
+  lies beyond the untouched nodes in between. `rebuild_touched_ranges` then rebuilds that whole span
+  from the live table while the untouched level 1 subtrees are still retained, so every key in the
+  gap is recorded twice.
+  The first fix partitioned the rebuild groups by their level 1 node, which was wrong in a way the
+  suite caught immediately: content-defined chunking has to be free to run across a node boundary,
+  and forcing a break there made a 3000 row contiguous delete produce different chunks than a full
+  rebuild (`incremental_02`). The real predicate is key coverage, not node identity - a run breaks
+  where one chunk's upper bound is not the next chunk's lower bound. Bounding `nk` by its own node's
+  `nk` and grouping on that continuity fixes both.
+  No synthetic reproduction was found: 20 constructed delete shapes all missed, because the bug needs
+  the *last* leaf chunk of one node and the *first* of a later one to both be hit. Rather than ship a
+  test that passes either way, seed 0.772185 is pinned in `fuzz_test.sh` as a regression seed that
+  runs on every invocation. It is red without the fix and green with it, which is the property a
+  regression test has to have.
 
 ## Reference
 

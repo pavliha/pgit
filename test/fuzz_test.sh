@@ -10,11 +10,23 @@ CHUNK="${FUZZ_CHUNK:-8}"
 SEED="${FUZZ_SEED:-}"
 ROUNDS="${FUZZ_ROUNDS:-3}"
 
+REGRESSION_SEEDS="0.772185"
+
+
 ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
 
+seeds=()
+if [ -n "$SEED" ]; then
+  for round in $(seq 1 "$ROUNDS"); do seeds+=("$SEED"); done
+else
+  for known in $REGRESSION_SEEDS; do seeds+=("$known"); done
+  for round in $(seq 1 "$ROUNDS"); do
+    seeds+=("0.$(( (RANDOM * 32768 + RANDOM) % 1000000 ))")
+  done
+fi
+
 survived=0
-for round in $(seq 1 "$ROUNDS"); do
-  if [ -n "$SEED" ]; then s="$SEED"; else s="0.$(( (RANDOM * 32768 + RANDOM) % 1000000 ))"; fi
+for s in "${seeds[@]}"; do
 
   D="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_fuzz"
   prepare() {
@@ -49,6 +61,6 @@ for round in $(seq 1 "$ROUNDS"); do
     "SELECT n, op, left(detail,60) FROM fuzz_log ORDER BY n DESC LIMIT 8" 2>/dev/null | sed 's/^/# /'
 done
 
-ok "fuzz: $survived operations survived across $ROUNDS seeds with no invariant violation"
+ok "fuzz: $survived operations survived across ${#seeds[@]} seeds with no invariant violation"
 
 suite_end FUZZ 2
