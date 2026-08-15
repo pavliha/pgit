@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Every shape the big benchmarks measure, at a size that runs in well under a
-# minute. Use this to iterate; use realworld_imdb.sh only to confirm a result.
 set -uo pipefail
 A="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
 D="postgresql://postgres:pgit@localhost:5460/pgit_quick"

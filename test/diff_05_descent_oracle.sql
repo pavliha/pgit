@@ -1,9 +1,6 @@
 BEGIN;
 SELECT plan(10);
 
--- Ground truth that shares no code with the descent: full scan both trees and
--- join on the key. If the descent ever fails to surface a differing row, or
--- pairs chunks wrongly when content defined boundaries shift, this disagrees.
 CREATE FUNCTION brute_diff(a bytea, b bytea)
 RETURNS TABLE (k text, op text, before jsonb, after jsonb)
 LANGUAGE sql STABLE AS $fn$
@@ -37,8 +34,6 @@ WHERE commit_sha = pgit.resolve('main') AND tbl = 't';
 SELECT cmp_ok((SELECT count(*) FROM pgit.nodes_at_level((SELECT root FROM c0), 0)), '>', 20::bigint,
   'oracle: the tree has many chunks, so boundaries have somewhere to move');
 
--- Interleaving new keys between the existing ones moves content defined chunk
--- boundaries, so a key can sit in a differently shaped chunk on each side.
 INSERT INTO t SELECT g * 10 + 1, 'inserted' || g FROM generate_series(1, 5000) g;
 SELECT pgit.commit('interleave', 'p');
 CREATE TEMP TABLE c1 AS

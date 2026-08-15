@@ -76,10 +76,6 @@ SELECT is(pgit.write_tree('t'),
   (SELECT root_hash FROM pgit.trees WHERE commit_sha = pgit.resolve('main') AND tbl='t'),
   'prune: the surviving tip still describes the live table exactly');
 
--- bisect_next hard resets the current branch onto each candidate, because there
--- is no detached HEAD here. Nothing recorded where the branch started, so a
--- bisect left it parked on the last candidate examined and every commit after
--- that unreachable - and then gc collected them.
 CREATE TABLE bis (id int PRIMARY KEY, v text);
 SELECT pgit.track('bis');
 INSERT INTO bis SELECT g, 'v' || g FROM generate_series(1, 10) g;

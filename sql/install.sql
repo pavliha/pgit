@@ -91,11 +91,6 @@ LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
   END
 $$;
 
--- NFC normalisation is the identity on pure ASCII, and octet_length = length
--- detects that in constant time against a walk Postgres has to do anyway for the
--- length prefix. normalize() was 20x the cost of the entire rest of the canonical
--- form: 197 ms against 21 ms over 200k rows, and the full build is 74% this
--- expression. A simple SQL function so the planner inlines it.
 CREATE OR REPLACE FUNCTION pgit.canon_text(x text) RETURNS text
 LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
   SELECT CASE WHEN octet_length(x) = length(x) THEN x ELSE normalize(x, NFC) END
@@ -169,13 +164,6 @@ DROP FUNCTION IF EXISTS pgit.tree_root(regclass);
 CREATE OR REPLACE FUNCTION pgit.row_hashes_sql(tbl regclass) RETURNS text
 LANGUAGE sql STABLE AS $$
   SELECT format(
-    -- The alias is quoted and contains a space, so no unquoted column name can
-    -- ever equal it. to_jsonb(t) over "FROM tbl t" resolves to a COLUMN named t
-    -- when the table has one, and every row image then became that column's
-    -- scalar value instead of the row; replay failed with "cannot call
-    -- populate_composite on a scalar" and the stored tree was wrong. Prefixing
-    -- the alias only moves the collision to the prefix, as a column named pgit_t
-    -- showed, so the alias has to be unwritable rather than merely unusual.
     'SELECT convert_to(%s, ''UTF8'') AS key_bytes, pgit.hash(%s) AS hash,'
     ' to_jsonb("pgit row") AS image FROM %s "pgit row"',
     pgit.pk_canon_expr(tbl), pgit.row_canon_expr(tbl), tbl::text
@@ -226,11 +214,6 @@ ALTER TABLE pgit.nodes ADD COLUMN IF NOT EXISTS delta jsonb;
 ALTER TABLE pgit.nodes ADD COLUMN IF NOT EXISTS seq bigserial;
 ALTER TABLE pgit.nodes ALTER COLUMN entries DROP NOT NULL;
 
--- hashes is the concatenation of the child hashes in key order, which is exactly
--- the pre-image of the node's own hash: pgit.hash(hashes) = hash. Storing it makes
--- rehashing a node free, and lets a changed entry be spliced with overlay()
--- instead of expanding and re-aggregating every entry. keys is the parallel key
--- vector, so array_position finds an entry's index without expanding either.
 ALTER TABLE pgit.nodes ADD COLUMN IF NOT EXISTS hashes bytea;
 ALTER TABLE pgit.nodes ADD COLUMN IF NOT EXISTS keys   text[];
 
@@ -253,9 +236,6 @@ END $$;
 INSERT INTO pgit.meta (key, value) VALUES ('delta_format', '2')
   ON CONFLICT (key) DO UPDATE SET value = '2';
 
--- Nodes written before the packed format have no key vector, and every reader
--- drives off it — they would read as empty rather than failing. Refuse to
--- install over them instead.
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pgit.nodes WHERE keys IS NULL AND entries IS NOT NULL LIMIT 1) THEN
@@ -273,17 +253,6 @@ BEGIN
   END IF;
 END $$;
 
--- Both binary searches run on bytes. substr() and right() on UTF-8 text walk
--- the string to find a character offset, and right() walks it from the start, so
--- an O(log n) search did O(n log n) character stepping every call. On the strings
--- make_delta actually passes - the whole entries text, ~16,700 characters - that
--- was 0.18 ms for the prefix and 0.52 ms for the suffix, which is most of what
--- repack spends. substring() on bytea is pointer arithmetic.
---
--- Both still return a count in CHARACTERS, because the caller slices insert
--- literals with substr() and those must stay whole characters. The byte answer
--- is snapped back to a character boundary before it is converted, so a match
--- that ends inside a multi-byte sequence is never reported.
 CREATE OR REPLACE FUNCTION pgit.common_prefix(a text, b text) RETURNS int
 LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
 DECLARE
@@ -410,11 +379,6 @@ BEGIN
   ops := ops || jsonb_build_object('c', jsonb_build_array(1, 1));
 
   FOR r IN
-    -- Entries are aligned by position, not by key: the key now lives in the node's
-    -- parallel key vector, and two versions of a chunk whose membership has not
-    -- changed hold their rows at the same offsets. Where membership did change the
-    -- alignment degrades to a larger delta, never to a wrong one — the delta is
-    -- verified against the target before it is returned.
     WITH b AS (
       SELECT x.ord, x.e::text AS t
       FROM jsonb_array_elements(base) WITH ORDINALITY x(e, ord)
@@ -451,10 +415,6 @@ BEGIN
       ops := ops || jsonb_build_object('c',
         jsonb_build_array(r.pos, octet_length(convert_to(r.have, 'UTF8'))));
     ELSE
-      -- The prefix and suffix are found in characters, so an insert literal is
-      -- always whole characters and stays valid UTF-8, but every copy offset the
-      -- op list emits is a byte offset: substring on bytea is pointer arithmetic
-      -- where substring on UTF-8 text walks the string to find each offset.
       p  := pgit.common_prefix(r.have, r.want);
       s  := pgit.common_suffix(r.have, r.want, least(length(r.have), length(r.want)) - p);
       n  := length(r.want) - p - s;
@@ -484,14 +444,8 @@ LANGUAGE sql IMMUTABLE AS $$
   SELECT convert_from(pgit.apply_delta_bin(convert_to(base::text, 'UTF8'), d), 'UTF8')::jsonb
 $$;
 
--- A node serialised as the three parts a delta can align on. Keeping them apart
--- matters: with the whole node as one value, a changed hash near the front and a
--- changed image further back force one splice to span everything between them,
--- and the delta measured three times worse than storing the node whole.
 CREATE OR REPLACE FUNCTION pgit.node_parts(hs bytea, ks text[], es jsonb) RETURNS jsonb
 LANGUAGE sql IMMUTABLE AS $$
-  -- es goes in as jsonb, not as its text: embedding it as a string escapes every
-  -- quote in every row image, inflating exactly the part the delta has to carry.
   SELECT jsonb_build_array(encode(hs, 'hex'), array_to_string(ks, E'\n'), es)
 $$;
 
@@ -534,8 +488,6 @@ END $$;
 
 CREATE OR REPLACE FUNCTION pgit.entries_of(h bytea) RETURNS jsonb
 LANGUAGE sql STABLE AS $$
-  -- Deltas cover the whole node, not the entries column alone, so resolving a
-  -- chain means resolving all three parts and taking one of them.
   SELECT c.entries FROM pgit.node_cols(h) c
 $$;
 
@@ -629,11 +581,6 @@ BEGIN
     RAISE EXCEPTION 'pgit: table % has no primary key', target::text;
   END IF;
 
-  -- The generated SQL aliases the row as "pgit row" and the populated record as
-  -- "pgit img". Both contain a space, so no unquoted column name can equal them,
-  -- but a quoted one could - and the failure would be silent: to_jsonb() would
-  -- resolve to the column instead of the row and every stored image would be a
-  -- scalar. Refuse instead.
   IF EXISTS (
     SELECT 1 FROM pg_attribute a
     WHERE a.attrelid = target AND a.attnum > 0 AND NOT a.attisdropped
@@ -790,7 +737,6 @@ BEGIN
   RETURN new_sha;
 END $$;
 
-
 CREATE OR REPLACE FUNCTION pgit.ensure_scratch() RETURNS void
 LANGUAGE plpgsql SET client_min_messages = warning AS $$
 BEGIN
@@ -799,9 +745,6 @@ BEGIN
   CREATE TEMP TABLE IF NOT EXISTS pgit_grp   (key_bytes bytea, hash bytea, entries jsonb, hashes bytea, keys text[]);
   CREATE TEMP TABLE IF NOT EXISTS pgit_built (key_bytes bytea, hash bytea);
   CREATE TEMP TABLE IF NOT EXISTS pgit_new   (key_bytes bytea, hash bytea);
-  -- The keys are hex, and every other ordering in the tree is byte order, so
-  -- these are C collated both for correctness and so the indexes below are
-  -- usable for the range probes that locate a changed key's chunk.
   CREATE TEMP TABLE IF NOT EXISTS pgit_l1    (k text COLLATE "C", h text, nk text COLLATE "C", rn bigint);
   CREATE TEMP TABLE IF NOT EXISTS pgit_l1hit (rn bigint);
   CREATE TEMP TABLE IF NOT EXISTS pgit_old   (k text COLLATE "C", h text, nk text COLLATE "C", rn bigint);
@@ -888,12 +831,6 @@ BEGIN
     be AS (
       SELECT e.k, e.ch, lead(e.k) OVER (ORDER BY e.k) AS nk FROM pgit.node_entries(b) e
     ),
-    -- Children whose first key matches pair directly. A boundary is a function
-    -- of the key alone, so a commit that changes no membership moves no
-    -- boundary and this covers every child; the range join below then runs over
-    -- the few children around an insert or delete rather than over all of them.
-    -- It is a range join with no equality, so it is a nested loop and was 4.9 ms
-    -- per internal node pair when it saw every child.
     exact AS (
       SELECT ae.k, ae.ch AS ach, be.ch AS bch FROM ae JOIN be ON be.k = ae.k
     ),
@@ -917,18 +854,9 @@ BEGIN
   END LOOP;
 END $$;
 
--- The single accessor for a node's children. keys and hashes carry the identity;
--- entries carries only the row images, so nothing here duplicates anything.
 CREATE OR REPLACE FUNCTION pgit.node_items(h bytea)
 RETURNS TABLE (k text, ch text, v jsonb)
 LANGUAGE sql STABLE AS $$
-  -- Both vectors are walked once with ORDINALITY and paired on it. Subscripting
-  -- keys[i] instead is quadratic: a text[] holds variable length elements, so
-  -- Postgres walks from the start of the array for every subscript, and a 674
-  -- entry node costs ~227,000 element steps to iterate.
-  -- An unpacked node reads its own columns; only a delta'd one pays for
-  -- resolution. CASE short-circuits, so the resolver is not called otherwise —
-  -- putting it on every read made the suite time out.
   WITH node AS MATERIALIZED (
     SELECT CASE WHEN n.entries IS NOT NULL THEN n.keys
                 ELSE (SELECT c.keys FROM pgit.node_cols(n.hash) c) END AS keys,
@@ -946,10 +874,6 @@ LANGUAGE sql STABLE AS $$
   FROM node, ks LEFT JOIN vs ON vs.ord = ks.ord
 $$;
 
--- A node's three columns, resolved through a delta chain only when it has one.
--- Callers that compare hashes do not want them hex encoded first: node_items
--- encodes every entry, and a leaf comparison discards all but the few that
--- differ.
 CREATE OR REPLACE FUNCTION pgit.node_raw(h bytea)
 RETURNS TABLE (keys text[], hashes bytea, entries jsonb)
 LANGUAGE sql STABLE AS $$
@@ -993,10 +917,6 @@ LANGUAGE sql STABLE AS $$
   SELECT 'a'::text, l.k, l.rh, l.v FROM pgit.leaves(a) l WHERE b IS NULL
 $$;
 
--- The descent carries only node hashes, never row images. Returning images from
--- the recursion copied every one of them into a tuplestore at each level of the
--- tree; the pairs are two hashes wide and the images are expanded once, at the
--- top, from the pair list.
 CREATE OR REPLACE FUNCTION pgit.diff_leaves(a bytea, b bytea)
 RETURNS TABLE (side text, k text, rh text, v jsonb)
 LANGUAGE sql STABLE AS $$
@@ -1034,21 +954,9 @@ END $$;
 CREATE OR REPLACE FUNCTION pgit.diff_tree(a bytea, b bytea)
 RETURNS TABLE (k text, op text, before jsonb, after jsonb)
 LANGUAGE sql STABLE AS $$
-  -- The descent already knows each candidate's row hash on both sides, so the
-  -- decision is a pivot rather than two point lookups per candidate. Only keys
-  -- that actually differ are then looked up for their images: on a diff of 30
-  -- nights of IMDb ratings that is 84k lookups instead of 3.4M candidates x 2.
-  -- The row images are deliberately not carried through the aggregate — there
-  -- are millions of candidates and the hash would spill to disk.
-  -- The descent already carries each candidate's row image. Fetching them again
-  -- by point lookup costs one tree walk per side per changed row: profiled, that
-  -- was 77% of a diff. Materialise the descent once and join instead.
   WITH d AS MATERIALIZED (
     SELECT x.side, x.k, x.rh, x.v FROM pgit.diff_leaves(a, b) x
   ),
-  -- The images ride through the same aggregate as the hashes. Joining them back
-  -- instead multiplies rows: the descent can emit one key from several chunk
-  -- pairs, and the oracle catches the duplicates immediately.
   pivoted AS (
     SELECT d.k,
            max(d.rh) FILTER (WHERE d.side = 'a') AS arh,
@@ -1057,12 +965,6 @@ LANGUAGE sql STABLE AS $$
            (array_agg(d.v) FILTER (WHERE d.side = 'b'))[1] AS bv
     FROM d GROUP BY d.k
   ),
-  -- A key seen on both sides is decided by comparing row hashes, with no lookup.
-  -- A key seen on one side only is ambiguous and must be resolved: the descent
-  -- skips chunk pairs that are identical, so the other side's copy of an
-  -- unchanged row may simply never have been emitted. Treating a one sided key
-  -- as an insert or a delete reports rows that never changed — a range delete
-  -- makes it happen, and the oracle in test/diff_05 catches it.
   resolved AS (
     SELECT p.k, p.av, p.bv, p.arh AS seen_a, p.brh AS seen_b,
            CASE WHEN p.arh IS NOT NULL THEN p.arh
@@ -1071,8 +973,6 @@ LANGUAGE sql STABLE AS $$
                 ELSE (SELECT l.rh FROM pgit.lookup(b, p.k) l) END AS brh
     FROM pivoted p
   )
-  -- CASE rather than a LEFT JOIN LATERAL with a condition: the join form still
-  -- evaluates the lateral and filters afterwards, so it would not skip the walk.
   SELECT r.k,
          CASE WHEN r.arh IS NULL THEN 'INSERT'
               WHEN r.brh IS NULL THEN 'DELETE'
@@ -1203,9 +1103,6 @@ LANGUAGE sql STABLE AS $$
   SELECT level FROM pgit.nodes WHERE hash = h
 $$;
 
--- Descending a tree needs each child's key and hash and never its row image.
--- Going through node_items expands every image only to discard it, which on the
--- diff descent is the whole cost: the images are the bulk of a leaf.
 CREATE OR REPLACE FUNCTION pgit.node_entries(h bytea)
 RETURNS TABLE (k text, ch text)
 LANGUAGE sql STABLE AS $$
@@ -1357,7 +1254,6 @@ BEGIN
 
   RETURN applied;
 END $$;
-
 
 CREATE OR REPLACE FUNCTION pgit.short_sha(v bytea) RETURNS text
 LANGUAGE sql IMMUTABLE AS $$
@@ -1622,12 +1518,6 @@ BEGIN
     SELECT x.root_hash INTO oroot FROM pgit.trees x WHERE x.commit_sha = our_sha   AND x.tbl = t.name;
     SELECT x.root_hash INTO troot FROM pgit.trees x WHERE x.commit_sha = their_sha AND x.tbl = t.name;
 
-    -- Both diffs already carry the images: diff_tree(base, ours) returns base's
-    -- row as before and ours as after, and likewise for theirs. Looking each key
-    -- up again cost three tree walks per candidate - 5,688 walks on a 100k row
-    -- cherry pick - to fetch rows the descent had just read. A key missing from
-    -- one diff means that side did not change it, so that side's image is the
-    -- base image.
     FOR key IN
       SELECT COALESCE(dobj.k, dthr.k) AS kk,
              COALESCE(dobj.b, dthr.b) AS bimg,
@@ -1698,11 +1588,6 @@ DECLARE
   upd_assign text;
   touched  int;
 BEGIN
-  -- Both aliases are prefixed. They used to be t and s, and a tracked table with
-  -- a column of either name broke every replay path - checkout, merge, revert,
-  -- cherry-pick - with "cannot call populate_composite on a scalar", because the
-  -- alias shadowed the table name in NULL::<table>. Same class as the trigger's
-  -- n, o and cols collisions.
   SELECT string_agg(format('"pgit row".%I = "pgit img".%I', c, c), ' AND ') INTO pk_pred FROM unnest(pk) c;
   SELECT string_agg(format('%I', c), ', ')  INTO set_cols FROM unnest(cols) c;
   SELECT string_agg(format('"pgit img".%I', c), ', ') INTO set_vals FROM unnest(cols) c;
@@ -1713,8 +1598,6 @@ BEGIN
     RETURN;
   END IF;
 
-  -- The key columns are already matched in the WHERE clause, so assigning them is
-  -- pointless, and an identity key cannot be assigned at all.
   SELECT string_agg(format('%I = "pgit img".%I', c, c), ', ') INTO upd_assign
   FROM unnest(cols) c WHERE NOT (c = ANY (pk));
 
@@ -1854,9 +1737,6 @@ BEGIN
 
   PERFORM pgit.assert_same_schema(target_sha, ours);
 
-  -- The plan is built once. Counting the conflicts and then applying it called
-  -- merge_plan twice, and merge_plan is the expensive part of a cherry pick:
-  -- 899 ms a call against 1,861 ms for the whole operation.
   PERFORM pgit.ensure_scratch();
   TRUNCATE pgit_plan;
   INSERT INTO pgit_plan SELECT * FROM pgit.merge_plan(base, ours, target_sha);
@@ -2047,12 +1927,6 @@ RETURNS TABLE (key_bytes bytea, hash bytea, image jsonb)
 LANGUAGE plpgsql STABLE AS $$
 DECLARE pk text := pgit.pk_canon_expr(target);
 BEGIN
-  -- The unnest alias and its column are both prefixed: the canonical key
-  -- expression references the table's own columns unqualified, so a tracked
-  -- table with a column named k made this ambiguous.
-  -- Joining unnest gives a nested loop over the canonical key index. Passing the
-  -- same keys as "= ANY(array)" lets the planner pick a sequential scan instead,
-  -- which on 1.7M rows cost more than the whole-range rescan this replaces.
   RETURN QUERY EXECUTE format(
     'SELECT convert_to(%s, ''UTF8''), pgit.hash(%s), to_jsonb("pgit row")
      FROM unnest($1) AS pgit_kk(pgit_key)
@@ -2061,16 +1935,11 @@ BEGIN
   USING (SELECT array_agg(convert_from(decode(k, 'hex'), 'UTF8')) FROM unnest(keys) k);
 END $$;
 
--- row_hashes canonicalises and hashes the whole table, so filtering it for one
--- key made the revert guard O(table x reverted rows): reverting 200 rows of a
--- 100k row table called sha256 9.76 million times and took 31 s. row_hashes_keys
--- joins the canonical key index that track() already maintains.
 CREATE OR REPLACE FUNCTION pgit.live_hash(target regclass, key_hex text) RETURNS text
 LANGUAGE sql STABLE AS $$
   SELECT encode(r.hash, 'hex')
   FROM pgit.row_hashes_keys(target, ARRAY[key_hex]) r
 $$;
-
 
 CREATE OR REPLACE FUNCTION pgit.row_hashes_range(target regclass, lo bytea, hi bytea)
 RETURNS TABLE (key_bytes bytea, hash bytea, image jsonb)
@@ -2147,15 +2016,6 @@ BEGIN
                ELSE '[]'::jsonb END
       FROM marked GROUP BY chunk;
 
-    -- Content-defined chunking can fail to make progress. A chunk's key is the
-    -- first key in it, which is the key that followed a boundary, so when every
-    -- key is a boundary the next level holds exactly the same keys as this one
-    -- and the loop spins until the depth cap. Two rows whose first key is a
-    -- boundary hit it, which is one table in chunk_target - it was found on a
-    -- two row table whose primary key column had a space in its name, purely
-    -- because that changed the hash. Collapse a level that fails to shrink into
-    -- one chunk. This is only reachable where the old code raised "tree depth
-    -- exceeded", so no tree that already builds changes shape.
     IF (SELECT count(*) FROM pgit_grp) = n THEN
       TRUNCATE pgit_grp;
       INSERT INTO pgit_grp (key_bytes, hash, hashes, keys, entries)
@@ -2195,56 +2055,10 @@ BEGIN
   RETURN COALESCE(res, '{}'::text[]);
 END $$;
 
-CREATE OR REPLACE FUNCTION pgit.write_tree_incremental(target regclass, prev_root bytea)
-RETURNS bytea
-LANGUAGE plpgsql SET client_min_messages = warning AS $$
-DECLARE
-  ct int := pgit.setting('chunk_target')::int;
-  changed text[] := pgit.changed_keys(target);
-  chunk_rec record;
-  chg_rec   record;
-  node_e    jsonb;
-  node_h    bytea;
-  node_k    text[];
-  idx       int;
-  new_node  bytea;
-  region  record;
-  hi_key  text;
-  pure_updates boolean;
+CREATE OR REPLACE FUNCTION pgit.locate_touched_chunks(
+  prev_root bytea, changed text[], pure_updates boolean) RETURNS void
+LANGUAGE plpgsql AS $$
 BEGIN
-
-  -- A shallow tree is rebuilt outright. The incremental path groups a range of
-  -- keys where build_up groups a whole level, so the two disagree whenever
-  -- chunking fails to reduce a level - every key a boundary - and build_up
-  -- collapses it. That needs at least chunk_target consecutive boundary keys to
-  -- occur at depth, but only one at the very top, so it is reachable on small
-  -- tables: a two row table whose first key is a boundary, one in chunk_target
-  -- of them. A level 1 root means the table fits in chunk_target chunks, where
-  -- a full rebuild costs milliseconds and cannot disagree with itself.
-  IF prev_root IS NOT NULL AND COALESCE(pgit.node_level(prev_root), 0) <= 1 THEN
-    RETURN pgit.write_tree(target);
-  END IF;
-
-  -- Nothing in this table changed, so its tree is the one the parent recorded.
-  -- Falling through to a full rebuild here makes the cheapest case the most
-  -- expensive one: every commit would rebuild every table it did not touch.
-  IF array_length(changed, 1) IS NULL AND prev_root IS NOT NULL THEN
-    RETURN prev_root;
-  END IF;
-
-  IF prev_root IS NULL OR COALESCE(pgit.node_level(prev_root), -1) < 1
-     OR array_length(changed, 1) IS NULL
-     OR array_length(changed, 1) > 10000 THEN
-    RETURN pgit.write_tree(target);
-  END IF;
-
-  PERFORM pgit.ensure_scratch();
-
-  SELECT NOT EXISTS (
-    SELECT 1 FROM pgit.changes c
-    WHERE c.tbl = target::text AND c.commit_sha IS NULL AND c.op <> 'UPDATE'
-  ) INTO pure_updates;
-
   TRUNCATE pgit_l1;
   INSERT INTO pgit_l1
     SELECT l.k, l.h,
@@ -2252,9 +2066,6 @@ BEGIN
            row_number() OVER (ORDER BY l.k)
     FROM pgit.nodes_at_level(prev_root, 1) l;
 
-  -- One indexed probe per changed key. Testing every node against the whole
-  -- changed array instead is O(nodes x keys): on 1.7M rows that was 132 million
-  -- comparisons and 40 s of a 57 s commit.
   TRUNCATE pgit_l1hit;
   INSERT INTO pgit_l1hit
     SELECT DISTINCT o.rn
@@ -2267,11 +2078,6 @@ BEGIN
     INSERT INTO pgit_l1hit VALUES (1);
   END IF;
 
-  -- The neighbour on each side is only needed because a chunk boundary may have
-  -- moved, splitting or merging chunks. A boundary is is_boundary(key), so only
-  -- an inserted or deleted key can move one: for pure updates this widening
-  -- doubles the work for nothing. Measured, it was 11,308 chunks rebuilt to
-  -- change 5,000 rows.
   IF NOT pure_updates THEN
     INSERT INTO pgit_l1hit
     SELECT DISTINCT h.rn + d FROM pgit_l1hit h, (VALUES (-1), (1)) AS s(d)
@@ -2300,122 +2106,127 @@ BEGIN
     INSERT INTO pgit_hit VALUES (1);
   END IF;
 
-  -- The neighbour on each side is only needed because a chunk boundary may have
-  -- moved, splitting or merging chunks. A boundary is is_boundary(key), so only
-  -- an inserted or deleted key can move one: for pure updates this widening
-  -- doubles the work for nothing. Measured, it was 11,308 chunks rebuilt to
-  -- change 5,000 rows.
   IF NOT pure_updates THEN
     INSERT INTO pgit_hit
     SELECT DISTINCT h.rn + d FROM pgit_hit h, (VALUES (-1), (1)) AS s(d)
     WHERE h.rn + d BETWEEN 1 AND (SELECT max(rn) FROM pgit_old)
       AND h.rn + d NOT IN (SELECT rn FROM pgit_hit);
   END IF;
+END $$;
 
-  -- Splicing cost tracks the number of leaf chunks touched; a full rebuild is one
-  -- sequential pass and is flat. Past about three quarters of the tree the rebuild
-  -- wins, so that is where this bails out — it exists to bound the worst case, not
-  -- to second guess the common one. Measured on 1.7M rows: 5,000 scattered rows
-  -- splice in 13.3 s against a 17.7 s rebuild, and 10,000 scattered rows are the
-  -- break even at 17.6 s. The changed row count cannot express this, since 5,000
-  -- adjacent rows and 5,000 scattered ones differ by 130x.
-  -- pgit_old holds the chunks of the hit level 1 nodes, so the whole tree is
-  -- estimated by scaling that back up.
-  IF (SELECT count(*) FROM pgit_hit) * 4 >
-     ((SELECT count(*) FROM pgit_old) * (SELECT count(*) FROM pgit_l1)
-       / GREATEST((SELECT count(*) FROM pgit_l1hit), 1)) * 3 THEN
-    RETURN pgit.write_tree(target);
-  END IF;
+CREATE OR REPLACE FUNCTION pgit.rebuild_beats_splice() RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+  ok boolean;
+BEGIN
+  SELECT (SELECT count(*) FROM pgit_hit) * 4 >
+         ((SELECT count(*) FROM pgit_old) * (SELECT count(*) FROM pgit_l1)
+           / GREATEST((SELECT count(*) FROM pgit_l1hit), 1)) * 3
+  INTO ok;
+  RETURN ok;
+END $$;
 
-  TRUNCATE pgit_new;
+CREATE OR REPLACE FUNCTION pgit.changes_are_sparse_in_their_chunks(changed text[])
+RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+  ok boolean;
+BEGIN
+  SELECT (SELECT count(*) FROM pgit_hit) * 8 > COALESCE(array_length(changed, 1), 0) INTO ok;
+  RETURN ok;
+END $$;
 
-  -- A chunk boundary is is_boundary(key) — a property of the key alone — so an
-  -- UPDATE that touches no key cannot move one. Every affected chunk therefore
-  -- keeps exactly its old membership, and can be rebuilt from the previous
-  -- node's entries with only the changed rows substituted. Re-reading the whole
-  -- key range instead re-canonicalises every neighbour: 5,000 scattered updates
-  -- in a 1.7M row table re-hashed about 832,000 rows to change 5,000.
-  -- Rebuilding a chunk from its previous entries only wins when the changed rows
-  -- are sparse within the chunks they touch. Dense changes fill those chunks
-  -- anyway, and the range rescan is then one sequential index walk rather than
-  -- thousands of point lookups: measured, 100 adjacent rows cost 40 ms rescanned
-  -- and 1,900 ms looked up, while 5,000 scattered rows cost 13,400 ms rescanned
-  -- and 7,600 ms looked up.
-  IF pure_updates
-     AND (SELECT count(*) FROM pgit_hit) * 8 > COALESCE(array_length(changed, 1), 0) THEN
-    -- Splice each touched chunk instead of expanding it. array_position locates
-    -- the entry, overlay replaces its 32 byte hash, jsonb_set replaces its entry,
-    -- and the node's own hash is pgit.hash of the packed vector. None of these
-    -- produce a row per entry, which is what the expand-and-re-aggregate did:
-    -- measured on a 674 entry leaf, 3,912 ms against 1,537 ms over 5,000 rebuilds.
-    TRUNCATE pgit_chg;
-    INSERT INTO pgit_chg (k, h, v, rn)
-      SELECT encode(r.key_bytes, 'hex'), r.hash, r.image, o.rn
-      FROM pgit.row_hashes_keys(target, changed) r
-      CROSS JOIN LATERAL (
-        SELECT x.rn FROM pgit_old x
-        WHERE x.k <= encode(r.key_bytes, 'hex') ORDER BY x.k DESC LIMIT 1
-      ) o
-      ON CONFLICT (k) DO NOTHING;
+CREATE OR REPLACE FUNCTION pgit.splice_touched_chunks(target regclass, changed text[])
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+  chunk_rec record;
+  chg_rec   record;
+  node_e    jsonb;
+  node_h    bytea;
+  node_k    text[];
+  idx       int;
+  new_node  bytea;
+BEGIN
+  TRUNCATE pgit_chg;
+  INSERT INTO pgit_chg (k, h, v, rn)
+    SELECT encode(r.key_bytes, 'hex'), r.hash, r.image, o.rn
+    FROM pgit.row_hashes_keys(target, changed) r
+    CROSS JOIN LATERAL (
+      SELECT x.rn FROM pgit_old x
+      WHERE x.k <= encode(r.key_bytes, 'hex') ORDER BY x.k DESC LIMIT 1
+    ) o
+    ON CONFLICT (k) DO NOTHING;
 
-    FOR chunk_rec IN SELECT o.rn, o.k, o.h FROM pgit_old o JOIN pgit_hit x ON x.rn = o.rn LOOP
-      SELECT COALESCE(n.entries, pgit.entries_of(n.hash)), n.hashes, n.keys
-      INTO node_e, node_h, node_k
-      FROM pgit.nodes n WHERE n.hash = decode(chunk_rec.h, 'hex');
+  FOR chunk_rec IN SELECT o.rn, o.k, o.h FROM pgit_old o JOIN pgit_hit x ON x.rn = o.rn LOOP
+    SELECT COALESCE(n.entries, pgit.entries_of(n.hash)), n.hashes, n.keys
+    INTO node_e, node_h, node_k
+    FROM pgit.nodes n WHERE n.hash = decode(chunk_rec.h, 'hex');
 
-      FOR chg_rec IN SELECT c.k, c.h, c.v FROM pgit_chg c WHERE c.rn = chunk_rec.rn LOOP
-        idx := array_position(node_k, chg_rec.k);
-        CONTINUE WHEN idx IS NULL;
-        node_h := overlay(node_h placing chg_rec.h from (idx - 1) * 32 + 1 for 32);
-        node_e := jsonb_set(node_e, ARRAY[(idx - 1)::text], chg_rec.v);
-      END LOOP;
-
-      new_node := pgit.hash(node_h);
-      INSERT INTO pgit.nodes (hash, level, entries, hashes, keys)
-      VALUES (new_node, 0, node_e, node_h, node_k)
-      ON CONFLICT (hash) DO NOTHING;
-
-      INSERT INTO pgit_new VALUES (decode(chunk_rec.k, 'hex'), new_node);
+    FOR chg_rec IN SELECT c.k, c.h, c.v FROM pgit_chg c WHERE c.rn = chunk_rec.rn LOOP
+      idx := array_position(node_k, chg_rec.k);
+      CONTINUE WHEN idx IS NULL;
+      node_h := overlay(node_h placing chg_rec.h from (idx - 1) * 32 + 1 for 32);
+      node_e := jsonb_set(node_e, ARRAY[(idx - 1)::text], chg_rec.v);
     END LOOP;
-  ELSE
-    FOR region IN
-      WITH h AS (SELECT DISTINCT rn FROM pgit_hit),
-      grp AS (SELECT rn, rn - row_number() OVER (ORDER BY rn) AS g FROM h)
-      SELECT min(rn) AS lo_rn, max(rn) AS hi_rn FROM grp GROUP BY g ORDER BY 1
-    LOOP
-      SELECT o.nk INTO hi_key FROM pgit_old o WHERE o.rn = region.hi_rn;
 
-      TRUNCATE pgit_lvl;
-      INSERT INTO pgit_lvl
-        SELECT * FROM pgit.row_hashes_range(
-          target,
-          (SELECT decode(o.k, 'hex') FROM pgit_old o WHERE o.rn = region.lo_rn),
-          CASE WHEN hi_key IS NULL THEN NULL ELSE decode(hi_key, 'hex') END);
+    new_node := pgit.hash(node_h);
+    INSERT INTO pgit.nodes (hash, level, entries, hashes, keys)
+    VALUES (new_node, 0, node_e, node_h, node_k)
+    ON CONFLICT (hash) DO NOTHING;
 
-      TRUNCATE pgit_grp;
-      INSERT INTO pgit_grp (key_bytes, hash, hashes, keys, entries)
-        WITH marked AS (
-          SELECT key_bytes, hash, image,
-                 COALESCE(
-                   SUM(CASE WHEN pgit.is_boundary(key_bytes, ct) THEN 1 ELSE 0 END)
-                     OVER (ORDER BY key_bytes ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS chunk
-          FROM pgit_lvl
-        )
-        SELECT min(key_bytes),
-               pgit.hash(string_agg(hash, ''::bytea ORDER BY key_bytes)),
-               string_agg(hash, ''::bytea ORDER BY key_bytes),
-               array_agg(encode(key_bytes, 'hex') ORDER BY key_bytes),
-               jsonb_agg(image ORDER BY key_bytes)
-        FROM marked GROUP BY chunk;
+    INSERT INTO pgit_new VALUES (decode(chunk_rec.k, 'hex'), new_node);
+  END LOOP;
+END $$;
 
-      INSERT INTO pgit.nodes (hash, level, entries, hashes, keys)
-      SELECT g.hash, 0, g.entries, g.hashes, g.keys FROM pgit_grp g
-      ON CONFLICT (hash) DO NOTHING;
+CREATE OR REPLACE FUNCTION pgit.rebuild_touched_ranges(target regclass) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+  ct     int := pgit.setting('chunk_target')::int;
+  region record;
+  hi_key text;
+BEGIN
+  FOR region IN
+    WITH h AS (SELECT DISTINCT rn FROM pgit_hit),
+    grp AS (SELECT rn, rn - row_number() OVER (ORDER BY rn) AS g FROM h)
+    SELECT min(rn) AS lo_rn, max(rn) AS hi_rn FROM grp GROUP BY g ORDER BY 1
+  LOOP
+    SELECT o.nk INTO hi_key FROM pgit_old o WHERE o.rn = region.hi_rn;
 
-      INSERT INTO pgit_new SELECT g.key_bytes, g.hash FROM pgit_grp g;
-    END LOOP;
-  END IF;
+    TRUNCATE pgit_lvl;
+    INSERT INTO pgit_lvl
+      SELECT * FROM pgit.row_hashes_range(
+        target,
+        (SELECT decode(o.k, 'hex') FROM pgit_old o WHERE o.rn = region.lo_rn),
+        CASE WHEN hi_key IS NULL THEN NULL ELSE decode(hi_key, 'hex') END);
 
+    TRUNCATE pgit_grp;
+    INSERT INTO pgit_grp (key_bytes, hash, hashes, keys, entries)
+      WITH marked AS (
+        SELECT key_bytes, hash, image,
+               COALESCE(
+                 SUM(CASE WHEN pgit.is_boundary(key_bytes, ct) THEN 1 ELSE 0 END)
+                   OVER (ORDER BY key_bytes ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS chunk
+        FROM pgit_lvl
+      )
+      SELECT min(key_bytes),
+             pgit.hash(string_agg(hash, ''::bytea ORDER BY key_bytes)),
+             string_agg(hash, ''::bytea ORDER BY key_bytes),
+             array_agg(encode(key_bytes, 'hex') ORDER BY key_bytes),
+             jsonb_agg(image ORDER BY key_bytes)
+      FROM marked GROUP BY chunk;
+
+    INSERT INTO pgit.nodes (hash, level, entries, hashes, keys)
+    SELECT g.hash, 0, g.entries, g.hashes, g.keys FROM pgit_grp g
+    ON CONFLICT (hash) DO NOTHING;
+
+    INSERT INTO pgit_new SELECT g.key_bytes, g.hash FROM pgit_grp g;
+  END LOOP;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.assemble_above_leaves() RETURNS bytea
+LANGUAGE plpgsql AS $$
+BEGIN
   TRUNCATE pgit_lvl;
   INSERT INTO pgit_lvl
     SELECT decode(o.k, 'hex'), decode(o.h, 'hex'), NULL::jsonb
@@ -2423,9 +2234,6 @@ BEGIN
     UNION ALL
     SELECT key_bytes, hash, NULL::jsonb FROM pgit_new;
 
-  -- pgit.build_up stops at the first level holding a single node, so a table that
-  -- fits in one chunk has that leaf as its root. Building level 1 unconditionally
-  -- here would wrap it and give the same content a different root hash.
   IF (SELECT count(*) FROM pgit_lvl) = 1
      AND NOT EXISTS (SELECT 1 FROM pgit_l1 p WHERE p.rn NOT IN (SELECT rn FROM pgit_l1hit)) THEN
     RETURN (SELECT hash FROM pgit_lvl);
@@ -2441,6 +2249,51 @@ BEGIN
     SELECT key_bytes, hash, NULL::jsonb FROM pgit_built;
 
   RETURN pgit.build_up(2);
+END $$;
+
+CREATE OR REPLACE FUNCTION pgit.write_tree_incremental(target regclass, prev_root bytea)
+RETURNS bytea
+LANGUAGE plpgsql SET client_min_messages = warning AS $$
+DECLARE
+  changed      text[] := pgit.changed_keys(target);
+  pure_updates boolean;
+BEGIN
+  IF prev_root IS NOT NULL AND COALESCE(pgit.node_level(prev_root), 0) <= 1 THEN
+    RETURN pgit.write_tree(target);
+  END IF;
+
+  IF array_length(changed, 1) IS NULL AND prev_root IS NOT NULL THEN
+    RETURN prev_root;
+  END IF;
+
+  IF prev_root IS NULL OR COALESCE(pgit.node_level(prev_root), -1) < 1
+     OR array_length(changed, 1) IS NULL
+     OR array_length(changed, 1) > 10000 THEN
+    RETURN pgit.write_tree(target);
+  END IF;
+
+  PERFORM pgit.ensure_scratch();
+
+  SELECT NOT EXISTS (
+    SELECT 1 FROM pgit.changes c
+    WHERE c.tbl = target::text AND c.commit_sha IS NULL AND c.op <> 'UPDATE'
+  ) INTO pure_updates;
+
+  PERFORM pgit.locate_touched_chunks(prev_root, changed, pure_updates);
+
+  IF pgit.rebuild_beats_splice() THEN
+    RETURN pgit.write_tree(target);
+  END IF;
+
+  TRUNCATE pgit_new;
+
+  IF pure_updates AND pgit.changes_are_sparse_in_their_chunks(changed) THEN
+    PERFORM pgit.splice_touched_chunks(target, changed);
+  ELSE
+    PERFORM pgit.rebuild_touched_ranges(target);
+  END IF;
+
+  RETURN pgit.assemble_above_leaves();
 END $$;
 
 DROP FUNCTION IF EXISTS pgit.build_one_level(int);
@@ -2494,11 +2347,6 @@ BEGIN
     SELECT x.root_hash INTO prev FROM pgit.trees x
     WHERE x.commit_sha = parent AND x.tbl = r.tbl::text;
 
-    -- DDL fires no row trigger, so a commit after ALTER TABLE sees an empty
-    -- journal and the incremental path reuses the parent's tree wholesale. Every
-    -- row's canonical form has changed, so the recorded root would not match the
-    -- data and no node can be reused: compare the shape against the one recorded
-    -- at the parent and rebuild from scratch when it moved.
     SELECT sc.fingerprint INTO prev_fp FROM pgit.schemas sc
     WHERE sc.commit_sha = parent AND sc.tbl = r.tbl::text;
 
@@ -2554,13 +2402,6 @@ DECLARE
 BEGIN
   SELECT pk_cols INTO j_cols FROM pgit.tracked WHERE tbl = TG_RELID::regclass;
 
-  -- Locals are prefixed and the transition tables are aliased pgit_nr/pgit_or,
-  -- never n/o/cols: a tracked table is free to have columns by those names, and
-  -- an unqualified reference resolves to the column, not to the alias or the
-  -- variable. In
-  -- "SELECT to_jsonb(n) FROM newrows n" a column of the tracked table named n
-  -- wins over the alias, so the journal silently records that column's value
-  -- instead of the whole row.
   IF TG_OP = 'INSERT' THEN
     INSERT INTO pgit.changes (txid, tbl, pk, op, before, after, actor, source)
     SELECT txid_current(), TG_TABLE_NAME, pgit.pk_of(to_jsonb(pgit_nr), j_cols),
@@ -3407,7 +3248,6 @@ BEGIN
       RAISE EXCEPTION 'pgit: bundle node % does not hash to its content, refusing', e ->> 'hash';
     END IF;
 
-    -- The wire format is unchanged; the packed vectors are derived on receipt.
     INSERT INTO pgit.nodes (hash, level, entries, hashes, keys)
     VALUES (h, (e ->> 'level')::int,
             CASE WHEN (e ->> 'level')::int = 0
@@ -3645,9 +3485,6 @@ CREATE TABLE IF NOT EXISTS pgit.bisect (
   CONSTRAINT bisect_single CHECK (id = 1)
 );
 
--- Where the branch was when the bisect started. bisect_next hard resets the
--- current branch onto each candidate, so without this the branch tip is simply
--- abandoned and gc collects it.
 ALTER TABLE pgit.bisect ADD COLUMN IF NOT EXISTS orig_ref text;
 ALTER TABLE pgit.bisect ADD COLUMN IF NOT EXISTS orig_sha bytea;
 
@@ -3657,9 +3494,6 @@ DECLARE
   ref text := pgit.head();
 BEGIN
   DELETE FROM pgit.bisect;
-  -- git bisects on a detached HEAD and puts the branch back on reset. There is
-  -- no detached HEAD here, so bisect_next hard resets the branch itself and the
-  -- tip has to be remembered or it is lost.
   INSERT INTO pgit.bisect (id, good, bad, orig_ref, orig_sha)
   VALUES (1, pgit.rev(good_spec), pgit.rev(bad_spec), ref, pgit.resolve(ref));
   RETURN pgit.bisect_next();
@@ -3704,9 +3538,6 @@ BEGIN
   RETURN pgit.bisect_next();
 END $$;
 
--- Puts the branch back where bisect_start found it, the way git bisect reset
--- does. Without this a finished bisect leaves the branch parked on whichever
--- candidate was examined last and every commit after it unreachable.
 CREATE OR REPLACE FUNCTION pgit.bisect_reset() RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE

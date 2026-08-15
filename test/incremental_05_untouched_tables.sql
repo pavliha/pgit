@@ -38,8 +38,6 @@ SELECT is(
 
 SELECT is(pgit.is_dirty(), false, 'untouched: the working tree is clean after the commit');
 
--- The reused root must not be a stale answer: touching the big table again has
--- to move it, or the shortcut would be silently dropping real changes.
 UPDATE big SET v = 'now changed' WHERE id = 12345;
 CREATE TEMP TABLE c2 AS SELECT pgit.commit('touch the big table', 'p') AS sha;
 
@@ -61,9 +59,6 @@ SELECT is(
   (SELECT count(*) FROM pgit.diff((SELECT sha FROM c0), (SELECT sha FROM c1), 'big')), 0::bigint,
   'untouched: and no phantom changes are attributed to the table nobody touched');
 
--- Every assertion above passes without the fix too, because a needless full
--- rebuild produces the same root. The bug is only visible as cost, so it has to
--- be measured: the comparison is made in this same run so it is machine independent.
 CREATE TEMP TABLE t_ms (what text PRIMARY KEY, ms numeric);
 DO $$
 DECLARE t0 timestamptz;

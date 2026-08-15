@@ -40,12 +40,6 @@ SELECT ok(
   'AC-CANON-06: keys sharing a 25-character prefix chunk within 4x of the 64 target'
 );
 
--- A chunk's key is its first key, which is the key that followed a boundary, so
--- when every key of a level is a boundary the next level holds exactly the same
--- keys and the build loop spins to the depth cap. Two rows whose first key is a
--- boundary are enough, which is one table in chunk_target. This one is such a
--- table: the column name is deliberate, it is what makes the first key hash to a
--- boundary.
 CREATE TABLE spin ("Id Col" int PRIMARY KEY, v text);
 SELECT pgit.track('spin');
 INSERT INTO spin VALUES (1, 'a'), (2, 'b');

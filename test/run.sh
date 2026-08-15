@@ -4,10 +4,6 @@ set -uo pipefail
 ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Every other suite builds its own database; this one used to run against
-# whatever pgit_test happened to hold. A leftover benchmark fixture — a tracked
-# 1M row table with 10,000 commits — turned a single merge into 25 minutes,
-# because merge covers every tracked table. Results must not depend on history.
 if [ -z "${PGIT_DSN:-}" ]; then
   DSN="postgresql://postgres:pgit@localhost:5460/pgit_pgtap"
   psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_pgtap" -c "CREATE DATABASE pgit_pgtap" >/dev/null

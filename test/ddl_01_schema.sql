@@ -69,10 +69,6 @@ SELECT isnt(
   'AC-DDL-04: the type change is still visible in the schema fingerprint'
 );
 
--- ALTER TABLE fires no row trigger, so the journal is empty and the incremental
--- path reused the parent's tree wholesale: the commit after ADD COLUMN recorded
--- a root whose row images did not have the new column, and write_tree disagreed
--- with the stored root.
 CREATE TABLE shape (id int PRIMARY KEY, a text);
 SELECT pgit.track('shape');
 INSERT INTO shape VALUES (1, 'x'), (2, 'y');

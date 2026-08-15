@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Runs pgit against a real application database rather than a synthetic fixture.
-# Point DUMP at a pg_dump custom-format snapshot; it is restored into its own
-# database on the pgit cluster and never written back.
-#
-#   DUMP=/path/to/app.dump ./bench/realworld_intoge.sh
-
 ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
 DSN="${PGIT_REAL_DSN:-postgresql://postgres:pgit@localhost:5460/pgit_intoge}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -41,7 +35,6 @@ qs "DO \$\$
 TRACKED=$(q "SELECT count(*) FROM pgit.tracked")
 echo "# tracked $TRACKED tables"
 
-# Without this guard every assertion below compares zero against zero and passes.
 if ! [ "$TRACKED" -gt 10 ] 2>/dev/null; then
   echo "not ok - realworld: tracking produced $TRACKED tables, refusing to run vacuous assertions" >&2
   exit 1
@@ -117,8 +110,6 @@ is "realworld: resolving to theirs takes the promo price" "$(q "SELECT price_amo
 is "realworld: fsck is clean after a resolved conflict" "$(q "SELECT count(*) FROM pgit.fsck()")" "0"
 
 echo "# a merge that would dangle a real foreign key"
-# products -> categories is ON DELETE RESTRICT in this schema, so it is the one
-# that can actually be violated by combining two independently valid branches.
 must(){ out=$(qs "$1"); case "$out" in *ERROR*) echo "setup failed: $out" >&2; exit 1;; esac; printf '%s' "$out"; }
 
 CID=$(must "SELECT category_id FROM products WHERE category_id IS NOT NULL

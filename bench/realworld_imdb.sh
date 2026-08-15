@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Versions a real public dataset that genuinely changes every day.
-# IMDb republishes title.ratings nightly, so "commit tonight's ratings" is the
-# actual workload pgit exists for, not a synthetic stand-in.
-#
-#   DATA=/path/with/title.basics.tsv.gz ./bench/realworld_imdb.sh
-
 ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
 DSN="${PGIT_IMDB_DSN:-postgresql://postgres:pgit@localhost:5460/pgit_imdb}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -26,8 +20,6 @@ q "CREATE TABLE title_basics (
 q "CREATE TABLE title_ratings (
      tconst text PRIMARY KEY, average_rating numeric, num_votes int)" >/dev/null
 
-# QUOTE and ESCAPE are set to a byte that never occurs in the data, so the
-# unquoted tsv is read verbatim: real titles contain both \" and \\.
 COPYOPTS="WITH (FORMAT csv, DELIMITER E'\t', QUOTE E'\b', ESCAPE E'\b', NULL '\\N')"
 
 echo "# loading imdb"

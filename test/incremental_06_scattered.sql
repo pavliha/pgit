@@ -1,8 +1,6 @@
 BEGIN;
 SELECT plan(7);
 
--- A text primary key, because the chunk lookup is a range probe over the key and
--- collation decides whether an index can serve it at all.
 CREATE TABLE r (k text PRIMARY KEY, n int);
 SELECT pgit.track('r');
 INSERT INTO r SELECT 'tt' || lpad(g::text, 8, '0'), g FROM generate_series(1, 200000) g;
@@ -39,11 +37,6 @@ SELECT is(
 
 SELECT is(pgit.is_dirty(), false, 'scattered: the working tree is clean');
 
--- Locating which chunk each changed key falls in used to test every chunk against
--- the whole changed array, which is O(chunks x keys). At 1.7M rows that made a
--- scattered commit 3.1x the cost of rebuilding the entire table from scratch.
--- Both bounds below are relative to a rebuild measured in this same run, so they
--- do not depend on the machine.
 SELECT cmp_ok(
   (SELECT ms FROM t_ms WHERE what = 'scattered'), '<',
   (SELECT ms * 3 / 2 FROM t_ms WHERE what = 'rebuild'),

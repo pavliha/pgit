@@ -1,11 +1,6 @@
 BEGIN;
 SELECT plan(7);
 
--- Every identifier the generated SQL has ever used as an alias, all at once, as
--- column names on one tracked table. This collision has been found three times
--- in this project - n and o in the journal trigger, t and s in the row hash and
--- replay SQL, t again in changed_keys - and each fix only covered the names that
--- had bitten so far. A bare alias anywhere in generated SQL fails here.
 CREATE TABLE hostile (
   id      int PRIMARY KEY,
   n text, o text, cols text, t text, s text, v text, k text, e text,

@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-# Shared harness for the shell suites. Each one used to carry its own copy of
-# these four functions and its own summary format; the totals in test/all.sh
-# depend on every suite reporting the same way.
-#
-#   . "$(dirname "$0")/lib.sh"
-#   is "what it checks" "$got" "$want"
-#   suite_end RDS
 
 PGIT_ADMIN_DSN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
 PGIT_DSN="${PGIT_DSN:-postgresql://postgres:pgit@localhost:5460/pgit_test}"
@@ -20,8 +13,6 @@ is()   { if [ "$2" = "$3" ]; then ok "$1"; else nok "$1 (want '$3', got '$2')"; 
 isnt() { if [ "$2" != "$3" ]; then ok "$1"; else nok "$1 (did not want '$3')"; fi; }
 like() { if [[ "$2" =~ $3 ]]; then ok "$1"; else nok "$1 (got '$2', wanted match $3)"; fi; }
 
-# Refuse to report a green run that asserted nothing. A suite whose setup failed
-# silently used to print "GREEN (0 checks)" and pass.
 suite_end() {
   local name="$1" least="${2:-1}"
   echo

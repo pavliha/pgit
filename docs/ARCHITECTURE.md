@@ -76,7 +76,33 @@ Nothing is duplicated between the three columns, which is what keeps the format 
 jsonb-of-`{k,h,v}` it replaced as well as faster.
 
 `pgit.node_items(hash)` is the single accessor: it yields `(k, ch, v)` per child and every reader
-goes through it.
+goes through it. `pgit.node_entries(hash)` is the same without the images, for the descent, and
+`pgit.node_raw(hash)` returns the three columns unexpanded for callers that compare hashes as bytes.
+
+Both vectors are walked once with `unnest ... WITH ORDINALITY` and paired on the ordinal. **Never
+subscript `keys[i]` in a loop**: a `text[]` holds variable-length elements, so Postgres walks the
+array from the start for every subscript, and iterating a 674-entry node that way costs ~227,000
+element steps. A node's parts are resolved through its delta chain only when it has one — the
+accessors branch on `entries IS NOT NULL` and `CASE` short-circuits, so an unpacked node never calls
+the resolver.
+
+## Identifiers the generated SQL reserves
+
+Much of pgit is SQL generated per tracked table, and generated SQL has to alias the user's table.
+Any bare alias can collide with a column of the same name, and the failure is silent rather than
+loud: `to_jsonb(t)` over `FROM tbl t` resolves `t` to the **column** when one exists, so the row
+image becomes that column's scalar value and the wrong tree is stored. Nothing complains until a
+replay tries to build a record from it, long after the damage.
+
+The aliases are therefore `"pgit row"` for the table and `"pgit img"` for a populated record. Both
+are quoted and contain a space, so no unquoted column name can equal them. A table carrying a column
+of either name is **refused by `track()`**, because a prefix alone is not enough — `pgit_t` collides
+with a column named `pgit_t`. `test/journal_06_hostile_columns.sql` tracks a table whose columns are
+named after every alias the codebase has ever used.
+
+Scratch tables that hold keys are declared `COLLATE "C"`. Keys are hex and every ordering in the
+tree is byte order, so C collation is needed both for correctness and so the indexes on those tables
+are usable for the range probes that locate a changed key's chunk.
 
 ## Writing a commit
 

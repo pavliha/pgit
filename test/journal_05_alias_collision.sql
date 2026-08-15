@@ -1,9 +1,6 @@
 BEGIN;
 SELECT plan(15);
 
--- n and o are the aliases the statement trigger used for its transition tables.
--- A bare to_jsonb(n) over "FROM newrows n" resolves n to the column, not the row,
--- so the journal recorded a scalar and the whole row was lost.
 CREATE TABLE probe (id int PRIMARY KEY, n int, o text, cols text);
 SELECT pgit.track('probe');
 
@@ -58,11 +55,6 @@ SELECT is(
   (SELECT root_hash FROM pgit.trees WHERE commit_sha = pgit.resolve('main') AND tbl = 'probe'),
   'alias: and the tree matches a full rebuild throughout');
 
--- The journal was fixed for n and o long ago. The row hash SQL and the replay
--- SQL had the same defect with different aliases: to_jsonb(t) over "FROM tbl t"
--- resolves to a column named t, so every stored image became a scalar and
--- checkout died on "cannot call populate_composite on a scalar" - after having
--- written a wrong tree.
 CREATE TABLE probe2 (id int PRIMARY KEY, t text, s text, pgit_t text, v text);
 SELECT pgit.track('probe2');
 INSERT INTO probe2 VALUES (1, 'a', 'b', 'c', 'd'), (2, 'e', 'f', 'g', 'h');

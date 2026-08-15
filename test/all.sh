@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Single entry point. Runs every suite, reports one total, exits non-zero if any
-# suite fails OR is missing. A suite that cannot run is a failure, not a pass —
-# silently skipping is how a green run comes to mean nothing.
 set -uo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -39,8 +36,6 @@ run_suite "crash-safety " "$DIR/kill_test.sh"
 run_suite "non-superuser" "$DIR/rds_test.sh"
 run_suite "remote       " "$DIR/remote_test.sh"
 
-# The real-schema suite needs an application dump. It is opt-in by nature, so it
-# is reported as skipped rather than silently omitted from the totals.
 if [ -n "${DUMP:-}" ]; then
   run_suite "real-schema  " "$ROOT/bench/realworld_intoge.sh"
 else
