@@ -5,8 +5,9 @@ ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [ -z "${PGIT_DSN:-}" ]; then
-  DSN="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_pgtap"
-  psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_pgtap" -c "CREATE DATABASE pgit_pgtap" >/dev/null
+  DB="pgit_pgtap_$$"
+  DSN="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/$DB"
+  psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS $DB" -c "CREATE DATABASE $DB" >/dev/null
   psql "$DSN" -X -q -v ON_ERROR_STOP=1 -f "$DIR/../sql/install.sql" >/dev/null
   psql "$DSN" -X -q -c "CREATE EXTENSION IF NOT EXISTS pgtap" >/dev/null
   OWNED=1
@@ -16,7 +17,9 @@ else
 fi
 TOTAL_OK=0
 TOTAL_BAD=0
+TOTAL_ERR=0
 FAILED=0
+BROKEN=""
 
 for f in "$DIR"/*.sql; do
   name=$(basename "$f")
@@ -31,10 +34,13 @@ for f in "$DIR"/*.sql; do
   TOTAL_OK=$((TOTAL_OK + ran - bad))
   TOTAL_BAD=$((TOTAL_BAD + bad))
 
+  TOTAL_ERR=$((TOTAL_ERR + errs))
+
   status="ok"
   if [ "$bad" -gt 0 ]; then status="FAIL"; FAILED=1; fi
   if [ "$plan" -ne "$ran" ]; then status="INCOMPLETE ($ran/$plan ran)"; FAILED=1; fi
   if [ "$errs" -gt 0 ]; then status="$status +${errs} SQL ERRORS"; FAILED=1; fi
+  if [ "$status" != "ok" ]; then BROKEN="$BROKEN  $name: $status"$'\n'; fi
 
   printf '%-44s %s\n' "$name" "$status"
 
@@ -43,12 +49,18 @@ for f in "$DIR"/*.sql; do
   fi
 done
 
-[ "$OWNED" = 1 ] && psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_pgtap" >/dev/null
+[ "$OWNED" = 1 ] && psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" >/dev/null
 
 echo
 if [ "$TOTAL_OK" -lt 300 ]; then
   echo "PGTAP RED — only $TOTAL_OK assertions ran, the suite is far smaller than expected"
   exit 1
 fi
-[ $FAILED -eq 0 ] && echo "PGTAP GREEN ($TOTAL_OK checks)" || echo "PGTAP RED ($TOTAL_BAD of $((TOTAL_OK + TOTAL_BAD)) failed)"
-exit $FAILED
+if [ $FAILED -eq 0 ]; then
+  echo "PGTAP GREEN ($TOTAL_OK checks)"
+  exit 0
+fi
+
+echo "PGTAP RED — $TOTAL_BAD failed assertion(s), $TOTAL_ERR SQL error(s), $TOTAL_OK passed"
+printf '%s' "$BROKEN"
+exit 1

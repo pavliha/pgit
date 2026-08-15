@@ -1,7 +1,10 @@
 # Build plan
 
-Worked top to bottom. One item per iteration: implement in `sql/`, add pgTAP tests in `test/`,
-run `make test` until green, then tick the box and append a line to **Progress log**.
+How this was built, and what it cost. One item per iteration: implement in `sql/`, add pgTAP tests
+in `test/`, run `make test` until green, then tick the box and append a line to **Progress log**.
+
+The progress log is the useful part. It records the bugs that got through, how each was found, and
+the ones a green test suite failed to catch — including several where the test itself was the bug.
 
 ## Decisions taken (reversible)
 
@@ -675,7 +678,134 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   computes the diff by full scanning both trees and joining on the key — **no shared code with the
   thing under test**. A differential oracle earns its place precisely when the plausible-looking
   change is wrong.
+- **prune destroyed pending work** — `prune` marked journal rows of pruned commits with
+  `commit_sha = NULL`, then deleted every `NULL` row. But `NULL` is also how a row says *not yet
+  committed*: a prune between a write and its commit silently threw the uncommitted work away, and
+  the next commit recorded a tree that did not match the table. Fixed by deleting by predicate
+  instead of via a tombstone that collides with a real state. 5 assertions in
+  `test/replay_07_prune_pending.sql`, suite 626 green. The real surprise was the fuzzer: it did not
+  catch this, because its tables held 40 rows, and at 40 rows the root is level 1, and
+  `write_tree_incremental` short circuits a level 1 root to a full rebuild. Every fuzz run since
+  the incremental path was written had been exercising the *other* path. Fuzz tables are now 6000
+  rows (root level 2), and with the bug reintroduced the fuzzer fails on operation 6.
+- **six bugs found by using it like a user** — driving pgit through ordinary flows (track an
+  existing table, branch, merge, resolve, revert, clone) turned up what the suite never asked.
+  1. `blame` read only the journal, so every row that existed **before** `track()` was permanently
+     unblameable and returned zero rows with no error - the normal onboarding path. It now falls
+     back to the tree and attributes those columns to the commit that first recorded the row.
+  2. `commit` minted a commit when nothing had changed; an hourly job would have added 8,760 empty
+     commits a year. It refuses now, with `allow_empty := true` for the deliberate case. The first
+     version of that guard was too strict and `ddl_01` caught it: `ALTER COLUMN a TYPE varchar(50)`
+     leaves every canonical value identical, so the tree is unchanged while the *shape* is not.
+  3. `needs_attention()` returned nothing while a merge sat unresolved, so a monitor following
+     `RUNBOOK.md` would report green with the database stuck mid-merge. Merge, conflicts, bisect and
+     rebase are all surfaced now.
+  4. `revert` applied its inverse but never committed, while its sibling `cherry_pick` did. The
+     dangling change silently folded into whatever the user committed next - it happened to me
+     mid-session, landing a revert inside an unrelated commit about a different table. `revert` now
+     commits, returns the sha, and names what it reverted.
+  5. Every commit had a blank author: `actor()` was `current_setting('pgit.actor')`, documented
+     nowhere. It falls back to `current_user`, which also makes `log(who := ...)` useful for the
+     first time.
+  6. `clone_from` recreated tables with columns in **alphabetical** order. A positional
+     `INSERT INTO inv VALUES ('D', 7, 'shelf')` written against the source put `sku='shelf'` and
+     `loc='D'` in the clone, no error. Column order is part of a table's shape, so it is recorded in
+     table order now - an on-disk format change, so `format_version` is 4.
+  20 new assertions across `ux_01`, `ops_02`, `clone_01` and `remote_test`; suite 646 green. The
+  lesson worth keeping: every one of these sat behind a green 626-check suite, because the suite
+  tested what I thought to test and never once used the thing the way its README tells you to.
+- **gc could break the next commit on a branch** — found while making CI faster, which is not where
+  I expected to find a data bug. `repack` packs a node by setting `entries`, `hashes` **and** `keys`
+  to NULL and storing a delta, but `splice_touched_chunks` reconstructed only `entries` and read
+  `hashes`/`keys` straight off the row. Splice a packed leaf chunk and every field is NULL, so
+  `pgit.hash(NULL)` is NULL and the commit dies on the `nodes.hash` NOT NULL constraint. Repack keeps
+  the **newest** version of each chunk whole (`ORDER BY n.seq DESC`), so the victim is any branch
+  that is not the most recent writer of a chunk: branch, commit a few times on main, run the nightly
+  `repack()`, commit on the branch - crash. Reproduced at the default `chunk_target` of 64.
+  `nodes_at_level` had the same bug, reading `n.keys[1]` raw. Both use `pgit.node_raw()` now, which
+  already reconstructed all three. Guarded by `gc_02_commit_after_repack.sql`, proven red first.
+- **the fuzzer needed deeper trees, not bigger ones** — raising fuzz tables to 6000 rows cost 6.5x
+  per operation and pushed the CI campaign towards an hour. A `chunk_target` of 8 with 400 rows gives
+  a **level 3** root instead of level 2, at 4s per 100 operations instead of 13s. Better coverage,
+  a third of the cost, and it is what found the repack bug above.
+- **the benchmark had stopped measuring one of its own numbers** — the empty-commit guard refused a
+  commit in `bench/quick.sh`, which turned out to be right: the "100 adjacent rows" step updates
+  `tconst BETWEEN 'tt00050000' AND 'tt00050099'`, and when the key widened to 12 digits that range
+  stopped matching any row. It had been timing a no-op commit. Now 14ms of real work.
+- **observability** — every write verb emits one wide event rather than scattered lines:
+  `pgit.events` holds verb, ok, actor, branch, duration_ms, txid and a jsonb detail carrying the
+  sha, row counts and conflict counts. `log_server` also RAISEs it as a single JSON line for Loki,
+  with `log_error_verbosity` scoped to `pgit.emit` so Postgres does not staple CONTEXT to every
+  event. `pgit.metrics()` is the numeric side for scraping, including commit latency p50/p95 taken
+  from the events themselves. `repack` rotates the table on `log_retain_days`. Events are
+  transactional, so a rolled back operation leaves no trace - which also means failures need
+  `log_server`, and the runbook says so. 12 assertions, perf gate unchanged, suite 661 green.
+  One trap on the way: scoping `SET log_error_verbosity = 'terse'` to `pgit.emit` to stop Postgres
+  stapling CONTEXT onto every event is a **superuser only** GUC, so it made `commit` fail for
+  exactly the unprivileged role a real application runs as. `privileges_test.sh` caught it. Terse
+  logging is a server setting for the operator, not something pgit can arrange for itself.
+- **`remote` was half a feature, and the half that was missing was not written down** — `remote_add`
+  stores a name and a URL, and **nothing anywhere reads the URL**. Proven rather than inferred:
+  `remote_add('origin', 'this-is-not-a-url-at-all ://// nonsense')` is accepted, and
+  `fetch('never-registered', bundle)` succeeded and created `remotes/never-registered/main` for a
+  remote that had never been added. The ref side is genuinely right - fetch touches only
+  `remotes/<name>/*`, receive enforces fast forward, both verify every node hashes to its content -
+  but there is no transport, and there cannot be one while pgit stays extension free, because that
+  needs `dblink` or `postgres_fdw`. The README's `remote add origin <url>` implied otherwise.
+  `fetch` now refuses an unknown remote and says how to add it, `LIMITATIONS.md` states plainly that
+  pgit never dials anything and shows the bundle-by-hand recipe, and the README calls the URL a
+  label. The existing remote suite had been fetching without ever adding a remote, which is how the
+  gap survived 28 green checks; it registers one now. REMOTE 29.
+- **hunting with the instrument turned on** — running ordinary workflows and reading `pgit.events`
+  rather than the tables found what the tables could not show.
+  1. **A rebase left no trace at all.** It rewrote history - old tip abandoned, new commit created -
+     and emitted nothing, not even a `commit` event, because `rebase` and `cherry_pick` build commit
+     rows directly instead of calling `pgit.commit`. Measured across a normal workflow: **5 commits
+     created, 4 commit events**. `cherry_pick`, `merge_octopus`, `reset`, `restore`, `branch`, `tag`,
+     `track`, `untrack`, `delete_branch` and `stash` were all invisible too. `reset` can drop commits
+     and `restore` writes rows; both were silent. All instrumented now, and
+     `obs_02_every_commit_audited.sql` locks the invariant that **every commit in the database has a
+     commit-creating event**, whatever verb built it - so the next verb that forgets fails the suite.
+  2. **`blame` named the wrong person after a routine prune.** Before pruning, `title` was bob's.
+     After a 45 day retention prune removed bob's commit, blame reported **carol** - who had only
+     ever touched `body` - because the tree fallback attributes unexplained columns to the oldest
+     surviving commit. The value was right and the author was wrong, which is worse than no answer.
+     `blame` now returns `exact`: true when a journal entry proves that commit changed that column,
+     false when the value was merely already present there. `RUNBOOK.md` says never to attribute a
+     false row to a person, and `LIMITATIONS.md` records that prune buys storage with attribution.
+  3. **The rebase event claimed `rewritten: true` unconditionally**, including for a fast forward
+     that rewrote nothing. It is computed now - history was rewritten only if the old tip is no
+     longer reachable from the new one, which is git's own definition. The no-op and conflict exits
+     of `rebase` emit too, so a rebase that stopped half way is on the record with `ok = false` and
+     `stopped_at`, alongside `needs_attention` showing it.
+  Checked and found correct on the way: rebase content, octopus (4 parents, disjoint keys all
+  present), FK cascade across a merge (0 orphans after a branch deleted parents that main had added
+  children to), and a 30 night ETL over 50k rows where commit latency stayed **flat at ~490ms**
+  (p50 486, p95 504) with no drift. One unexplained `PGTAP RED (1 of 520)` that did not reproduce in
+  three further runs and whose assertion name I did not capture - recorded here rather than assumed
+  away.
+- **the unexplained RED was the harness lying** — chasing it down found two defects in `test/run.sh`
+  itself. It sets `FAILED=1` from three different conditions - a failed assertion, a file that did
+  not finish its plan, and a SQL error - but the summary printed only the failed-assertion count, so
+  a file that died before running its assertions reported **`PGTAP RED (0 of 463 failed)`**: red with
+  nothing failed and the reason already scrolled off. That is exactly how I lost the earlier one.
+  The summary now counts all three and names every file that broke. Second defect: `run.sh` hardcoded
+  the database `pgit_pgtap` and dropped it on exit, so two runs at once silently destroyed each
+  other's database mid-suite and produced garbage - which is what I had actually done to myself. It
+  uses `pgit_pgtap_$$` now, and two concurrent runs both report GREEN.
+- **the rest of the audit gaps closed** — `revert` was recorded only as the commit it produced, and
+  `merge_abort`, `rebase_abort`, `resolve_conflict`, `tag_delete`, `note_add` and `bisect_start`
+  emitted nothing at all. `merge_abort` discarding resolved conflict work and `resolve_conflict`
+  choosing a side are the two an audit asks about most, and both were silent. All emit now, aborts
+  with `ok = false` so throwing work away lands in `pgit_events_failed`. 6 assertions in
+  `obs_03_destructive_verbs.sql`.
+- **the perf worry was the machine, not the code** — gate medians drifted 847 → 897 → 943ms across
+  the session and the ranges stopped overlapping, which reads exactly like a regression. A/B on the
+  same machine state settled it: pre-instrumentation 939/307/512ms against instrumented
+  **907/288/511ms**, so the instrumented build is equal or faster and the drift was the machine.
+  Worth the two minutes; guessing either way would have been wrong.
 
 ## Reference
 
-Postgres.md`.
+`docs/ARCHITECTURE.md` for how the layers fit together, `docs/LIMITATIONS.md` for what this
+deliberately does not do, `PERF.md` for every measurement including the nine that came out worse.

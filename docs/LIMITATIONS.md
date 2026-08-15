@@ -105,6 +105,33 @@ A checkout materialises a branch into your tables, exactly like git's working tr
 cannot be readable at once from the same database. If you need that, you need two databases and a
 bundle between them.
 
+## Pruning costs attribution, not data
+
+`prune` deletes commits and the journal rows that explain them. The rows in your tables are
+untouched and every surviving tree still rebuilds exactly, but `blame` loses the evidence for
+anything the pruned commits changed. It does not guess: those columns come back with
+`exact = false`, meaning "present at this commit, changed by something older than history".
+
+Pick the retention window from how long attribution has to be provable, not from disk.
+
+## pgit does not move data over a network
+
+`remote_add` records a name and a URL, and **nothing dials that URL**. It is a label saying where a
+bundle came from, not a connection string. There is no `git://`, no ssh, no polling. A real
+transport would need `dblink` or `postgres_fdw`, and pgit is deliberately extension free.
+
+Moving history is therefore yours to do, with whatever you already trust:
+
+```bash
+psql "$SRC" -At -c "SELECT pgit.bundle(ARRAY['main'])" > pack.json
+scp pack.json elsewhere:                       # or s3 cp, or a pipe, or email
+psql "$DST" -v b="$(cat pack.json)" -c "SELECT pgit.fetch('origin', :'b'::jsonb)"
+```
+
+`fetch` writes only `remotes/<name>/*`; `receive` moves local branches and enforces fast forward.
+Both verify every node hashes to its content before storing it, so an untrusted courier is fine —
+but you have to be the courier.
+
 ## Anything outside the database does not branch
 
 Search indexes, object storage, payment providers, outbound notifications, caches. pgit versions rows

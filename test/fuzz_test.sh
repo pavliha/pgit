@@ -5,6 +5,8 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/lib.sh"
 
 OPS="${FUZZ_OPS:-150}"
+ROWS="${FUZZ_ROWS:-400}"
+CHUNK="${FUZZ_CHUNK:-8}"
 SEED="${FUZZ_SEED:-}"
 ROUNDS="${FUZZ_ROUNDS:-3}"
 
@@ -19,7 +21,7 @@ for round in $(seq 1 "$ROUNDS"); do
   D="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_fuzz"
   psql "$D" -X -q -v ON_ERROR_STOP=1 -f "$DIR/../sql/install.sql" >/dev/null 2>&1
 
-  out=$(psql "$D" -X -q -At -v ops="$OPS" -v seed="$s" -f "$DIR/fuzz/fuzz.sql" 2>&1)
+  out=$(psql "$D" -X -q -At -v ops="$OPS" -v seed="$s" -v rows="$ROWS" -v chunk="$CHUNK" -f "$DIR/fuzz/fuzz.sql" 2>&1)
 
   if echo "$out" | grep -q "every tree matched a rebuild"; then
     survived=$((survived + OPS))

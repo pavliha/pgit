@@ -5,6 +5,8 @@ TRUNCATE fuzz_log;
 
 SET fuzz.ops  = :ops;
 SET fuzz.seed = :seed;
+SET fuzz.rows = :rows;
+UPDATE pgit.meta SET value = :'chunk' WHERE key = 'chunk_target';
 
 DO $fuzz$
 DECLARE
@@ -32,14 +34,15 @@ BEGIN
                    tb, hostile[pick],
                    hostile[1 + (pick + floor(random() * (array_length(hostile,1) - 1))::int)
                                % array_length(hostile,1)]);
-    EXECUTE format('INSERT INTO %I SELECT g, ''v'' || g, g FROM generate_series(1, 40) g', tb);
+    EXECUTE format('INSERT INTO %I SELECT g, ''v'' || g, g FROM generate_series(1, %s) g',
+                   tb, current_setting('fuzz.rows')::int);
     PERFORM pgit.track(tb::regclass);
   END LOOP;
   PERFORM pgit.commit('fuzz base', 'main');
 
   FOR i IN 1..ops LOOP
     tb   := tbls[1 + floor(random() * array_length(tbls,1))::int];
-    pick := 1 + floor(random() * 10)::int;
+    pick := 1 + floor(random() * 11)::int;
 
     BEGIN
       IF pick <= 3 THEN
@@ -80,6 +83,17 @@ BEGIN
         PERFORM pgit.checkout(br);
         INSERT INTO fuzz_log VALUES (i, 'branch+checkout', br);
 
+      ELSIF pick = 10 AND i > 3 THEN
+        SELECT a.attname INTO col FROM pg_attribute a
+        WHERE a.attrelid = tb::regclass AND a.attnum > 0 AND NOT a.attisdropped
+          AND a.attname <> 'id' AND a.atttypid = 'text'::regtype
+        ORDER BY a.attnum LIMIT 1;
+        IF col IS NOT NULL THEN
+          EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 13 = 0', tb, col, 'pruned-' || i);
+          PERFORM pgit.prune((SELECT c.at FROM pgit.commits c ORDER BY c.at DESC OFFSET 1 LIMIT 1));
+          INSERT INTO fuzz_log VALUES (i, 'change then prune', tb || '.' || col);
+        END IF;
+
       ELSE
         IF array_length(branches,1) > 1 AND random() < 0.5 THEN
           br := branches[1 + floor(random() * array_length(branches,1))::int];
@@ -95,7 +109,7 @@ BEGIN
       CONTINUE;
     END;
 
-    PERFORM pgit.commit('fuzz ' || i, pgit.head());
+    PERFORM pgit.commit('fuzz ' || i, pgit.head(), now(), true);
 
     SELECT count(*) INTO bad
     FROM pgit.trees t

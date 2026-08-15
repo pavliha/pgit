@@ -47,7 +47,7 @@ SELECT is(
   'AC-REPLAY-03: reverting a commit restores the parent content exactly, by root hash'
 );
 
-CREATE TEMP TABLE c AS SELECT pgit.commit('revert of b', 'pavlo') AS sha;
+CREATE TEMP TABLE c AS SELECT pgit.resolve('main') AS sha;
 SELECT pgit.revert((SELECT sha FROM c));
 
 SELECT is(

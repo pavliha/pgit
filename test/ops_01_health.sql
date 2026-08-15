@@ -2,7 +2,7 @@ BEGIN;
 SELECT plan(7);
 
 SELECT is(
-  (SELECT value FROM pgit.meta WHERE key = 'format_version'), '3',
+  (SELECT value FROM pgit.meta WHERE key = 'format_version'), '4',
   'AC-OPS-01: the database records the on-disk format it was written with');
 
 CREATE TABLE h (id int PRIMARY KEY, v text);

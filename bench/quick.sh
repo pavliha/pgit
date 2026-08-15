@@ -23,7 +23,7 @@ BEGIN
   RAISE WARNING 'full build, $ROWS rows      %ms', round(extract(epoch FROM clock_timestamp()-t0)*1000);
   INSERT INTO shas VALUES ('a', pgit.resolve('main'));
 
-  UPDATE r SET num_votes = num_votes + 1 WHERE tconst BETWEEN 'tt00050000' AND 'tt00050099';
+  UPDATE r SET num_votes = num_votes + 1 WHERE tconst BETWEEN 'tt000000050000' AND 'tt000000050099';
   t0 := clock_timestamp(); PERFORM pgit.commit('adj','p');
   RAISE WARNING '100 adjacent rows          %ms', round(extract(epoch FROM clock_timestamp()-t0)*1000);
 

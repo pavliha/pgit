@@ -42,7 +42,7 @@ SELECT pgit.restore(encode((SELECT sha FROM c2),'hex'), 't');
 DO $$ DECLARE i int; BEGIN
   FOR i IN 3..10 LOOP
     UPDATE t SET hits = CASE WHEN i >= 6 THEN 999 ELSE i END WHERE id = 1;
-    PERFORM pgit.commit('c'||i, 'p', ('2026-06-0'||(i-2))::timestamptz);
+    PERFORM pgit.commit('c'||i, 'p', ('2026-06-0'||(i-2))::timestamptz, true);
   END LOOP;
 END $$;
 

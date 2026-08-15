@@ -31,6 +31,8 @@ qo "SELECT pgit.bundle(ARRAY['main'])" > /tmp/pgit_b1.json
 is "remote: the bundle is a single self contained value" "$(head -c 1 /tmp/pgit_b1.json)" "{"
 
 runb "$C" /tmp/pgit_b1.json "SELECT pgit.receive(:'b'::jsonb);" >/dev/null
+is "remote: fetching from a remote that was never added is refused, rather than inventing it" \
+   "$(runb "$C" /tmp/pgit_b1.json "SELECT pgit.fetch('never-added', :'b'::jsonb);" 2>&1 | grep -c 'no remote named')" "1"
 is "remote: the clone received both commits" "$(qc "SELECT count(*) FROM pgit.commits")" "2"
 is "remote: the clone's main points where origin's does" \
    "$(qc "SELECT encode(pgit.resolve('main'),'hex')")" "$(qo "SELECT encode(pgit.resolve('main'),'hex')")"
@@ -60,6 +62,7 @@ else
   nok "remote: an incremental fetch sends fewer nodes ($INCR against $FULL)"
 fi
 
+qc "SELECT pgit.remote_add('origin','the origin database, moved by hand')" >/dev/null
 runb "$C" /tmp/pgit_b2.json "SELECT pgit.fetch('origin', :'b'::jsonb);" >/dev/null
 is "remote: fetch updated the remote tracking ref only" \
    "$(qc "SELECT encode(pgit.resolve('remotes/origin/main'),'hex')")" "$(qo "SELECT encode(pgit.resolve('main'),'hex')")"
@@ -108,6 +111,8 @@ is "clone: the materialised table hashes to exactly what the cloned commit recor
    "$(qo "SELECT encode(x.root_hash,'hex') FROM pgit.trees x WHERE x.commit_sha=pgit.resolve('main') AND x.tbl='t'")"
 is "clone: fsck is clean" "$(qv "SELECT count(*) FROM pgit.fsck()")" "0"
 is "clone: the working tree is not dirty" "$(qv "SELECT pgit.is_dirty()")" "f"
+is "clone: the created table keeps the original column order, so a positional INSERT still lands right" \
+   "$(qv "SELECT string_agg(attname,',' ORDER BY attnum) FROM pg_attribute WHERE attrelid='t'::regclass AND attnum>0 AND NOT attisdropped")" "id,name,hits"
 OUT=$(runb "$V" /tmp/pgit_b4.json "SELECT pgit.clone_from(:'b'::jsonb);")
 is "clone: cloning over an existing history is refused" \
    "$(printf '%s' "$OUT" | grep -c 'needs an empty history')" "1"
@@ -149,4 +154,4 @@ is "octopus: both branches' rows survived the transfer" \
 for d in pgit_origin pgit_clone pgit_bad pgit_virgin pgit_oct; do psql "$ADMIN" -X -q -c "DROP DATABASE $d" >/dev/null; done
 rm -f /tmp/pgit_b*.json
 
-suite_end REMOTE 27
+suite_end REMOTE 29

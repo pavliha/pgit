@@ -39,7 +39,8 @@ SELECT pgit.commit('edit','app');
 DELETE FROM side;
 SQL
 
-is "AC-PORT-02: revert works without superuser" "$(q "SELECT pgit.revert(pgit.resolve('main'))")" "1"
+is "AC-PORT-02: revert works without superuser" \
+   "$(q "SELECT pgit.revert(pgit.resolve('main')) IS NOT NULL")" "t"
 is "AC-PORT-02: revert restored the value"      "$(q "SELECT name FROM t WHERE id=5")" "row-5"
 is "AC-REPLAY-01: no user trigger fired during replay" "$(q "SELECT count(*) FROM side")" "0"
 is "AC-PORT-02: the user trigger was restored to its original state" \

@@ -42,7 +42,7 @@ run_suite "privileges   " "$DIR/privileges_test.sh"
 run_suite "recovery     " "$DIR/recovery_test.sh"
 
 if [ -n "${DUMP:-}" ]; then
-  run_suite "real-schema  " "$ROOT/bench/realworld_intoge.sh"
+  run_suite "real-schema  " "$ROOT/bench/realworld_app.sh"
 else
   SKIPPED+=("real-schema (set DUMP=/path/to/app.dump to include it)")
 fi

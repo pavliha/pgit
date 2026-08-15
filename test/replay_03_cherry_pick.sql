@@ -30,7 +30,6 @@ SELECT is(
   'AC-REPLAY-06: cherry-pick followed by revert is a content no-op'
 );
 
-SELECT pgit.commit('record the revert', 'pavlo');
 UPDATE t SET name = 'feature version' WHERE id = 2;
 SELECT pgit.commit('feature edits the same row', 'pavlo');
 

@@ -447,8 +447,8 @@ rebase|cherry-pick|revert|track|untrack)
                  [ "$n" = "0" ] && echo "rebased onto $arg" || { echo "$n conflict(s), rebase stopped"; exit 1; } ;;
     cherry-pick) n=$(q "SELECT pgit.cherry_pick(pgit.rev('$(lit "$arg")'))") || exit 1
                  [ "$n" = "0" ] && echo "picked $arg" || { echo "$n conflict(s), nothing applied"; exit 1; } ;;
-    revert)      n=$(q "SELECT pgit.revert(pgit.rev('$(lit "$arg")'))") || exit 1
-                 echo "reverted $arg ($n rows)" ;;
+    revert)      sha=$(q "SELECT encode(pgit.revert(pgit.rev('$(lit "$arg")')),'hex')") || exit 1
+                 echo "[$(q "SELECT pgit.head()") ${sha:0:7}] reverted $arg" ;;
     track)       q "SELECT pgit.track('$(lit "$arg")')" >/dev/null && echo "tracking $arg" ;;
     untrack)     q "SELECT pgit.untrack('$(lit "$arg")')" >/dev/null && echo "untracked $arg" ;;
   esac
