@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
-DSN="${PGIT_BENCH_DSN:-postgresql://postgres:pgit@localhost:5460/pgit_bench}"
+ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
+DSN="${PGIT_BENCH_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_bench}"
 DIR="$(dirname "$0")"
 
 psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_bench" -c "CREATE DATABASE pgit_bench"

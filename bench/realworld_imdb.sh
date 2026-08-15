@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
-DSN="${PGIT_IMDB_DSN:-postgresql://postgres:pgit@localhost:5460/pgit_imdb}"
+ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
+DSN="${PGIT_IMDB_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_imdb}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DATA="${DATA:?set DATA to the directory holding the imdb tsv.gz files}"
 NIGHTS="${NIGHTS:-30}"

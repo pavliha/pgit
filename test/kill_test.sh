@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
-DSN="${PGIT_KILL_DSN:-postgresql://postgres:pgit@localhost:5460/pgit_kill}"
+ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
+DSN="${PGIT_KILL_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_kill}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 . "$(dirname "$0")/lib.sh"
 q()   { psql "$DSN" -X -q -At -c "$1"; }

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
-export PGIT_DSN="${PGIT_CLI_DSN:-postgresql://postgres:pgit@localhost:5460/pgit_cli}"
+ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
+export PGIT_DSN="${PGIT_CLI_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_cli}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PGIT="$DIR/bin/pgit"
 . "$(dirname "$0")/lib.sh"

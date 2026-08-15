@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
-DSN="${PGIT_REAL_DSN:-postgresql://postgres:pgit@localhost:5460/pgit_intoge}"
+ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
+DSN="${PGIT_REAL_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_intoge}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DUMP="${DUMP:-}"
 . "$(dirname "$0")/../test/lib.sh"

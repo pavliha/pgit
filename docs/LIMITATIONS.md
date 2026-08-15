@@ -75,6 +75,16 @@ open gap in the project, and most of what remains is the tree descent rather tha
 The relevant comparison is not git. It is what else versions a *database* — Dolt and DoltgreSQL,
 temporal tables, audit triggers — or having no version control on your data at all.
 
+## Which PostgreSQL it runs on
+
+**16, 17 and 18.** All three are in CI, and all three produce bit-identical trees for the same data —
+checked, because a bundle written on one has to be readable on another.
+
+16 is the floor only because that is the oldest one tested, not because 15 is known to fail. There is
+one thing to watch when editing: pgit used `min(bytea)`, which exists only on 18, and that silently
+made 16 and 17 impossible to use at all — `commit` failed outright — until a version matrix existed
+to notice. Any aggregate or function added in a recent major will do the same.
+
 ## Schema changes are not versioned
 
 pgit versions rows. It records the **shape** of each table per commit and uses it as a guard, but it

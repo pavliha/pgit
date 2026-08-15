@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -uo pipefail
-ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
+ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 for TARGET in "$@"; do
-  DSN="postgresql://postgres:pgit@localhost:5460/pgit_cs"
+  DSN="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_cs"
   psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_cs" -c "CREATE DATABASE pgit_cs" >/dev/null
   psql "$DSN" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null 2>&1
   psql "$DSN" -X -q -c "UPDATE pgit.meta SET value='$TARGET' WHERE key='chunk_target'" >/dev/null

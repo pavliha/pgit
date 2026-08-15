@@ -8,13 +8,13 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Everything was only ever measured against one server on one laptop. Two
-    # majors is the cheapest way to find out which behaviour is pgit's and which
-    # is this Postgres's.
+    # 16 is the floor pgit is known to work on. Running all three keeps it that
+    # way: min(bytea) is PG18 only and silently made 16 and 17 impossible until
+    # a matrix existed to notice.
     strategy:
       fail-fast: false
       matrix:
-        pg: ["17", "18"]
+        pg: ["16", "17", "18"]
     env:
       PG: ${{ matrix.pg }}
     steps:

@@ -8,7 +8,11 @@ CREATE TABLE uuid4_keys (id uuid PRIMARY KEY, v text);
 INSERT INTO uuid4_keys SELECT gen_random_uuid(), 'x' FROM generate_series(1, 20000) g;
 
 CREATE TABLE uuid7_keys (id uuid PRIMARY KEY, v text);
-INSERT INTO uuid7_keys SELECT uuidv7(), 'x' FROM generate_series(1, 20000) g;
+INSERT INTO uuid7_keys
+SELECT (lpad(to_hex((extract(epoch from clock_timestamp()) * 1000)::bigint), 12, '0')
+        || '7' || substr(md5(random()::text), 1, 3)
+        || 'a' || substr(md5(random()::text), 1, 15))::uuid, 'x'
+FROM generate_series(1, 20000) g;
 
 CREATE TABLE prefix_keys (id text PRIMARY KEY, v text);
 INSERT INTO prefix_keys

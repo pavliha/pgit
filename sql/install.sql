@@ -1965,7 +1965,7 @@ BEGIN
                    OVER (ORDER BY key_bytes ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS chunk
         FROM pgit_lvl
       )
-      SELECT min(key_bytes),
+      SELECT (array_agg(key_bytes ORDER BY key_bytes))[1],
              pgit.hash(string_agg(hash, ''::bytea ORDER BY key_bytes)),
              string_agg(hash, ''::bytea ORDER BY key_bytes),
              array_agg(encode(key_bytes, 'hex') ORDER BY key_bytes),
@@ -1977,7 +1977,7 @@ BEGIN
     IF (SELECT count(*) FROM pgit_grp) = n THEN
       TRUNCATE pgit_grp;
       INSERT INTO pgit_grp (key_bytes, hash, hashes, keys, entries)
-      SELECT min(key_bytes),
+      SELECT (array_agg(key_bytes ORDER BY key_bytes))[1],
              pgit.hash(string_agg(hash, ''::bytea ORDER BY key_bytes)),
              string_agg(hash, ''::bytea ORDER BY key_bytes),
              array_agg(encode(key_bytes, 'hex') ORDER BY key_bytes),
@@ -2171,7 +2171,7 @@ BEGIN
                    OVER (ORDER BY key_bytes ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS chunk
         FROM pgit_lvl
       )
-      SELECT min(key_bytes),
+      SELECT (array_agg(key_bytes ORDER BY key_bytes))[1],
              pgit.hash(string_agg(hash, ''::bytea ORDER BY key_bytes)),
              string_agg(hash, ''::bytea ORDER BY key_bytes),
              array_agg(encode(key_bytes, 'hex') ORDER BY key_bytes),
@@ -2277,7 +2277,7 @@ BEGIN
                  OVER (ORDER BY key_bytes ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS chunk
       FROM pgit_lvl
     )
-    SELECT min(key_bytes),
+    SELECT (array_agg(key_bytes ORDER BY key_bytes))[1],
            pgit.hash(string_agg(hash, ''::bytea ORDER BY key_bytes)),
            string_agg(hash, ''::bytea ORDER BY key_bytes),
            array_agg(encode(key_bytes, 'hex') ORDER BY key_bytes),

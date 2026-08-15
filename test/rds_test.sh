@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
+ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
-U="postgresql://pgit_app:app@localhost:5460/pgit_rds"
+U="postgresql://pgit_app:app@${PGIT_HOST:-localhost:5460}/pgit_rds"
 . "$(dirname "$0")/lib.sh"
 q()   { psql "$U" -X -q -At -c "$1" 2>&1; }
 

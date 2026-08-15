@@ -4,8 +4,8 @@ set -uo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/lib.sh"
 
-ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
-D="postgresql://postgres:pgit@localhost:5460/pgit_crash"
+ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
+D="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_crash"
 KILLS="${CRASH_KILLS:-12}"
 
 psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_crash WITH (FORCE)" \

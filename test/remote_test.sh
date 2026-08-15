@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
+ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
-O="postgresql://postgres:pgit@localhost:5460/pgit_origin"
-C="postgresql://postgres:pgit@localhost:5460/pgit_clone"
+O="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_origin"
+C="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_clone"
 . "$(dirname "$0")/lib.sh"
 qo(){ psql "$O" -X -q -At -c "$1" 2>&1; }
 qc(){ psql "$C" -X -q -At -c "$1" 2>&1; }
@@ -84,14 +84,14 @@ if b['nodes']:
 json.dump(b,open('/tmp/pgit_bad.json','w'))
 PY
 psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_bad" -c "CREATE DATABASE pgit_bad" >/dev/null 2>&1
-B="postgresql://postgres:pgit@localhost:5460/pgit_bad"
+B="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_bad"
 psql "$B" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null 2>&1
 OUT=$(runb "$B" /tmp/pgit_bad.json "SELECT pgit.unbundle(:'b'::jsonb);")
 is "remote: a tampered bundle is rejected by content hash" \
    "$(printf '%s' "$OUT" | grep -c 'does not hash to its content')" "1"
 
 psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_virgin" -c "CREATE DATABASE pgit_virgin" >/dev/null 2>&1
-V="postgresql://postgres:pgit@localhost:5460/pgit_virgin"
+V="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_virgin"
 psql "$V" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null 2>&1
 qv(){ psql "$V" -X -q -At -c "$1" 2>&1; }
 
@@ -130,7 +130,7 @@ is "octopus: origin built a merge commit with three parents" \
    "$(qo "SELECT count(*) FROM pgit.parents_of(pgit.resolve('main'))")" "3"
 
 psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_oct" -c "CREATE DATABASE pgit_oct" >/dev/null 2>&1
-P="postgresql://postgres:pgit@localhost:5460/pgit_oct"
+P="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_oct"
 psql "$P" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null 2>&1
 qp(){ psql "$P" -X -q -At -c "$1" 2>&1; }
 

@@ -4,8 +4,8 @@ set -uo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/lib.sh"
 
-ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
-D="postgresql://postgres:pgit@localhost:5460/pgit_conc"
+ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
+D="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_conc"
 WRITERS="${CONC_WRITERS:-4}"
 ROUNDS="${CONC_ROUNDS:-5}"
 OUT=$(mktemp -d)

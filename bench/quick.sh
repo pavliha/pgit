@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
-A="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
-D="postgresql://postgres:pgit@localhost:5460/pgit_quick"
+A="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
+D="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_quick"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ROWS="${ROWS:-200000}"
 NIGHTS="${NIGHTS:-20}"

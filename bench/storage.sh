@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-DSN="${PGIT_DSN:-postgresql://postgres:pgit@localhost:5460/pgit_test}"
+DSN="${PGIT_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_test}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 COMMITS="${COMMITS:-10000}"
 q(){ psql "$DSN" -X -q -At -v ON_ERROR_STOP=1 -c "$1"; }

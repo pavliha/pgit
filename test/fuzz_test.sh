@@ -8,7 +8,7 @@ OPS="${FUZZ_OPS:-150}"
 SEED="${FUZZ_SEED:-}"
 ROUNDS="${FUZZ_ROUNDS:-3}"
 
-ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
+ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
 
 survived=0
 for round in $(seq 1 "$ROUNDS"); do
@@ -16,7 +16,7 @@ for round in $(seq 1 "$ROUNDS"); do
 
   psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_fuzz WITH (FORCE)" \
                   -c "CREATE DATABASE pgit_fuzz" >/dev/null
-  D="postgresql://postgres:pgit@localhost:5460/pgit_fuzz"
+  D="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_fuzz"
   psql "$D" -X -q -v ON_ERROR_STOP=1 -f "$DIR/../sql/install.sql" >/dev/null 2>&1
 
   out=$(psql "$D" -X -q -At -v ops="$OPS" -v seed="$s" -f "$DIR/fuzz/fuzz.sql" 2>&1)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-PGIT_ADMIN_DSN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@localhost:5460/postgres}"
-PGIT_DSN="${PGIT_DSN:-postgresql://postgres:pgit@localhost:5460/pgit_test}"
+PGIT_ADMIN_DSN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
+PGIT_DSN="${PGIT_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_test}"
 PGIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 N=0
