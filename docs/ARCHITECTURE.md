@@ -183,6 +183,24 @@ exactly, so correctness never depends on the delta logic being clever.
 A node's hash is the hash of its content, not of its storage, so packing and unpacking never change
 an identity. `pgit unpack` reverses it.
 
+## Settings
+
+`pgit.meta` holds everything tunable, read through `pgit.setting(key)`. All of these are read once
+per commit or per build, never per row.
+
+| key | default | what it decides |
+| --- | --- | --- |
+| `chunk_target` | 64 | average rows per leaf chunk. Measured at both scales; see PERF.md before changing it |
+| `max_tree_depth` | 40 | how many levels a build may produce before it gives up |
+| `max_incremental_keys` | 10000 | above this many changed keys, commit rebuilds the tree instead of splicing |
+| `rebuild_when_hit_fraction` | 0.75 | rebuild rather than splice once this fraction of the tree is touched |
+| `splice_max_changes_per_chunk` | 8 | splice only while changes are this sparse within the chunks they touch |
+| `canon_version`, `hash_algo`, `delta_format` | — | format identity, not tuning. Changing one invalidates every stored hash |
+
+The last three thresholds only choose *how* a commit reaches its answer, never what the answer is:
+splicing a chunk and rebuilding its key range must produce the same tree, and both must equal a full
+rebuild. `test/settings_01_tuning.sql` forces each path and asserts all three agree.
+
 ## Invariants, and where they are checked
 
 - a node's hash is `pgit.hash` of its packed child hashes — `fsck`

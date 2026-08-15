@@ -8,13 +8,20 @@ CREATE TABLE IF NOT EXISTS pgit.meta (
 INSERT INTO pgit.meta (key, value) VALUES
   ('canon_version', '1'),
   ('hash_algo', 'sha256'),
-  ('chunk_target', '64')
+  ('chunk_target', '64'),
+  ('max_tree_depth', '40'),
+  ('max_incremental_keys', '10000'),
+  ('rebuild_when_hit_fraction', '0.75'),
+  ('splice_max_changes_per_chunk', '8')
 ON CONFLICT (key) DO NOTHING;
 
 CREATE OR REPLACE FUNCTION pgit.setting(k text) RETURNS text
 LANGUAGE sql STABLE PARALLEL SAFE AS $$
   SELECT value FROM pgit.meta WHERE key = k
 $$;
+
+CREATE OR REPLACE FUNCTION pgit.hash_len() RETURNS int
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$ SELECT 32 $$;
 
 CREATE OR REPLACE FUNCTION pgit.hash(v bytea) RETURNS bytea
 LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
@@ -845,7 +852,7 @@ LANGUAGE sql STABLE AS $$
   ks AS (SELECT t.key, t.ord FROM node, unnest(node.keys) WITH ORDINALITY t(key, ord)),
   vs AS (SELECT t.el, t.ord FROM node, jsonb_array_elements(node.arr) WITH ORDINALITY t(el, ord))
   SELECT ks.key,
-         encode(substring(node.hashes FROM (ks.ord - 1)::int * 32 + 1 FOR 32), 'hex'),
+         encode(substring(node.hashes FROM (ks.ord - 1)::int * pgit.hash_len() + 1 FOR pgit.hash_len()), 'hex'),
          vs.el
   FROM node, ks LEFT JOIN vs ON vs.ord = ks.ord
 $$;
@@ -868,11 +875,11 @@ LANGUAGE sql STABLE AS $$
   WITH an AS MATERIALIZED (SELECT * FROM pgit.node_raw(a)),
        bn AS MATERIALIZED (SELECT * FROM pgit.node_raw(b)),
        ae AS MATERIALIZED (
-         SELECT t.key, t.ord, substring(an.hashes FROM (t.ord - 1)::int * 32 + 1 FOR 32) AS h
+         SELECT t.key, t.ord, substring(an.hashes FROM (t.ord - 1)::int * pgit.hash_len() + 1 FOR pgit.hash_len()) AS h
          FROM an, unnest(an.keys) WITH ORDINALITY t(key, ord)
        ),
        be AS MATERIALIZED (
-         SELECT t.key, t.ord, substring(bn.hashes FROM (t.ord - 1)::int * 32 + 1 FOR 32) AS h
+         SELECT t.key, t.ord, substring(bn.hashes FROM (t.ord - 1)::int * pgit.hash_len() + 1 FOR pgit.hash_len()) AS h
          FROM bn, unnest(bn.keys) WITH ORDINALITY t(key, ord)
        ),
        dd AS (
@@ -1089,7 +1096,7 @@ LANGUAGE sql STABLE AS $$
                 ELSE (SELECT c.hashes FROM pgit.node_cols(n.hash) c) END AS hashes
     FROM pgit.nodes n WHERE n.hash = h
   )
-  SELECT t.key, encode(substring(node.hashes FROM (t.ord - 1)::int * 32 + 1 FOR 32), 'hex')
+  SELECT t.key, encode(substring(node.hashes FROM (t.ord - 1)::int * pgit.hash_len() + 1 FOR pgit.hash_len()), 'hex')
   FROM node, unnest(node.keys) WITH ORDINALITY t(key, ord)
 $$;
 
@@ -1944,7 +1951,10 @@ BEGIN
     SELECT count(*) INTO n FROM pgit_lvl;
     IF n = 0 THEN RETURN pgit.hash(''::bytea); END IF;
     IF n = 1 THEN RETURN (SELECT hash FROM pgit_lvl); END IF;
-    IF depth > 40 THEN RAISE EXCEPTION 'pgit: tree depth exceeded'; END IF;
+    IF depth > pgit.setting('max_tree_depth')::int THEN
+      RAISE EXCEPTION 'pgit: tree depth exceeded at level %, max_tree_depth is %',
+        depth, pgit.setting('max_tree_depth');
+    END IF;
 
     TRUNCATE pgit_grp;
     INSERT INTO pgit_grp (key_bytes, hash, hashes, keys, entries)
@@ -2067,9 +2077,10 @@ LANGUAGE plpgsql AS $$
 DECLARE
   ok boolean;
 BEGIN
-  SELECT (SELECT count(*) FROM pgit_hit) * 4 >
+  SELECT (SELECT count(*) FROM pgit_hit) >
          ((SELECT count(*) FROM pgit_old) * (SELECT count(*) FROM pgit_l1)
-           / GREATEST((SELECT count(*) FROM pgit_l1hit), 1)) * 3
+           / GREATEST((SELECT count(*) FROM pgit_l1hit), 1))
+         * pgit.setting('rebuild_when_hit_fraction')::numeric
   INTO ok;
   RETURN ok;
 END $$;
@@ -2080,7 +2091,10 @@ LANGUAGE plpgsql AS $$
 DECLARE
   ok boolean;
 BEGIN
-  SELECT (SELECT count(*) FROM pgit_hit) * 8 > COALESCE(array_length(changed, 1), 0) INTO ok;
+  SELECT (SELECT count(*) FROM pgit_hit)
+           * pgit.setting('splice_max_changes_per_chunk')::int
+         > COALESCE(array_length(changed, 1), 0)
+  INTO ok;
   RETURN ok;
 END $$;
 
@@ -2114,7 +2128,7 @@ BEGIN
     FOR chg_rec IN SELECT c.k, c.h, c.v FROM pgit_chg c WHERE c.rn = chunk_rec.rn LOOP
       idx := array_position(node_k, chg_rec.k);
       CONTINUE WHEN idx IS NULL;
-      node_h := overlay(node_h placing chg_rec.h from (idx - 1) * 32 + 1 for 32);
+      node_h := overlay(node_h placing chg_rec.h from (idx - 1) * pgit.hash_len() + 1 for pgit.hash_len());
       node_e := jsonb_set(node_e, ARRAY[(idx - 1)::text], chg_rec.v);
     END LOOP;
 
@@ -2216,7 +2230,7 @@ BEGIN
 
   IF prev_root IS NULL OR COALESCE(pgit.node_level(prev_root), -1) < 1
      OR array_length(changed, 1) IS NULL
-     OR array_length(changed, 1) > 10000 THEN
+     OR array_length(changed, 1) > pgit.setting('max_incremental_keys')::int THEN
     RETURN pgit.write_tree(target);
   END IF;
 
@@ -3024,7 +3038,7 @@ LANGUAGE sql STABLE AS $$
   SELECT 'node vectors disagree', encode(n.hash, 'hex')
   FROM pgit.nodes n
   WHERE n.entries IS NOT NULL
-    AND COALESCE(array_length(n.keys, 1), 0) * 32 <> COALESCE(octet_length(n.hashes), 0)
+    AND COALESCE(array_length(n.keys, 1), 0) * pgit.hash_len() <> COALESCE(octet_length(n.hashes), 0)
 
   UNION ALL
   SELECT 'node has no key vector', encode(n.hash, 'hex')
