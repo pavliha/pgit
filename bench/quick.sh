@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 set -uo pipefail
 A="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
-D="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_quick"
+QDB="${QDB:-pgit_quick}"
+D="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/$QDB"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ROWS="${ROWS:-200000}"
 NIGHTS="${NIGHTS:-20}"
 
-psql "$A" -X -q -c "DROP DATABASE IF EXISTS pgit_quick" -c "CREATE DATABASE pgit_quick" >/dev/null 2>&1
+psql "$A" -X -q -c "DROP DATABASE IF EXISTS $QDB WITH (FORCE)" -c "CREATE DATABASE $QDB" >/dev/null 2>&1
 psql "$D" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" 2>/dev/null >/dev/null
 
-psql "$D" -X -q -At <<SQL 2>&1 | grep WARNING | sed 's/^WARNING:  //'
+OUT=$(psql "$D" -X -q -At -v ON_ERROR_STOP=1 2>&1 <<SQL
 CREATE TABLE r (tconst text PRIMARY KEY, average_rating numeric, num_votes int, note text);
-INSERT INTO r SELECT 'tt' || lpad(g::text,8,'0'), 5.0, g, NULL FROM generate_series(1,$ROWS) g;
+INSERT INTO r SELECT 'tt' || lpad(g::text,12,'0'), 5.0, g, NULL FROM generate_series(1,$ROWS) g;
 ANALYZE r;
 SELECT pgit.track('r');
 CREATE TABLE shas (label text PRIMARY KEY, sha bytea);
@@ -46,6 +47,20 @@ BEGIN
     (pgit.write_tree('r') = (SELECT root_hash FROM pgit.trees WHERE commit_sha=pgit.resolve('main') AND tbl='r'));
 END \$\$;
 SQL
+)
+RC=$?
+printf '%s\n' "$OUT" | grep WARNING | sed 's/^WARNING:  //'
+if [ "$RC" -ne 0 ] || printf '%s\n' "$OUT" | grep -qiE '^(psql:)?.*(ERROR|FATAL):'; then
+  echo "quick: the fixture did not build, these numbers would be meaningless" >&2
+  printf '%s\n' "$OUT" | grep -iE '(ERROR|FATAL):' | head -3 >&2
+  exit 1
+fi
+
+LOADED=$(psql "$D" -X -At -c "SELECT count(*) FROM r")
+if [ "$LOADED" != "$ROWS" ]; then
+  echo "quick: r holds $LOADED rows, expected $ROWS - refusing to report" >&2
+  exit 1
+fi
 psql "$D" -X -q -c "VACUUM FULL pgit.nodes" >/dev/null
 RAW=$(psql "$D" -X -q -At -c "SELECT pg_total_relation_size('pgit.nodes')")
 if [ "${GC:-0}" != "1" ]; then
