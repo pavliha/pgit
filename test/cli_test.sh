@@ -147,14 +147,14 @@ is "AC-CLI-01: the octopus commit has three parents" \
 is "AC-CLI-03: an octopus merge with a strategy option exits 129" "$rc" "129"
 
 help=$("$PGIT" help); rc=$?
-is "AC-CLI-04: help exits 0" "$rc" "0"
+is "AC-CLI-05: help exits 0" "$rc" "0"
 "$PGIT" >/dev/null 2>&1; rc=$?
-is "AC-CLI-04: no arguments exits 129" "$rc" "129"
+is "AC-CLI-05: no arguments exits 129" "$rc" "129"
 
 undocumented=$(comm -23 \
   <(sed -n '/^case "\$cmd" in$/,$p' "$PGIT" | grep -oE '^[a-z|-]+\)' | tr -d ')' | tr '|' '\n' | sort -u) \
   <(printf '%s\n' "$help" | grep -oE '^   [a-z-]+' | tr -d ' ' | sort -u))
-is "AC-CLI-04: every command appears in help" "$undocumented" ""
+is "AC-CLI-05: every command appears in help" "$undocumented" ""
 
 psql "$ADMIN" -X -q -c "DROP DATABASE pgit_cli" >/dev/null
 
