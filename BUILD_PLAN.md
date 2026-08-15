@@ -878,6 +878,22 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   by running `all.sh` while a hunt batch was going, and briefly read the result as a real failure.
   Same defect and same fix as `run.sh` earlier tonight: `pgit_fuzz_$$` plus a trap that drops it.
   Two concurrent runs are now both green and leave nothing behind.
+- **a round-trip failure that was my own test, and the product was right** — the new round-trip hunt
+  started failing at `chunk_target=16` with the clone holding no trees at all, six times in twelve
+  runs, while `clone_from` reported no error. The cause was `argument list too long: psql`: at that
+  target the fuzzed bundle reaches 2 MB and the test passed it as a shell argument, so psql never
+  ran. My error check missed it because the message says "too long", not "error".
+  Checked whether real users hit the same wall, because `README` advertises `pgit clone pack.json`.
+  They do not: `bin/pgit` pipes `\set b \`cat file\`` into psql, which never touches argv and has no
+  ARG_MAX limit. The test now does the same and 27 consecutive round-trips at chunk 16 are green.
+  Two lessons kept. A test that passes a large payload differently from the shipping code is testing
+  the wrong thing. And grepping only a summary line loses the seed, which is the same failure mode as
+  the `run.sh` summary bug fixed earlier tonight.
+- **coverage recorded** — clean so far: ops 400 at rows 2500 across chunk 8/32/64; 3000 operations at
+  chunk 64 over 8000 row tables; round-trip at chunk 16/32/64 over 900 row tables, 33 clones total.
+  Running: ops 900 at rows 12000 across chunk 8/32/64. Not yet covered anywhere: merges under fuzz.
+  The fuzzer branches and checks out but never merges, so three way resolution and octopus have only
+  example tests behind them, which is exactly the gap that hid the bundle settings bug.
 
 ## Reference
 

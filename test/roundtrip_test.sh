@@ -43,11 +43,10 @@ for round in $(seq 1 "$ROUNDS"); do
                   -c "CREATE DATABASE pgit_rt_dst" >/dev/null 2>&1
   psql "$DST" -X -q -v ON_ERROR_STOP=1 -f "$DIR/../sql/install.sql" >/dev/null 2>&1
 
-  out=$(psql "$DST" -X -q -At -v b="$(cat "$PACK")" <<'SQL' 2>&1
-SELECT pgit.clone_from(:'b'::jsonb, 'main');
-SQL
-)
-  if printf '%s' "$out" | grep -qi error; then
+  out=$( { printf '\\set b `cat %s`\n' "$PACK"
+           echo "SELECT pgit.clone_from(:'b'::jsonb, 'main');"
+         } | psql "$DST" -X -q -At 2>&1 )
+  if printf '%s' "$out" | grep -qiE "error|too long|cannot"; then
     nok "roundtrip: seed $s failed to clone ($(printf '%s' "$out" | grep -i error | head -1))"
     continue
   fi
