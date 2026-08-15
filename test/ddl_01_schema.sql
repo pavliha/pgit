@@ -1,5 +1,5 @@
 BEGIN;
-SELECT plan(9);
+SELECT plan(13);
 
 CREATE TABLE t (id int PRIMARY KEY, name text, hits int);
 SELECT pgit.track('t');
@@ -68,6 +68,45 @@ SELECT isnt(
   pgit.schema_fingerprint('t'), (SELECT fp FROM fp0),
   'AC-DDL-04: the type change is still visible in the schema fingerprint'
 );
+
+-- ALTER TABLE fires no row trigger, so the journal is empty and the incremental
+-- path reused the parent's tree wholesale: the commit after ADD COLUMN recorded
+-- a root whose row images did not have the new column, and write_tree disagreed
+-- with the stored root.
+CREATE TABLE shape (id int PRIMARY KEY, a text);
+SELECT pgit.track('shape');
+INSERT INTO shape VALUES (1, 'x'), (2, 'y');
+SELECT pgit.commit('shape base', 'main');
+
+ALTER TABLE shape ADD COLUMN extra int DEFAULT 7;
+SELECT pgit.commit('shape added', 'main');
+
+SELECT is(
+  pgit.write_tree('shape'),
+  (SELECT root_hash FROM pgit.trees WHERE commit_sha = pgit.resolve('main') AND tbl = 'shape'),
+  'AC-DDL-01: a commit after ADD COLUMN records a tree that matches a full rebuild');
+
+SELECT is(
+  (SELECT pgit.entries_of(root_hash) -> 0 ->> 'extra' FROM pgit.trees
+   WHERE commit_sha = pgit.resolve('main') AND tbl = 'shape'),
+  '7',
+  'AC-DDL-01: and the stored row images carry the new column');
+
+ALTER TABLE shape DROP COLUMN extra;
+SELECT pgit.commit('shape dropped', 'main');
+
+SELECT is(
+  pgit.write_tree('shape'),
+  (SELECT root_hash FROM pgit.trees WHERE commit_sha = pgit.resolve('main') AND tbl = 'shape'),
+  'AC-DDL-01: DROP COLUMN rebuilds too');
+
+ALTER TABLE shape ALTER COLUMN a TYPE varchar(50);
+SELECT pgit.commit('shape retyped', 'main');
+
+SELECT is(
+  pgit.write_tree('shape'),
+  (SELECT root_hash FROM pgit.trees WHERE commit_sha = pgit.resolve('main') AND tbl = 'shape'),
+  'AC-DDL-01: and so does a column type change, which changes canonical form');
 
 SELECT * FROM finish();
 ROLLBACK;

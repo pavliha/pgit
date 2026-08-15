@@ -2452,13 +2452,27 @@ DECLARE
   r        record;
   root_val bytea;
   prev     bytea;
+  prev_fp  bytea;
   roots    jsonb := '{}'::jsonb;
 BEGIN
   FOR r IN SELECT t.tbl FROM pgit.tracked t ORDER BY t.tbl::text LOOP
     SELECT x.root_hash INTO prev FROM pgit.trees x
     WHERE x.commit_sha = parent AND x.tbl = r.tbl::text;
 
-    root_val := pgit.write_tree_incremental(r.tbl, prev);
+    -- DDL fires no row trigger, so a commit after ALTER TABLE sees an empty
+    -- journal and the incremental path reuses the parent's tree wholesale. Every
+    -- row's canonical form has changed, so the recorded root would not match the
+    -- data and no node can be reused: compare the shape against the one recorded
+    -- at the parent and rebuild from scratch when it moved.
+    SELECT sc.fingerprint INTO prev_fp FROM pgit.schemas sc
+    WHERE sc.commit_sha = parent AND sc.tbl = r.tbl::text;
+
+    IF prev IS NOT NULL AND prev_fp IS DISTINCT FROM pgit.schema_fingerprint(r.tbl) THEN
+      root_val := pgit.write_tree(r.tbl);
+    ELSE
+      root_val := pgit.write_tree_incremental(r.tbl, prev);
+    END IF;
+
     roots := roots || jsonb_build_object(r.tbl::text, encode(root_val, 'hex'));
   END LOOP;
 
