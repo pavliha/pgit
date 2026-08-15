@@ -15,7 +15,7 @@ git is also doing a different job: its result is a file you must materialise, wh
 real database — indexed, constrained, transactional, queryable in SQL while under version control.
 `PERF.md` has the full comparison, including where git is still ahead.
 
-**Status: pre-alpha, but the whole verb set works and is measured.** 532 checks green from an empty
+**Status: pre-alpha, but the whole verb set works and is measured.** 557 checks green from an empty
 database in about 90 seconds — 423 pgTAP, 40 CLI, 9 crash-safety, 12 non-superuser portability,
 27 remote and clone, and 19 against a real 63-table application schema.
 

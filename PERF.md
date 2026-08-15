@@ -401,6 +401,32 @@ rediscovered later.
 > today that concurrent work has corrupted a storage measurement. **Storage numbers are only valid on
 > an idle machine.**
 
+## repack was binary searching over UTF-8 characters
+
+`make_delta` finds the common prefix and suffix of two node parts by binary search, and both searches
+used `substr()` and `right()` on `text`. On UTF-8 those walk the string to find a character offset,
+and `right()` walks it from the start on every step, so an O(log n) search did O(n log n) character
+stepping. Measured at the size `make_delta` is actually given — the whole entries text, 16,762
+characters — that is 0.18 ms for the prefix and 0.52 ms for the suffix, per call.
+
+| 200k fixture, 10,523 nodes packed | |
+| --- | --- |
+| `repack` before | 28,373 ms |
+| `repack` after | **6,971 ms** — 4.07× |
+| effectiveness | 23% off, unchanged |
+
+Both searches now run on `bytea`, where `substring()` is pointer arithmetic. They still return a
+count in **characters**, because the caller slices insert literals with `substr()` and those must stay
+whole characters: the byte answer is snapped back off any continuation byte before being converted.
+Checked against a brute-force oracle over ASCII, Georgian, CJK, a precomposed accent and empty
+strings — zero mismatches.
+
+> [!note]
+> I had already written in this file that these two functions were where repack's time went, without
+> measuring them at the size they are actually called with. At 122 characters they cost 5.8 µs and
+> looked irrelevant. **A microbenchmark at the wrong input size is not evidence**, and it nearly
+> closed the file on a 4× win.
+
 ## A night of profiling: what won, and the nine things that did not
 
 Every change below was A/B'd on an idle machine with at least three runs a side.

@@ -108,7 +108,14 @@ Handled, with tests:
 
 - `GENERATED ALWAYS AS` columns — excluded from writes, recomputed by Postgres
 - `GENERATED ALWAYS AS IDENTITY` keys — inserted with `OVERRIDING SYSTEM VALUE`
-- columns named `n`, `o` or `cols`, which collide with the trigger's own identifiers
+- columns named `n`, `o`, `cols`, `t`, `s`, `v`, `k` or `e`, which collide with identifiers the
+  generated SQL uses. Row aliases are `"pgit row"` and `"pgit img"` — quoted and containing a space,
+  so no unquoted column name can equal one. A table with a column of either of those two names is
+  **refused at `track()`**, because the failure would otherwise be silent: `to_jsonb()` would resolve
+  to the column instead of the row and every stored image would be a scalar
+- a primary key whose keys all land on chunk boundaries, which cannot happen for large tables but is
+  one small table in `chunk_target`. Such a level cannot shrink; the build collapses it instead of
+  spinning to the depth cap
 - composite primary keys, text primary keys, enums, `jsonb`, `numeric`, `timestamptz`, unicode
 
 Not handled: a table **without a primary key** cannot be tracked. There is no row identity to
@@ -127,7 +134,7 @@ Octopus merges exist but follow git in refusing to resolve conflicts at all.
 
 ## Status
 
-Pre-alpha. 532 checks pass from an empty database, including 19 against a real 63-table application
+Pre-alpha. 557 checks pass from an empty database, including 19 against a real 63-table application
 schema, but nothing here has run in production and the on-disk format has changed twice this month.
 There is no upgrade path between format versions other than rebuilding from your tables, which is
 always possible because your tables are the source of truth — pgit never becomes the only copy.
