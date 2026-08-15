@@ -527,22 +527,6 @@ LANGUAGE sql IMMUTABLE AS $$
   SELECT jsonb_object_agg(k, rec -> k) FROM unnest(cols) k
 $$;
 
-CREATE OR REPLACE FUNCTION pgit.journal() RETURNS trigger
-LANGUAGE plpgsql AS $$
-DECLARE
-  b    jsonb := to_jsonb(OLD);
-  a    jsonb := to_jsonb(NEW);
-  cols text[];
-BEGIN
-  SELECT pk_cols INTO cols FROM pgit.tracked WHERE tbl = TG_RELID::regclass;
-
-  INSERT INTO pgit.changes (txid, tbl, pk, op, before, after, actor, source)
-  VALUES (txid_current(), TG_TABLE_NAME, pgit.pk_of(COALESCE(a, b), cols),
-          TG_OP, b, a, pgit.actor(), pgit.source());
-
-  RETURN NULL;
-END $$;
-
 CREATE OR REPLACE FUNCTION pgit.journal_truncate() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -594,7 +578,6 @@ BEGIN
   INSERT INTO pgit.tracked (tbl, pk_cols) VALUES (target, cols)
   ON CONFLICT (tbl) DO UPDATE SET pk_cols = EXCLUDED.pk_cols;
 
-  EXECUTE format('DROP TRIGGER IF EXISTS pgit_journal ON %s', target::text);
   EXECUTE format('DROP TRIGGER IF EXISTS pgit_journal_ins ON %s', target::text);
   EXECUTE format('DROP TRIGGER IF EXISTS pgit_journal_upd ON %s', target::text);
   EXECUTE format('DROP TRIGGER IF EXISTS pgit_journal_del ON %s', target::text);
@@ -660,18 +643,6 @@ LANGUAGE sql STABLE AS $$
   SELECT sha FROM pgit.refs WHERE name = ref_name
 $$;
 
-CREATE OR REPLACE FUNCTION pgit.tree_summary() RETURNS text
-LANGUAGE plpgsql AS $$
-DECLARE
-  parts text[] := '{}';
-  r     record;
-BEGIN
-  FOR r IN SELECT tbl FROM pgit.tracked ORDER BY tbl::text LOOP
-    parts := parts || (r.tbl::text || ':' || encode(pgit.write_tree(r.tbl), 'hex'));
-  END LOOP;
-  RETURN array_to_string(parts, E'\n');
-END $$;
-
 CREATE OR REPLACE FUNCTION pgit.commit_sha(
   parent bytea, who text, msg text, ts timestamptz, trees text
 ) RETURNS bytea
@@ -706,6 +677,13 @@ BEGIN
   END IF;
 END $$;
 
+CREATE OR REPLACE FUNCTION pgit.record_trees(sha bytea, roots jsonb) RETURNS void
+LANGUAGE sql AS $$
+  INSERT INTO pgit.trees (commit_sha, tbl, root_hash)
+  SELECT sha, e.key, decode(e.value, 'hex') FROM jsonb_each_text(roots) e
+  ON CONFLICT DO NOTHING
+$$;
+
 CREATE OR REPLACE FUNCTION pgit.commit(msg text, who text DEFAULT NULL, ts timestamptz DEFAULT now())
 RETURNS bytea LANGUAGE plpgsql AS $$
 DECLARE
@@ -724,9 +702,7 @@ BEGIN
   VALUES (new_sha, parent, author, msg, ts)
   ON CONFLICT (sha) DO NOTHING;
 
-  INSERT INTO pgit.trees (commit_sha, tbl, root_hash)
-  SELECT new_sha, e.key, decode(e.value, 'hex') FROM jsonb_each_text(roots) e
-  ON CONFLICT DO NOTHING;
+  PERFORM pgit.record_trees(new_sha, roots);
 
   PERFORM pgit.record_schemas(new_sha);
 
@@ -1762,9 +1738,7 @@ BEGIN
   VALUES (new_sha, ours, who, COALESCE(msg, m), ts)
   ON CONFLICT (sha) DO NOTHING;
 
-  INSERT INTO pgit.trees (commit_sha, tbl, root_hash)
-  SELECT new_sha, e.key, decode(e.value, 'hex') FROM jsonb_each_text(roots) e
-  ON CONFLICT DO NOTHING;
+  PERFORM pgit.record_trees(new_sha, roots);
 
   PERFORM pgit.record_schemas(new_sha);
 
@@ -2719,9 +2693,7 @@ BEGIN
   VALUES (new_sha, 2, m.theirs_sha)
   ON CONFLICT DO NOTHING;
 
-  INSERT INTO pgit.trees (commit_sha, tbl, root_hash)
-  SELECT new_sha, e.key, decode(e.value, 'hex') FROM jsonb_each_text(roots) e
-  ON CONFLICT DO NOTHING;
+  PERFORM pgit.record_trees(new_sha, roots);
 
   PERFORM pgit.record_schemas(new_sha);
   UPDATE pgit.changes SET commit_sha = new_sha WHERE commit_sha IS NULL;
@@ -2774,9 +2746,7 @@ BEGIN
 
   EXECUTE 'DROP TABLE IF EXISTS pgit_vb';
 
-  INSERT INTO pgit.trees (commit_sha, tbl, root_hash)
-  SELECT vb, e.key, decode(e.value, 'hex') FROM jsonb_each_text(roots) e
-  ON CONFLICT DO NOTHING;
+  PERFORM pgit.record_trees(vb, roots);
 
   RETURN vb;
 END $$;
@@ -3621,6 +3591,24 @@ BEGIN
   RETURN n;
 END $$;
 
+CREATE OR REPLACE FUNCTION pgit.checked_type(spec text) RETURNS text
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+  known regtype;
+BEGIN
+  BEGIN
+    known := to_regtype(spec);
+  EXCEPTION WHEN others THEN
+    RAISE EXCEPTION 'pgit: refusing a shape whose column type does not parse as a type: %', spec;
+  END;
+
+  IF known IS NULL THEN
+    RAISE EXCEPTION 'pgit: refusing a shape whose column type is not a known type: %', spec;
+  END IF;
+
+  RETURN spec;
+END $$;
+
 CREATE OR REPLACE FUNCTION pgit.create_from_schema(sha bytea, target_tbl text) RETURNS void
 LANGUAGE plpgsql SET client_min_messages = warning AS $$
 DECLARE
@@ -3637,7 +3625,8 @@ BEGIN
     RAISE EXCEPTION 'pgit: the recorded shape for % has no primary key, cannot create it', target_tbl;
   END IF;
 
-  SELECT string_agg(format('%I %s', e ->> 'name', e ->> 'type'), ', ' ORDER BY e ->> 'name')
+  SELECT string_agg(format('%I %s', e ->> 'name', pgit.checked_type(e ->> 'type')), ', '
+                    ORDER BY e ->> 'name')
   INTO cols FROM jsonb_array_elements(sc.columns) e;
 
   EXECUTE format('CREATE TABLE %I (%s, PRIMARY KEY (%s))',
@@ -3934,9 +3923,7 @@ BEGIN
   FROM unnest(heads) WITH ORDINALITY x(sha, ord)
   ON CONFLICT DO NOTHING;
 
-  INSERT INTO pgit.trees (commit_sha, tbl, root_hash)
-  SELECT new_sha, e.key, decode(e.value, 'hex') FROM jsonb_each_text(roots) e
-  ON CONFLICT DO NOTHING;
+  PERFORM pgit.record_trees(new_sha, roots);
 
   PERFORM pgit.record_schemas(new_sha);
   UPDATE pgit.changes SET commit_sha = new_sha WHERE commit_sha IS NULL;

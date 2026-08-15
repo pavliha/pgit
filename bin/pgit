@@ -301,7 +301,7 @@ remote)
 
 have)
   allow "" "$@"
-  q "SELECT COALESCE(jsonb_agg(encode(sha,'hex'))::text,'[]') FROM pgit.commits"
+  q "SELECT COALESCE(jsonb_agg(encode(x,'hex'))::text,'[]') FROM unnest(pgit.have()) x"
   ;;
 
 bundle)
