@@ -1893,7 +1893,7 @@ BEGIN
   EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %s (((%s) COLLATE "C"))',
                  pgit.key_index_name(target), target::text, pgit.pk_canon_expr(target));
 EXCEPTION WHEN others THEN
-  RAISE NOTICE 'pgit: no key index on % (%), range reads will scan', target::text, SQLERRM;
+  RAISE WARNING 'pgit: no key index on % (%), range reads will scan every row', target::text, SQLERRM;
 END $$;
 
 CREATE OR REPLACE FUNCTION pgit.row_hashes_keys(target regclass, keys text[])
@@ -1929,32 +1929,6 @@ BEGIN
     pk, pgit.row_canon_expr(target), target::text, pk, pk)
   USING convert_from(lo, 'UTF8'),
         CASE WHEN hi IS NULL THEN NULL ELSE convert_from(hi, 'UTF8') END;
-END $$;
-
-CREATE OR REPLACE FUNCTION pgit.leaf_list(root bytea)
-RETURNS TABLE (k text, h text)
-LANGUAGE plpgsql STABLE AS $$
-DECLARE
-  lvl int := pgit.node_level(root);
-  e   jsonb;
-BEGIN
-  IF lvl IS NULL THEN RETURN; END IF;
-
-  IF lvl = 0 THEN
-    RETURN QUERY
-      SELECT (SELECT n.keys[1] FROM pgit.nodes n WHERE n.hash = root),
-             encode(root, 'hex');
-    RETURN;
-  END IF;
-
-  IF lvl = 1 THEN
-    RETURN QUERY SELECT i.k, i.ch FROM pgit.node_entries(root) i ORDER BY i.k;
-    RETURN;
-  END IF;
-
-  FOR e IN SELECT to_jsonb(i) FROM pgit.node_entries(root) i ORDER BY i.k COLLATE "C" LOOP
-    RETURN QUERY SELECT * FROM pgit.leaf_list(decode(e ->> 'ch', 'hex'));
-  END LOOP;
 END $$;
 
 CREATE OR REPLACE FUNCTION pgit.build_up(lvl int) RETURNS bytea
