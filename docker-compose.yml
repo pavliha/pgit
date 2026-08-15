@@ -1,6 +1,9 @@
 services:
   db:
-    build: ./docker
+    build:
+      context: ./docker
+      args:
+        PG: "${PG:-18}"
     environment:
       POSTGRES_PASSWORD: pgit
       POSTGRES_DB: pgit_test

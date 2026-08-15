@@ -35,6 +35,9 @@ run_suite "cli          " "$DIR/cli_test.sh"
 run_suite "crash-safety " "$DIR/kill_test.sh"
 run_suite "non-superuser" "$DIR/rds_test.sh"
 run_suite "remote       " "$DIR/remote_test.sh"
+run_suite "fuzz         " "$DIR/fuzz_test.sh"
+run_suite "concurrency  " "$DIR/concurrency_test.sh"
+run_suite "crash-fuzz   " "$DIR/crash_fuzz_test.sh"
 
 if [ -n "${DUMP:-}" ]; then
   run_suite "real-schema  " "$ROOT/bench/realworld_intoge.sh"

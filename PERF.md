@@ -427,6 +427,37 @@ strings — zero mismatches.
 > looked irrelevant. **A microbenchmark at the wrong input size is not evidence**, and it nearly
 > closed the file on a 4× win.
 
+## How we tell, now
+
+Three of these did not exist before and are the answer to "how do you know it is reliable".
+
+**The tree invariant is fuzzed.** `test/fuzz_test.sh` builds a random schema - hostile column names,
+nine column types - and applies random operations: inserts, updates, deletes, `ADD COLUMN`,
+`DROP COLUMN`, branch, checkout and `repack`. After **every** commit it asserts that
+`write_tree(tbl)` still equals the recorded root and that `fsck` is clean. Seeds are printed and
+replayable. First campaign: **10,000 operations across 20 seeds, zero violations.** Four real bugs
+were found by hand this way before it was automated - a column named `t` corrupting every row image,
+a stale tree after `ALTER TABLE`, a two-row table that could not be committed, and `bisect`
+abandoning its branch tip - and none of them were caught by the 500-check suite.
+
+**Crashes are injected at random points.** `crash_fuzz_test.sh` kills sessions mid-operation across
+five operation types at random offsets, then asserts the same invariants. The old suite killed at one
+fixed point.
+
+**Concurrency is asserted, not assumed.** `concurrency_test.sh` runs four writers over five rounds.
+The measured behaviour: 5 commits won, **15 were rejected by name**, history stayed linear, the tree
+still matched a rebuild, and no half-applied change survived.
+
+**And performance has a gate.** `bench/gate.sh` takes the median of at least five runs - it exits
+non-zero if asked to judge on fewer than three, because a single run is not a measurement - and fails
+the build when a median goes over its ceiling. The ceilings are about three times the development
+machine's medians on purpose: they catch the order of magnitude regressions this project has actually
+shipped, 201× on revert and 17× on gc grouping, and stay quiet about small drift, which on a shared
+runner is noise. CI runs it, plus a longer fuzz campaign, across Postgres 17 and 18.
+
+What still is not known: anything above 12.7M rows. `bench/quick.sh` takes `ROWS=`, so the harness
+scales; nobody has run it there.
+
 ## A night of profiling: what won, and the nine things that did not
 
 Every change below was A/B'd on an idle machine with at least three runs a side.

@@ -8,10 +8,19 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Everything was only ever measured against one server on one laptop. Two
+    # majors is the cheapest way to find out which behaviour is pgit's and which
+    # is this Postgres's.
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ["17", "18"]
+    env:
+      PG: ${{ matrix.pg }}
     steps:
       - uses: actions/checkout@v4
 
-      # The same image the suites use locally: postgres 18 plus pgtap. Building
+      # The same image the suites use locally: the matrix major plus pgtap. Building
       # it here rather than using a stock service container keeps CI and a
       # developer's machine on one definition.
       - name: Start postgres with pgTAP
@@ -24,6 +33,20 @@ jobs:
       # definition in install.sql cannot be masked by an incremental install.
       - name: Run every suite
         run: ./test/all.sh
+
+      # The suite runs a short fuzz campaign. This is a longer one, on seeds CI
+      # picks itself, so master keeps exploring schemas and operation orders no
+      # fixed test covers. Four real bugs were found by hand this way before it
+      # was automated.
+      - name: Fuzz the tree invariant
+        run: FUZZ_OPS=400 FUZZ_ROUNDS=10 ./test/fuzz_test.sh
+
+      # Fails the build when a median goes over its ceiling. The ceilings catch
+      # an order of magnitude regression, which is the kind this project has
+      # actually shipped; they are deliberately loose about small drift, which on
+      # shared runners is noise rather than signal.
+      - name: Performance gate
+        run: ./bench/gate.sh
 
       - name: Show server log on failure
         if: failure()
