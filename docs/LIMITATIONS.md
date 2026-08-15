@@ -129,8 +129,8 @@ psql "$DST" -v b="$(cat pack.json)" -c "SELECT pgit.fetch('origin', :'b'::jsonb)
 ```
 
 `fetch` writes only `remotes/<name>/*`; `receive` moves local branches and enforces fast forward.
-Both verify every node hashes to its content before storing it, so an untrusted courier is fine —
-but you have to be the courier.
+Both verify every node hashes to its content before storing it, so an untrusted courier is fine.
+You just have to be the courier.
 
 ## Anything outside the database does not branch
 

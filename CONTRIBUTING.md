@@ -15,7 +15,7 @@ three, so a change that depends on a newer built-in will fail there even when it
 
 **`sql/install.sql` is one file, and it is idempotent.** Each function appears exactly once, in
 dependency order, with any `DROP FUNCTION IF EXISTS` immediately above its `CREATE`. Never append a
-redefinition of something defined earlier — edit it in place. A `LANGUAGE sql` function validates its
+redefinition of something defined earlier. Edit it in place. A `LANGUAGE sql` function validates its
 body at creation time, so a forward reference fails on a fresh database while working fine on yours.
 Prove it from scratch before you claim it works:
 
@@ -30,7 +30,7 @@ to be understood, the names are wrong.
 put the fix back. A test that passes both ways guards nothing, and this repo has shipped a few of
 those before the rule existed.
 
-**Performance claims need medians of at least five runs.** Single runs lie here — a change that read
+**Performance claims need medians of at least five runs.** Single runs lie here. A change that read
 as a 6% win over one run measured 11% slower over three. `./bench/gate.sh` does the medians and fails
 on a ceiling breach. Machine drift is real: A/B the two versions back to back rather than comparing
 against a number from an hour ago.
@@ -55,7 +55,7 @@ enforces that every commit in the database has an event that created it, so a ne
 quietly bypass the audit log.
 
 The fuzzer is worth understanding before you trust a green run. Its tables use a small
-`chunk_target` so the trees are deep enough to exercise the incremental write path — at the default
+`chunk_target` so the trees are deep enough to exercise the incremental write path. At the default
 of 64 a small table produces a level 1 root, which short circuits to a full rebuild and tests the
 wrong code. If you change the fuzz fixture, check `pgit.nodes` still reaches level 2 or more.
 

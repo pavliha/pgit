@@ -3,7 +3,7 @@
 ## What pgit is, in security terms
 
 pgit is SQL that runs inside your database, under the privileges of whoever calls it. It installs no
-extension, opens no socket, and dials nothing — there is no network transport at all, so history
+extension, opens no socket, and dials nothing. There is no network transport at all, so history
 moves between databases only when you carry a bundle yourself.
 
 Nothing in the `pgit` schema is reachable until it is granted:
@@ -18,7 +18,7 @@ SELECT pgit.grant_admin('dba');        -- and track, gc, prune, reset, unbundle
 
 `unbundle`, `receive`, `fetch` and `clone_from` accept a bundle produced somewhere else. They are
 **admin only** for that reason. A bundle carries column type names that end up in `CREATE TABLE`, so
-types are validated through `to_regtype` before any DDL is interpolated — a bundle claiming a type of
+types are validated through `to_regtype` before any DDL is interpolated. A bundle claiming a type of
 `text); DROP TABLE users; --` is rejected rather than executed. Every node in a bundle is verified to
 hash to its own content on receipt, so a tampered bundle is refused, not stored.
 

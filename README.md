@@ -1,8 +1,8 @@
 <h1 align="center">pgit</h1>
 
 <p align="center">
-  <strong>git for your data — branch, diff, merge and blame your rows.</strong><br>
-  In stock PostgreSQL. No forked engine, no C extension, no managed service.
+  <strong>git for your data. Branch, diff, merge and blame your rows.</strong><br>
+  It runs inside stock PostgreSQL, with no forked engine and nothing to install but one SQL file.
 </p>
 
 <p align="center">
@@ -28,40 +28,39 @@ SELECT pgit.checkout('main');                 -- prices are back. all of them.
 SELECT pgit.merge('black-friday');            -- ship it, column by column
 ```
 
-That is a real branch of real rows in a real table. Between those calls your table is still a
-**normal Postgres table** — indexed, constrained, transactional, queryable by everything you already
-have. Nothing is exported, nothing is materialised, nothing leaves the database.
+None of that is a metaphor. `products` stays an ordinary Postgres table the whole way through,
+indexed and constrained and queryable by everything else you already run against it. No export step,
+and no copy of your data living somewhere outside the database.
 
-## The one number that matters
+## Diff cost tracks the diff, not the history
 
-Diffing 10 changed rows **10,000 commits apart takes 163 ms** — the same as one commit apart.
+Diffing 10 changed rows 10,000 commits apart takes **163 ms**. One commit apart takes the same.
 
-That is the property the entire design exists for. `diff A B` costs *the size of the difference*,
-not the history between the two commits, and not the size of the table. Everything else here is in
-service of that.
+That is what the whole design is for. `diff A B` costs the size of the difference between A and B,
+not the number of commits between them, and not the size of the table.
 
-## Yes, it beats git at git's own job — above a certain size
+## Faster than git once the data gets big
 
 Same 12.7M-row IMDb dataset, committing a 100-row change:
 
 | | git | pgit | |
 | --- | ---: | ---: | --- |
-| commit 100 changed rows, 12.7M-row dataset | 12,062 ms | **527 ms** | **22.9× faster** |
-| commit 5,300 changed rows, 28 MB slice | **492 ms** | 1,801 ms | git 3.7× faster |
+| commit 100 changed rows, 12.7M-row dataset | 12,062 ms | **527 ms** | pgit 22.9x faster |
+| commit 5,300 changed rows, 28 MB slice | **492 ms** | 1,801 ms | git 3.7x faster |
 
-git's commit is O(file) — it re-hashes and re-compresses everything however little changed. pgit's
-is O(changed). Below roughly 50 MB git wins on constants; above it pgit wins on complexity. The
-crossover is lower than people expect, which is the whole point — and `PERF.md` has both directions,
-because quoting only the best case would be quoting the best case.
+git's commit is O(file). It re-hashes and re-compresses everything however little changed. pgit's is
+O(changed). Below roughly 50 MB git wins on constants, above it pgit wins on complexity. The
+crossover sits lower than most people guess. `PERF.md` has both directions, because quoting only the
+first row would be quoting the best case.
 
-git is also doing a different job: its result is a file you have to materialise. pgit's result is
-still a database.
+git is also doing a different job. What it hands back is a file you have to materialise. What pgit
+hands back is still a database.
 
 ## Runs where your data already lives
 
-Every verb is exercised as a plain `LOGIN` role with **no superuser rights** — strictly fewer
-privileges than the RDS master user gets. So RDS, Neon and Supabase are covered by construction.
-There is no C extension to install, no `pgcrypto` dependency, and no background worker.
+Every verb is exercised as a plain `LOGIN` role with no superuser rights, which is strictly fewer
+privileges than the RDS master user gets. So RDS, Neon and Supabase work by construction. There is no
+C extension to install, no `pgcrypto` dependency, and no background worker.
 
 Install is one file:
 
@@ -103,12 +102,12 @@ pgit fetch origin pack.json     # updates remotes/origin/* only, never your bran
 pgit receive pack.json          # updates local branches, fast-forward enforced
 ```
 
-Everything else git offers is **refused by name** — an unimplemented flag exits 129 saying which
-flag, so nothing is ever silently ignored.
+Anything git offers that pgit does not implement is refused by name. An unimplemented flag exits 129
+and tells you which flag, so nothing gets silently ignored.
 
 ## It tells you what it did
 
-Every write records one wide event, not a scatter of log lines:
+Every write records one wide event rather than a scatter of log lines:
 
 ```sql
 SELECT verb, ok, actor, branch, duration_ms, detail FROM pgit.events ORDER BY id DESC;
@@ -121,24 +120,24 @@ merge    | f  | app   | b1     |      31.002 | {"branch": "l", "conflicts": 1, "
 rebase   | t  | dba   | feat   |     104.220 | {"onto": "main", "was": "38d1a2c", "rewritten": true}
 ```
 
-Every commit in the database has an event that created it — the test suite enforces that, so a new
-verb cannot quietly bypass the audit log. `SELECT * FROM pgit.metrics()` gives the same database as
+Every commit in the database has an event that created it, and a test enforces that, so a new verb
+cannot quietly bypass the audit log. `SELECT * FROM pgit.metrics()` gives you the same database as
 numbers to scrape, including commit latency percentiles.
 
 ## What it costs
 
-Stated up front, because you will find them anyway:
+Up front, because you will find them anyway:
 
-- **Journalling costs about 10× the write it records.** A 10,000-row `UPDATE` goes from 26–30 ms to
-  146–183 ms. This is the honest headline cost.
-- **History costs storage** — 4.5× the table after 10,000 commits, **until `pgit gc`**, which takes
-  it to 1.8× at the default depth and 1.2× at `--depth 50`.
-- **Pruning buys storage with attribution.** `blame` marks what it can no longer prove
-  `exact = false` rather than guessing at an author.
-- **One database holds one branch at a time**, exactly like git's working tree.
-- **Nothing outside the database branches.** Reverting a row does not un-send an email.
+- Journalling costs about **10x the write it records**. A 10,000-row `UPDATE` goes from 26-30 ms to
+  146-183 ms. That is the honest headline cost.
+- History costs storage. About 4.5x the table after 10,000 commits, until `pgit gc` takes it to 1.8x
+  at the default depth and 1.2x at `--depth 50`.
+- Pruning buys that storage with attribution. `blame` marks whatever it can no longer prove as
+  `exact = false` instead of guessing at an author.
+- One database holds one branch at a time, the same way git's working tree does.
+- Nothing outside the database branches. Reverting a row does not un-send an email.
 
-[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) is the full list, and it is worth reading before
+[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) has the full list, and it is worth reading before
 `PERF.md`.
 
 ## Why this exists
@@ -147,25 +146,25 @@ Everything shipping today makes one of two trades:
 
 | | Trade |
 | --- | --- |
-| DoltgreSQL | leaves Postgres — own engine, no extensions, ~5.2× slower, no rebase or cherry-pick |
-| pgGit | stays on Postgres, but versions **schema only** |
+| DoltgreSQL | leaves Postgres. Own engine, no extensions, ~5.2x slower, no rebase or cherry-pick |
+| pgGit | stays on Postgres, but versions schema only |
 | postgresql-tableversion | rows and diffs, no branching |
 | pg_branch, Neon, Lakebase | branch whole clusters, no row-level history |
-| lakeFS, Nessie | full git model, but for data lakes, not OLTP |
+| lakeFS, Nessie | full git model, but for data lakes rather than OLTP |
 
-**Row-level, full verb set, stock Postgres, OLTP is empty.** That is what this is.
+Row-level, full verb set, stock Postgres, OLTP is empty. That is what this is.
 
 ## The bet
 
-Four things Postgres already has, that a from-scratch git-for-data engine must build:
+Four things Postgres already has, that a from-scratch git-for-data engine has to build:
 
-1. **`txid_current()`** groups a commit for free — one transaction is one changeset.
-2. **Deferred constraints validate a merge.** Apply inside a transaction with constraints deferred,
-   then set them immediate. Every FK, unique and check is verified by Postgres; a merge that would
+1. `txid_current()` groups a commit for free. One transaction is one changeset.
+2. Deferred constraints validate a merge. Apply inside a transaction with constraints deferred, then
+   set them immediate. Postgres verifies every FK, unique and check itself, and a merge that would
    dangle a reference aborts on its own.
-3. **`session_replication_role = replica`** disables user triggers, so replay during rebase or
+3. `session_replication_role = replica` disables user triggers, so replay during rebase or
    cherry-pick neither double-fires side effects nor records itself as new history.
-4. **`sha256`, `normalize`, `trim_scale`** in core — canonicalisation with no dependencies.
+4. `sha256`, `normalize` and `trim_scale` are in core, so canonicalisation needs no dependencies.
 
 ## Design
 
@@ -175,38 +174,38 @@ Two layers, because the write path and the read path want opposite things:
 | --- | --- | --- |
 | written by | row trigger, per statement | commit, in bulk |
 | serves | revert, rebase, cherry-pick, blame | diff, merge, checkout |
-| canonical | no | **yes** |
+| canonical | no | yes |
 
-The tree is a merkle forest with **content-defined chunk boundaries** — a key starts a new chunk
-when `hash(key) mod target = 0`, a property of the key alone. That makes the tree
+The tree is a merkle forest with content-defined chunk boundaries. A key starts a new chunk when
+`hash(key) mod target = 0`, which is a property of the key alone. That makes the tree
 history-independent: the same content always produces the same root hash, whatever order it arrived
 in. Which is what buys the 163 ms at the top of this page.
 
 ## Status
 
-**Pre-alpha. The whole verb set works and is measured.**
+Pre-alpha. The whole verb set works and is measured.
 
-**679 checks green** from an empty database in about 90 seconds — pgTAP, CLI, crash-safety,
-non-superuser portability, remote and clone, randomised fuzzing, and 19 against a real 63-table
-application schema. CI runs Postgres **16, 17 and 18** and requires **bit-identical root hashes**
+**679 checks green** from an empty database in about 90 seconds, covering pgTAP, the CLI,
+crash-safety, non-superuser portability, remote and clone, randomised fuzzing, and 19 against a real
+63-table application schema. CI runs Postgres 16, 17 and 18, and requires bit-identical root hashes
 across all three.
 
-It has not run in production anywhere. The bugs found so far, how each was caught, and the several
-cases where a green test suite failed to catch one, are all in [`BUILD_PLAN.md`](BUILD_PLAN.md).
+It has not run in production anywhere. The bugs found so far, how each one was caught, and the
+several cases where a green test suite failed to catch one, are in [`BUILD_PLAN.md`](BUILD_PLAN.md).
 
 ## Run the tests
 
 ```bash
 make up            # postgres 18 + pgTAP on port 5460, isolated
-make test          # every suite, one total — about 90 seconds
+make test          # every suite, one total, about 90 seconds
 make test-fast     # the pgTAP assertions alone
 make bench         # the numbers in PERF.md
 
 DUMP=/path/to/app.dump make test   # also run the real application schema suite
 ```
 
-Each run builds its own database and installs `sql/install.sql` into it, so every run also proves
-the installer from scratch — a forward reference or a duplicate definition cannot hide behind an
+Each run builds its own database and installs `sql/install.sql` into it, so every run also proves the
+installer from scratch. A forward reference or a duplicate definition cannot hide behind an
 incremental install. CI runs the same script on the same image.
 
 ## Documentation
@@ -223,7 +222,7 @@ incremental install. CI runs the same script on the same image.
 ## Naming
 
 `pgit` collides with two unrelated projects (`ImGajeed76/pgit`, `evoludigit/pgGit`). Renaming is
-cheap while the repo is this small; it has not been decided.
+cheap while the repo is this small. It has not been decided.
 
 ## License
 

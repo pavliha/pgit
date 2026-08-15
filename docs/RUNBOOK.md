@@ -45,7 +45,7 @@ Everything that changes history or data emits: `commit`, `checkout`, `branch`, `
 `merge_finish`, `merge_abort`, `merge_octopus`, `resolve_conflict`, `cherry_pick`, `revert`,
 `rebase`, `rebase_abort`, `reset`, `restore`, `stash_push`, `stash_pop`, `tag`, `tag_delete`,
 `note_add`, `bisect_start`, `track`, `untrack`, `delete_branch`, `repack`, `prune`, `fetch`,
-`receive`, `clone_from`. Every commit in the database has an event that created it — the suite
+`receive`, `clone_from`. Every commit in the database has an event that created it, and the suite
 enforces that, so a new verb cannot quietly bypass the log.
 
 Ask it the questions you actually have:
@@ -68,7 +68,7 @@ WHERE detail ->> 'sha' = 'f59dd63';                          -- who made this co
 
 Change one with `UPDATE pgit.meta SET value = 'on' WHERE key = 'log_server';`.
 
-Events live in the transaction that made them, so a rolled back operation leaves no row — the
+Events live in the transaction that made them, so a rolled back operation leaves no row. The
 history and the event log cannot disagree. The flip side: a **failed** operation usually rolls its
 event back too. Turn on `log_server` if you need failures, because the Postgres log is not
 transactional. Set `log_error_verbosity = terse` on the server to keep each event to one line.
@@ -80,7 +80,7 @@ SELECT col, actor, at, value, exact FROM pgit.blame('products', '42');
 ```
 
 `exact` is the column that matters. **true** means a journal entry proves that commit changed that
-column. **false** means only that the value was already there at that commit — the change itself
+column. **false** means only that the value was already there at that commit. The change itself
 happened earlier, in history pgit no longer holds, either because the row predates `track()` or
 because `prune` removed the commit that carried the evidence.
 
