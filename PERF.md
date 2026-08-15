@@ -427,6 +427,34 @@ strings — zero mismatches.
 > looked irrelevant. **A microbenchmark at the wrong input size is not evidence**, and it nearly
 > closed the file on a 4× win.
 
+## Ten thousand commits, and nothing degrades
+
+`bench/soak.sh`, 50,000 rows, a commit every iteration touching ~50 rows, the tree compared against a
+full rebuild and `fsck` run every 500 commits.
+
+| commits | mean commit | node store | fsck | tree matches rebuild |
+| --- | --- | --- | --- | --- |
+| 500 | 88 ms | 197 MB | 0 | yes |
+| 2,500 | 83 ms | 974 MB | 0 | yes |
+| 5,000 | 81 ms | 1,944 MB | 0 | yes |
+| 7,500 | 113 ms | 2,914 MB | 0 | yes |
+| 10,000 | 89 ms | 3,884 MB | 0 | yes |
+
+**Commit cost does not grow with history.** The first five checkpoints average 106 ms and the last
+five average 95 ms; the spread is noise, not a trend. The ten-thousandth commit costs what the first
+did, which is the O(changed) property holding over a long history rather than only in a benchmark
+that starts fresh.
+
+**Storage grows exactly linearly** — 194 MB per 500 commits, every interval, no acceleration. That is
+about 388 kB per commit, and it is the cost of history rather than of data: the table itself is a few
+megabytes. It is why `gc` is not optional.
+
+**gc does not decay either.** After 10,000 commits: **3,884 MB → 1,272 MB, 67% off**, better than the
+53–58% measured on short histories, with `fsck` clean and the tree still matching a rebuild
+afterwards.
+
+All twenty checkpoints held the invariant.
+
 ## How we tell, now
 
 Three of these did not exist before and are the answer to "how do you know it is reliable".
