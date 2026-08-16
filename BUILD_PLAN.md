@@ -1443,6 +1443,19 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   wrote somewhere unversioned instead. And the guard now nests: `materialise` can be called from
   inside an already-guarded checkout, and an inner `replay_end` would otherwise have lifted the outer
   one early.
+- **asked which paths tidy the journal and which forget; all of them handle it.** The replay-guard defect
+  came from asking what checkout does that merge does not, so the same question went to the pending
+  journal. Eight sites touch `grove.changes`: commit, cherry_pick, merge_finish and merge_octopus
+  claim the rows for their new commit, checkout, merge's fast-forward branch, materialise and reset
+  delete them. Four verbs never mention it, and each is right not to. revert goes through commit,
+  which claims them. rebase drives the verbs that do. stash_push clears them by resetting, and
+  stash_pop leaves new ones behind on purpose, because a popped stash is meant to be uncommitted work.
+  Verified rather than reasoned: a stash round trip goes 2 pending rows and dirty, to 0 and clean with
+  the stashed value reverted, back to 2 and dirty with an inserted row restored, fsck clean at every
+  step. In trigger mode too, where grove's own journal triggers keep firing during a replay and the
+  cleanup actually matters, which is the case a superuser never exercises.
+  No bug. The existing stash test asserted the visible round trip but nothing about the journal, so it
+  now covers both, plus a row that was only inserted, which the old test never stashed.
 
 ## Reference
 
