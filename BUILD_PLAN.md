@@ -1472,6 +1472,16 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   The test asserts the whole surface from `pg_proc` rather than checking a few verbs by hand: every
   name in the list exists, and every one of them calls emit. It also asserts the list is longer than
   thirty names, so it cannot quietly shrink to something trivially true.
+- **calling a verb twice is safe, including the one where it would have mattered.** Retrying after a
+  timeout or a double click is ordinary, so: checkout the branch you are on, track a tracked table,
+  prune, repack, add the same remote, tag the same name, cherry pick the same commit. All correct.
+  repack returns one then zero, tag refuses a name it already holds, the rest are quiet no-ops.
+  The one worth a test is cherry pick. Applying the same commit twice leaves the value at 101 rather
+  than 201, because the second pick has nothing left to apply, and double application is the kind of
+  corruption that would be silent and unrecoverable. Pinned along with the repack and tag cases.
+  No bug. Recording it because "which verbs are safe to call twice" is the third cross-cutting
+  question this campaign has asked of every path at once, and unlike the replay guards and the audit
+  events, this one came back clean everywhere.
 
 ## Reference
 
