@@ -1298,6 +1298,19 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   Running the suite in order advances the merge sequence and the coincidence breaks. A test that passes
   because two unrelated numbers happen to be equal is exactly the failure the non-vacuity habit is for,
   and it took the suite's own ordering to expose it.
+- **every refusal in the codebase is now asserted somewhere.** Took the remaining thirteen untested
+  guards from the coverage oracle and probed each one before writing a line of test, on the theory
+  that an untested guard might be unreachable or broken. All thirteen fire correctly: branching before
+  the first commit, popping an empty stash, an unknown branch, a sha matching nothing, a bad access
+  level, a bad reset mode, a bad bulk or single resolution, a custom resolution with no row image,
+  resolving a conflict that is not there, reverting a commit not in the store, creating a table the
+  commit has no shape for, and tagging something that does not resolve. No bug, so they are pinned in
+  `guards_01_refusals.sql`, with an assertion that the merge really conflicted so the resolution
+  guards are not aimed at nothing.
+  Re-running the oracle afterwards reports one message left, and that one is a false negative: the
+  test does assert it, but `grove: no merge % in progress` splits into fragments too short for the
+  matcher's fourteen-character window. Worth writing down so the next person does not chase it. The
+  honest count is 72 of 72.
 
 ## Reference
 
