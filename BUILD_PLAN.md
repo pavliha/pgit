@@ -1578,6 +1578,19 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   Two numeric claims remain unverified, the 163 ms long-range diff and the git comparison table at
   50k, 500k and 2M rows. Both need the large fixtures in `bench/`, which is minutes of build time
   rather than a probe, so they are noted as unchecked rather than waved through.
+- **the CLI's file paths were the one part of it nothing tested.** `cli_test.sh` already checks exit
+  codes in fourteen places, but it never mentioned clone, receive, or a file that is not there, and
+  those are where a shell tool most often swallows a failure: `cat file | psql` reports the last
+  command's status. Six assertions now cover a missing bundle, a file that is not JSON, and a clone
+  into a database that already has history, each exiting 1 with grove's own reason rather than a bare
+  `cat` or psql error.
+  Two corrections to my own work here, both worth recording. I first read `grove clone missing.json`
+  as exiting 0, which would have been a serious bug, and it was my measurement: piping to `head` made
+  `$?` the status of `head`. And I assumed the correct exit code depended on `set -o pipefail` in
+  bin/grove, so I removed it to prove the new tests red. They stayed green, because psql fails on the
+  empty input by itself and it is the last command in the pipe. The tests are worth keeping, they
+  would catch a clone that silently did nothing, but they do not guard pipefail and I am not going to
+  claim they do.
 
 ## Reference
 

@@ -156,6 +156,27 @@ undocumented=$(comm -23 \
   <(printf '%s\n' "$help" | grep -oE '^   [a-z-]+' | tr -d ' ' | sort -u))
 is "AC-CLI-05: every command appears in help" "$undocumented" ""
 
+MISSING=/tmp/grove_cli_absent_$$.json
+rm -f "$MISSING"
+
+"$GROVE" clone "$MISSING" >/dev/null 2>/tmp/grove_err; rc=$?
+is "AC-CLI-03: cloning a bundle file that is not there fails" "$rc" "1"
+like "AC-CLI-03: and says which file it could not read" "$(cat /tmp/grove_err)" 'No such file'
+
+"$GROVE" receive "$MISSING" >/dev/null 2>/tmp/grove_err; rc=$?
+is "AC-CLI-03: receiving one that is not there fails too" "$rc" "1"
+
+printf 'not json at all\n' > /tmp/grove_cli_bad_$$.json
+"$GROVE" clone "/tmp/grove_cli_bad_$$.json" >/dev/null 2>/tmp/grove_err; rc=$?
+is "AC-CLI-03: cloning a file that is not a bundle fails" "$rc" "1"
+
+printf '{"nodes":[]}\n' > /tmp/grove_cli_thin_$$.json
+"$GROVE" clone "/tmp/grove_cli_thin_$$.json" >/dev/null 2>/tmp/grove_err; rc=$?
+is "AC-CLI-03: cloning a bundle into a database that already has history fails" "$rc" "1"
+like "AC-CLI-03: with grove's own reason, not a bare psql or cat error" "$(cat /tmp/grove_err)" 'grove:'
+
+rm -f "/tmp/grove_cli_bad_$$.json" "/tmp/grove_cli_thin_$$.json"
+
 psql "$ADMIN" -X -q -c "DROP DATABASE grove_cli" >/dev/null
 
-suite_end CLI 43
+suite_end CLI 49
