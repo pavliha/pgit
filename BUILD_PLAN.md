@@ -910,6 +910,23 @@ Newest last. One line per completed item: what was built, assertion count, anyth
 - **a batch that was too big to be useful** — ops 900 over 12000 row tables ran for 1h12m without
   finishing the first of three configurations. Killed it. Hunting value comes from many varied runs,
   not one enormous one, and a batch that never reports is indistinguishable from a hung one.
+- **octopus is covered now, and getting there was instructive twice over** — the first octopus op
+  logged nothing at all, which looked like it was never selected. It was running: pgit was
+  **correctly refusing** it, with `octopus refuses this merge, 2 of the 3 heads changed
+  fz_b(id=323) differently`. My supposedly disjoint moduli 17 and 19 collide at 323, and with 800
+  rows that id exists. The refusal was right; my arithmetic was wrong, and the generic exception
+  handler had swallowed the evidence into an undifferentiated 'refused' bucket.
+  Edits are now disjoint by parity as well as modulus, and the octopus refusal is caught and logged
+  separately from other refusals so the two outcomes stay distinguishable. 250 operations now produce
+  **10 octopus merges, 10 resolved conflicts, 10 aborted merges and 4 clean merges**, with 24
+  multi-parent commits and a maximum of 3 parents, fsck clean.
+  The second lesson is about the harness rather than pgit: a catch-all `EXCEPTION WHEN others` that
+  logs every failure the same way turns a correct refusal and a real bug into the same line. Every
+  op that can legitimately be refused should say so in its own words.
+- **coverage recorded** — merge campaign clean at chunk 8/32/64, 4 rounds each over 1200 row tables,
+  roughly 3600 operations including constructed conflicts. Fuzz surface now includes: insert, update,
+  delete, add/drop column, branch, checkout, prune, repack, three way merge with resolution and
+  abort, and octopus. Not yet in the fuzzer: rebase, cherry-pick, revert, stash, bisect, tag, notes.
 
 ## Reference
 

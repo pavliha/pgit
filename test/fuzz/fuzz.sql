@@ -26,6 +26,7 @@ DECLARE
   extra   int := 0;
   mid     bigint;
   home    text;
+  br2     text;
   branches text[] := ARRAY['main'];
 BEGIN
   PERFORM setseed(seedv);
@@ -130,11 +131,37 @@ BEGIN
           END IF;
         END IF;
 
-      ELSIF pick = 13 AND array_length(branches,1) > 2 THEN
-        PERFORM pgit.merge_octopus(
-          ARRAY(SELECT b FROM unnest(branches) b WHERE b <> pgit.head() LIMIT 2),
-          'fuzz octopus ' || i);
-        INSERT INTO fuzz_log VALUES (i, 'octopus', '');
+      ELSIF pick = 13 THEN
+        SELECT a.attname INTO col FROM pg_attribute a
+        WHERE a.attrelid = tb::regclass AND a.attnum > 0 AND NOT a.attisdropped
+          AND a.attname <> 'id' AND a.atttypid = 'text'::regtype
+        ORDER BY a.attnum LIMIT 1;
+
+        IF col IS NOT NULL THEN
+          home := pgit.head();
+          br   := 'oa' || i;
+          br2  := 'ob' || i;
+
+          PERFORM pgit.branch(br);
+          PERFORM pgit.checkout(br);
+          EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 17 = 0 AND id %% 2 = 0', tb, col, 'oct-a-' || i);
+          PERFORM pgit.commit('octopus a ' || i, pgit.head(), now(), true);
+          PERFORM pgit.checkout(home);
+
+          PERFORM pgit.branch(br2);
+          PERFORM pgit.checkout(br2);
+          EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 19 = 0 AND id %% 2 = 1', tb, col, 'oct-b-' || i);
+          PERFORM pgit.commit('octopus b ' || i, pgit.head(), now(), true);
+          PERFORM pgit.checkout(home);
+
+          branches := branches || br || br2;
+          BEGIN
+            cnt := pgit.merge_octopus(ARRAY[br, br2], 'fuzz octopus ' || i);
+            INSERT INTO fuzz_log VALUES (i, 'octopus merged', br || ',' || br2);
+          EXCEPTION WHEN others THEN
+            INSERT INTO fuzz_log VALUES (i, 'octopus refused', SQLERRM);
+          END;
+        END IF;
 
       ELSE
         IF array_length(branches,1) > 1 AND random() < 0.5 THEN
