@@ -19,8 +19,13 @@ SELECT pgit.grant_admin('dba');        -- and track, gc, prune, reset, unbundle
 `unbundle`, `receive`, `fetch` and `clone_from` accept a bundle produced somewhere else. They are
 **admin only** for that reason. A bundle carries column type names that end up in `CREATE TABLE`, so
 types are validated through `to_regtype` before any DDL is interpolated. A bundle claiming a type of
-`text); DROP TABLE users; --` is rejected rather than executed. Every node in a bundle is verified to
-hash to its own content on receipt, so a tampered bundle is refused, not stored.
+`text); DROP TABLE users; --` is rejected rather than executed.
+
+Two checks run on receipt, and both refuse rather than store. Every node is verified to hash to its
+own content, so an altered node is rejected. And the bundle has to be **complete**: if any node
+references a child the bundle does not carry, or any recorded tree has no root node in it, the whole
+receipt is refused. Per-node hashing alone would not catch a bundle that was simply truncated, and a
+truncated bundle produces a database that looks fine until you run `fsck`.
 
 Treat a bundle like any other untrusted file: it decides what tables get created in the database you
 unbundle it into.

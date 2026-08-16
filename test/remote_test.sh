@@ -93,6 +93,21 @@ OUT=$(runb "$B" /tmp/pgit_bad.json "SELECT pgit.unbundle(:'b'::jsonb);")
 is "remote: a tampered bundle is rejected by content hash" \
    "$(printf '%s' "$OUT" | grep -c 'does not hash to its content')" "1"
 
+python3 - <<'PY2'
+import json
+b=json.load(open('/tmp/pgit_b1.json'))
+b['nodes']=b['nodes'][:len(b['nodes'])//2]
+json.dump(b,open('/tmp/pgit_short.json','w'))
+PY2
+psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_short" -c "CREATE DATABASE pgit_short" >/dev/null 2>&1
+S2="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_short"
+psql "$S2" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null 2>&1
+OUT=$(runb "$S2" /tmp/pgit_short.json "SELECT pgit.unbundle(:'b'::jsonb);")
+is "remote: a bundle missing nodes is refused, not stored with dangling references" \
+   "$(printf '%s' "$OUT" | grep -c 'bundle is incomplete')" "1"
+is "remote: and nothing from it was kept" \
+   "$(psql "$S2" -X -q -At -c 'SELECT count(*) FROM pgit.nodes')" "0"
+
 psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_virgin" -c "CREATE DATABASE pgit_virgin" >/dev/null 2>&1
 V="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_virgin"
 psql "$V" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null 2>&1
@@ -151,7 +166,7 @@ is "octopus: fsck on the receiver sees no missing parent" "$(qp "SELECT count(*)
 is "octopus: both branches' rows survived the transfer" \
    "$(qp "SELECT string_agg(name,',' ORDER BY id) FROM t WHERE id IN (101,102)")" "from oct1,from oct2"
 
-for d in pgit_origin pgit_clone pgit_bad pgit_virgin pgit_oct; do psql "$ADMIN" -X -q -c "DROP DATABASE $d" >/dev/null; done
+for d in pgit_origin pgit_clone pgit_bad pgit_short pgit_virgin pgit_oct; do psql "$ADMIN" -X -q -c "DROP DATABASE $d" >/dev/null; done
 rm -f /tmp/pgit_b*.json
 
-suite_end REMOTE 29
+suite_end REMOTE 31

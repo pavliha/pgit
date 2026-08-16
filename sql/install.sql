@@ -3481,6 +3481,7 @@ DECLARE
   calc   bytea;
   theirs jsonb := b -> 'settings';
   mine   jsonb := pgit.canon_settings();
+  missing int;
   k      text;
   fresh  boolean := NOT EXISTS (SELECT 1 FROM pgit.nodes);
 BEGIN
@@ -3549,6 +3550,29 @@ BEGIN
               ELSE ARRAY(SELECT jsonb_array_elements_text(x -> 'pk')) END
   FROM jsonb_array_elements(b -> 'schemas') x
   ON CONFLICT DO NOTHING;
+
+  SELECT count(*) INTO missing
+  FROM jsonb_array_elements(b -> 'nodes') bn
+  JOIN pgit.nodes nd ON nd.hash = decode(bn ->> 'hash', 'hex')
+  CROSS JOIN LATERAL pgit.node_items(nd.hash) i
+  WHERE nd.level > 0
+    AND NOT EXISTS (SELECT 1 FROM pgit.nodes c WHERE c.hash = decode(i.ch, 'hex'));
+
+  IF missing > 0 THEN
+    RAISE EXCEPTION 'pgit: this bundle is incomplete, % node reference(s) point at nodes it does not carry',
+      missing
+      USING HINT = 'it was truncated or altered in transit; ask for it again rather than storing it';
+  END IF;
+
+  SELECT count(*) INTO missing
+  FROM jsonb_array_elements(b -> 'trees') x
+  WHERE NOT EXISTS (SELECT 1 FROM pgit.nodes c WHERE c.hash = decode(x ->> 'root', 'hex'));
+
+  IF missing > 0 THEN
+    RAISE EXCEPTION 'pgit: this bundle is incomplete, % recorded tree(s) have no root node in it',
+      missing
+      USING HINT = 'it was truncated or altered in transit; ask for it again rather than storing it';
+  END IF;
 
   RETURN n;
 END $$;

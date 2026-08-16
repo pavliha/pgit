@@ -1005,6 +1005,20 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   It also asserts the comparison spans more than three distinct commits, so it cannot pass by
   comparing one value against itself, and that a column nobody ever updated is credited to the commit
   that first recorded the row.
+- **a truncated bundle was accepted, and the clone looked fine** — `SECURITY.md` claimed "every node
+  is verified to hash to its own content on receipt, so a tampered bundle is refused, not stored".
+  True, and not sufficient. Per-node hashing says nothing about **completeness**: delete half the
+  `nodes` array and every remaining node still hashes correctly.
+  Measured: a 39 node bundle cut to 19 was accepted, `clone_from` returned success, and the result
+  was a database with **942 of 2000 rows** and 20 dangling child references. `fsck` catches it, but
+  only if you run it; the clone reports success and looks healthy.
+  `unbundle` now checks that every node reference resolves and every recorded tree has a root node
+  present, refusing with a count of what is missing. Because it raises inside the caller's
+  transaction, nothing is stored, which makes the documented claim literally true rather than
+  approximately true. Two assertions in `remote_test.sh`, proven red without the fix: without it the
+  bundle is accepted and six nodes are kept.
+  The general lesson: integrity of each part is not integrity of the whole, and a security claim
+  phrased over parts should be tested against the whole.
 
 ## Reference
 
