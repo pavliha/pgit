@@ -1367,6 +1367,22 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   database can still be cloned from. Thirteen assertions in a new `dump_restore_test.sh`.
   No bug. Worth having anyway: backup, restore and moving to another server is a thing users do and
   nothing exercised it, which is exactly the category the upgrade defect came from.
+- **the docs claimed composite primary keys were handled, and three verbs disagree.** Most tests use a
+  single int `id`, so the key-encoding paths only ever saw one column. Ran a composite key through the
+  whole workflow instead: track, commit, journal, diff, tree, fsck, a merge that conflicts, resolve,
+  finish, bundle and clone. All correct. Keys encode as `region=#2:r1|sku=#4:sku6|`, the journal
+  identifies rows by both columns, the conflict names the row in canonical form, and the clone is
+  identical to its source by md5.
+  But `blame`, `log` with a `table:row` pathspec and `restore` with a `table:row` pathspec all refuse:
+  they take one key value as text and will not guess how to split it. LIMITATIONS.md listed composite
+  primary keys under what grove handles, with no mention of the exception. That is the same family as
+  the unenforced settings, documentation asserting behaviour nothing compares against the code.
+  Corrected the docs rather than inventing a key syntax on my own initiative, and pinned both halves
+  in a test so they cannot drift apart again.
+  One detail found by the test failing: `restore`'s refusal is data-dependent. It only reaches the key
+  check when there is a differing row, so restoring one row of a composite-key table returns zero
+  when there is nothing to do and refuses when there is. My first version of the assertion set up no
+  difference and so passed through the guard without touching it. Recorded in the docs.
 
 ## Reference
 

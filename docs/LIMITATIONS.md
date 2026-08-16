@@ -190,6 +190,14 @@ Handled, with tests:
   spinning to the depth cap
 - composite primary keys, text primary keys, enums, `jsonb`, `numeric`, `timestamptz`, unicode
 
+A composite primary key is handled everywhere the whole table is the unit: tracking, committing,
+diffing, merging (a conflict names the row by every key column in canonical form), bundling and
+cloning. It is **not** handled by the three verbs that address a single row by key, `blame`,
+`log` with a `table:row` pathspec, and `restore` with a `table:row` pathspec. Those take one key
+value as text and refuse a table with more than one key column rather than guess how to split it.
+The refusal from `restore` is reached only when there is a differing row to consider; with nothing
+to restore it returns zero without looking at the key.
+
 Not handled: a table **without a primary key** cannot be tracked. There is no row identity to
 version.
 
