@@ -3482,6 +3482,8 @@ DECLARE
   theirs jsonb := b -> 'settings';
   mine   jsonb := grove.canon_settings();
   missing int;
+  summary text;
+  extra   bytea[];
   k      text;
   fresh  boolean := NOT EXISTS (SELECT 1 FROM grove.nodes);
 BEGIN
@@ -3595,6 +3597,31 @@ BEGIN
       missing
       USING HINT = 'a table needs both to be restorable; the bundle was altered in transit';
   END IF;
+
+  FOR e IN SELECT * FROM jsonb_array_elements(b -> 'commits') LOOP
+    h := decode(e ->> 'sha', 'hex');
+
+    SELECT COALESCE(string_agg(t.tbl || ':' || encode(t.root_hash, 'hex'), E'\n' ORDER BY t.tbl), '')
+    INTO summary FROM grove.trees t WHERE t.commit_sha = h;
+
+    SELECT array_agg(p.parent_sha ORDER BY p.ord) INTO extra
+    FROM grove.commit_parent p WHERE p.commit_sha = h;
+
+    IF extra IS NULL THEN
+      calc := grove.commit_sha(decode(e ->> 'parent', 'hex'), e ->> 'author',
+                               e ->> 'message', (e ->> 'at')::timestamptz, summary);
+    ELSE
+      calc := grove.octopus_commit_sha(
+                ARRAY[decode(e ->> 'parent', 'hex')] || extra,
+                e ->> 'message', (e ->> 'at')::timestamptz, summary);
+    END IF;
+
+    IF calc <> h THEN
+      RAISE EXCEPTION 'grove: commit % does not hash to its own author, message, time and trees',
+        left(e ->> 'sha', 12)
+        USING HINT = 'the history in this bundle was rewritten in transit; refusing all of it';
+    END IF;
+  END LOOP;
 
   SELECT count(*) INTO missing
   FROM jsonb_each_text(COALESCE(b -> 'refs', '{}'::jsonb)) r

@@ -154,6 +154,24 @@ PY4
 is "remote: a bundle whose row images were altered is refused, even though every node still hashes" \
    "$(mal datatamper | grep -c 'do not hash to the tree it carries')" "1"
 
+python3 - <<'PY5'
+import json, copy
+b = json.load(open('/tmp/grove_b1.json'))
+c = copy.deepcopy(b)
+for cm in c['commits']:
+    cm['author'] = 'trusted-reviewer'; cm['message'] = 'Approved by security team'
+json.dump(c, open('/tmp/grove_mal_forged.json', 'w'))
+d = copy.deepcopy(b)
+leaf = next(n for n in d['nodes'] if n['level'] == 0)
+d['trees'][0]['root'] = leaf['hash']
+json.dump(d, open('/tmp/grove_mal_rootswap.json', 'w'))
+PY5
+
+is "remote: rewriting a commit's author and message is refused, the sha no longer covers them" \
+   "$(mal forged | grep -c 'does not hash to its own author')" "1"
+is "remote: repointing a commit's tree root is refused, because the commit sha covers the roots" \
+   "$(mal rootswap | grep -c 'does not hash to its own author')" "1"
+
 psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS grove_virgin" -c "CREATE DATABASE grove_virgin" >/dev/null 2>&1
 V="postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/grove_virgin"
 psql "$V" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null 2>&1
@@ -215,4 +233,4 @@ is "octopus: both branches' rows survived the transfer" \
 for d in grove_origin grove_clone grove_bad grove_short grove_mal grove_virgin grove_oct; do psql "$ADMIN" -X -q -c "DROP DATABASE $d" >/dev/null; done
 rm -f /tmp/grove_b*.json
 
-suite_end REMOTE 38
+suite_end REMOTE 40

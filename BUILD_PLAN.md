@@ -1060,6 +1060,23 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   says exactly that and gives the invariant query to run after receiving from an untrusted source.
   The general shape, for the third time in this campaign: a hash proves what it covers and nothing
   else, and the interesting question is always what sits just outside it.
+- **commit history was forgeable in a bundle** — worse than the row-image bug, and found by the same
+  question: what does this hash actually cover, and what verifies it?
+  `grove.commit_sha` covers parent, author, message, timestamp and the roots of the commit's trees.
+  It is called in `commit` and `merge_finish` and **nowhere in `unbundle`**. So a received commit's
+  sha was never checked against its own content. Rewriting every commit's author to
+  `trusted-reviewer` and message to `Approved by security team`, keeping the shas, produced a clone
+  where `grove.log()` displayed the forged history and **fsck reported 0 problems**. For a system
+  whose product is an audit trail, that is the whole product gone.
+  `unbundle` now recomputes each commit's sha from its content and refuses on mismatch, handling
+  octopus commits through `octopus_commit_sha` with their full parent list. A bonus from the same
+  check: repointing a commit's tree root is also caught now, because the summary the sha covers
+  includes the roots.
+  Probed and found already safe: a tip schema naming an unknown type is caught by `checked_type`, and
+  a renamed column in a tip schema is caught by the row-image verification added earlier, because the
+  canonical row form changes and the rebuilt tree stops matching.
+  Three bugs in this class now share one shape. A hash existed, it covered the right thing, and
+  nothing checked the content against it on the way in.
 
 ## Reference
 

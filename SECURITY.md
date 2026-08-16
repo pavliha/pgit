@@ -31,6 +31,11 @@ recorded tree has no root node in it, the receipt is refused. Hashing alone woul
 that was simply truncated, and a truncated one produces a database that looks healthy until you run
 `fsck`.
 
+**Every commit must hash to its own content.** A commit's sha covers its parent, author, message,
+timestamp and the roots of its trees. Nothing verified that on receipt, so a bundle could carry any
+author and any message under a genuine sha. It is checked now, which also means a commit's tree
+cannot be repointed at a different root.
+
 **The rows must hash to the tree.** This is the subtle one. A node's hash covers the *row hashes*,
 not the cached row *images* beside them, so an attacker who edits an image and leaves its hash alone
 produces a bundle where every node still hashes correctly. `clone_from` therefore rebuilds each
