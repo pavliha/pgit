@@ -773,6 +773,20 @@ LANGUAGE sql AS $$
 $$;
 
 DROP FUNCTION IF EXISTS grove.commit(text, text, timestamptz);
+CREATE OR REPLACE FUNCTION grove.nothing_to_commit(parent bytea, roots jsonb)
+RETURNS boolean
+LANGUAGE plpgsql STABLE AS $$
+BEGIN
+  RETURN parent IS NOT NULL
+     AND roots = (SELECT COALESCE(jsonb_object_agg(t.tbl, encode(t.root_hash, 'hex')), '{}'::jsonb)
+                  FROM grove.trees t WHERE t.commit_sha = parent)
+     AND NOT EXISTS (
+       SELECT 1 FROM grove.tracked tr
+       WHERE grove.schema_fingerprint(tr.tbl) IS DISTINCT FROM
+             (SELECT sc.fingerprint FROM grove.schemas sc
+              WHERE sc.commit_sha = parent AND sc.tbl = tr.tbl::text));
+END $$;
+
 CREATE OR REPLACE FUNCTION grove.drifted_keys() RETURNS TABLE (tbl text)
 LANGUAGE sql STABLE AS $$
   SELECT x.tbl::text
@@ -806,15 +820,7 @@ BEGIN
   roots   := grove.snapshot_trees(parent);
   summary := grove.roots_summary(roots);
 
-  IF NOT allow_empty AND parent IS NOT NULL AND roots =
-     (SELECT COALESCE(jsonb_object_agg(t.tbl, encode(t.root_hash, 'hex')), '{}'::jsonb)
-      FROM grove.trees t WHERE t.commit_sha = parent)
-     AND NOT EXISTS (
-       SELECT 1 FROM grove.tracked tr
-       WHERE grove.schema_fingerprint(tr.tbl) IS DISTINCT FROM
-             (SELECT sc.fingerprint FROM grove.schemas sc
-              WHERE sc.commit_sha = parent AND sc.tbl = tr.tbl::text))
-  THEN
+  IF NOT allow_empty AND grove.nothing_to_commit(parent, roots) THEN
     RAISE EXCEPTION 'grove: nothing to commit, every tracked table already matches %',
       grove.short_sha(parent)
       USING HINT = 'pass allow_empty := true to record a commit anyway';
@@ -1411,21 +1417,12 @@ CREATE OR REPLACE FUNCTION grove.is_dirty() RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
   h bytea := grove.resolve(grove.head());
-  r record;
 BEGIN
   IF h IS NULL THEN
     RETURN EXISTS (SELECT 1 FROM grove.changes);
   END IF;
 
-  FOR r IN SELECT t.tbl FROM grove.tracked t LOOP
-    IF grove.write_tree(r.tbl) IS DISTINCT FROM
-       (SELECT t2.root_hash FROM grove.trees t2
-        WHERE t2.commit_sha = h AND t2.tbl = r.tbl::text) THEN
-      RETURN true;
-    END IF;
-  END LOOP;
-
-  RETURN false;
+  RETURN NOT grove.nothing_to_commit(h, grove.snapshot_trees(h));
 END $$;
 
 CREATE OR REPLACE FUNCTION grove.branch(branch_name text, at_sha bytea DEFAULT NULL) RETURNS void

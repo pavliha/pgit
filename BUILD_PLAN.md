@@ -1197,6 +1197,21 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   the drift by name rather than only its downstream symptom.
   What I predicted was data loss from duplicate keys, and that was wrong: the tree keyed by the live
   key, so no rows collided. The bug was one layer over, in what the commit recorded about itself.
+- **retuning a documented knob wedged the repository.** `chunk_target` is listed in ARCHITECTURE.md as a
+  tunable. Change it after committing and the repository could no longer be checked out *or*
+  committed: `is_dirty()` said there were uncommitted changes, `commit` said there was nothing to
+  commit, and both were reporting honestly about different things. `is_dirty` did a full rebuild with
+  `write_tree`, which re-chunks under the new target, while `commit` builds incrementally from the
+  parent, which preserves the old chunk boundaries. Identical data, two different trees, no way out
+  except guessing the old value.
+  The same lesson a fifth time: two definitions of one question. `grove.nothing_to_commit` is now the
+  single answer to "is there anything to record", and both `commit` and `is_dirty` call it.
+  A second disagreement fell out of the same change, in the other direction: changing a row and
+  changing it back left journal rows, so a journal-based `is_dirty` would have called that dirty while
+  `commit` refused it. Sharing commit's own test handles both, which is the argument for sharing
+  rather than reimplementing.
+  The test asserts non-vacuity explicitly, that a full rebuild really does move the root after the
+  retune, otherwise "not dirty" would prove nothing.
 
 ## Reference
 
