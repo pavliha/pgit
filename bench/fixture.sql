@@ -14,7 +14,7 @@ BEGIN
   ON CONFLICT (step) DO UPDATE SET ms = EXCLUDED.ms;
 END $$;
 
-SELECT pgit.track('big');
+SELECT grove.track('big');
 
 DO $$
 DECLARE t0 timestamptz := clock_timestamp();

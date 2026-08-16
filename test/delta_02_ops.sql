@@ -43,13 +43,13 @@ INSERT INTO fix VALUES
 
 SELECT is(
   (SELECT count(*) FROM fix
-   WHERE pgit.apply_delta(base, pgit.make_delta(base, target)) IS DISTINCT FROM target),
+   WHERE grove.apply_delta(base, grove.make_delta(base, target)) IS DISTINCT FROM target),
   0::bigint,
   'delta ops: every fixture round trips to exactly its target');
 
 SELECT is(
   (SELECT count(*) FROM fix
-   WHERE pgit.apply_delta_bin(convert_to(base::text, 'UTF8'), pgit.make_delta(base, target))
+   WHERE grove.apply_delta_bin(convert_to(base::text, 'UTF8'), grove.make_delta(base, target))
          IS DISTINCT FROM convert_to(target::text, 'UTF8')),
   0::bigint,
   'delta ops: the spliced bytes are byte identical, not merely jsonb equal');
@@ -59,11 +59,11 @@ SELECT f.label,
        COALESCE(sum(length(o ->> 'i')) FILTER (WHERE o ? 'i'), 0)::int AS inserted,
        length(f.target::text) AS node_chars,
        length(f.target::text)
-         - pgit.common_prefix(f.base::text, f.target::text)
-         - pgit.common_suffix(f.base::text, f.target::text,
+         - grove.common_prefix(f.base::text, f.target::text)
+         - grove.common_suffix(f.base::text, f.target::text,
              least(length(f.base::text), length(f.target::text))
-             - pgit.common_prefix(f.base::text, f.target::text)) AS one_splice
-FROM fix f CROSS JOIN LATERAL jsonb_array_elements(pgit.make_delta(f.base, f.target)) o
+             - grove.common_prefix(f.base::text, f.target::text)) AS one_splice
+FROM fix f CROSS JOIN LATERAL jsonb_array_elements(grove.make_delta(f.base, f.target)) o
 GROUP BY f.label, f.base, f.target;
 
 SELECT cmp_ok(
@@ -82,98 +82,98 @@ SELECT cmp_ok(
   'delta ops: and one splice really would have had to cover most of the node, so that is not vacuous');
 
 SELECT cmp_ok(
-  (SELECT jsonb_array_length(pgit.make_delta(base, target)) FROM fix WHERE label = 'two far apart wide'),
+  (SELECT jsonb_array_length(grove.make_delta(base, target)) FROM fix WHERE label = 'two far apart wide'),
   '>', 3,
   'delta ops: that case really did emit more than three ops, so the test is not vacuous');
 
 SELECT is(
-  (SELECT jsonb_array_length(pgit.make_delta(base, target)) FROM fix WHERE label = 'nothing changed'),
+  (SELECT jsonb_array_length(grove.make_delta(base, target)) FROM fix WHERE label = 'nothing changed'),
   1,
   'delta ops: an unchanged node collapses to a single copy of the whole base');
 
 SELECT is(
-  (SELECT pgit.make_delta(base, target) -> 0 -> 'c' FROM fix WHERE label = 'nothing changed'),
+  (SELECT grove.make_delta(base, target) -> 0 -> 'c' FROM fix WHERE label = 'nothing changed'),
   jsonb_build_array(1, (SELECT length(base::text) FROM fix WHERE label = 'nothing changed')),
   'delta ops: and that copy spans the base exactly');
 
 SELECT is(
   (SELECT count(*) FROM fix
-   WHERE jsonb_typeof(pgit.make_delta(base, target)) <> 'array'),
+   WHERE jsonb_typeof(grove.make_delta(base, target)) <> 'array'),
   0::bigint,
   'delta ops: the format is always an op array, never the old p/s/m object');
 
 SELECT cmp_ok(
-  (SELECT pg_column_size(pgit.make_delta(base, target)) FROM fix WHERE label = 'two far apart'),
+  (SELECT pg_column_size(grove.make_delta(base, target)) FROM fix WHERE label = 'two far apart'),
   '>',
   (SELECT pg_column_size(target) FROM fix WHERE label = 'two far apart'),
   'delta ops: on a node this small the op envelope costs more than the node, which repack must notice');
 
 CREATE TABLE t (id int PRIMARY KEY, name text, body text, hits int);
-SELECT pgit.track('t');
+SELECT grove.track('t');
 INSERT INTO t SELECT g, 'row-' || g, repeat('payload ', 20) || g, 0 FROM generate_series(1, 5000) g;
-CREATE TEMP TABLE a AS SELECT pgit.commit('base', 'b') AS sha;
+CREATE TEMP TABLE a AS SELECT grove.commit('base', 'b') AS sha;
 
 DO $$ DECLARE i int; BEGIN
   FOR i IN 1..120 LOOP
     UPDATE t SET hits = i WHERE id = 2000 + i;
     UPDATE t SET hits = i WHERE id = 2000 + i + 30;
-    PERFORM pgit.commit('c' || i, 'b');
+    PERFORM grove.commit('c' || i, 'b');
   END LOOP;
 END $$;
 
-ANALYZE pgit.nodes;
+ANALYZE grove.nodes;
 
 CREATE TEMP TABLE qplan (p text);
 DO $$
 DECLARE r record; fk text;
 BEGIN
-  SELECT n.keys[1] INTO fk FROM pgit.nodes n WHERE n.entries IS NOT NULL LIMIT 1;
+  SELECT n.keys[1] INTO fk FROM grove.nodes n WHERE n.entries IS NOT NULL LIMIT 1;
   FOR r IN EXECUTE format(
-    'EXPLAIN SELECT n.hash FROM pgit.nodes n WHERE n.level = 0 AND n.keys[1] = %L '
+    'EXPLAIN SELECT n.hash FROM grove.nodes n WHERE n.level = 0 AND n.keys[1] = %L '
     'AND n.entries IS NOT NULL ORDER BY n.seq DESC', fk)
   LOOP
     INSERT INTO qplan VALUES (r."QUERY PLAN");
   END LOOP;
 END $$;
 
-SELECT cmp_ok((SELECT count(*) FROM pgit.nodes)::int, '>', 500,
+SELECT cmp_ok((SELECT count(*) FROM grove.nodes)::int, '>', 500,
   'delta ops: the fixture is big enough that a sequential scan is not the planner''s obvious choice');
 
 SELECT ok(
   EXISTS (SELECT 1 FROM qplan WHERE p LIKE '%nodes_group_idx%'),
   'delta ops: the group lookup repack drives off resolves through nodes_group_idx, not a seq scan');
 
-CREATE TEMP TABLE before_entries AS SELECT hash, pgit.entries_of(hash) AS e FROM pgit.nodes;
-CREATE TEMP TABLE before_diff AS SELECT * FROM pgit.diff((SELECT sha FROM a), pgit.resolve('main'));
+CREATE TEMP TABLE before_entries AS SELECT hash, grove.entries_of(hash) AS e FROM grove.nodes;
+CREATE TEMP TABLE before_diff AS SELECT * FROM grove.diff((SELECT sha FROM a), grove.resolve('main'));
 CREATE TEMP TABLE before_size AS
-  SELECT sum(pg_column_size(entries) + COALESCE(pg_column_size(delta), 0) + COALESCE(pg_column_size(hashes), 0) + COALESCE(pg_column_size(keys), 0))::bigint AS sz FROM pgit.nodes;
+  SELECT sum(pg_column_size(entries) + COALESCE(pg_column_size(delta), 0) + COALESCE(pg_column_size(hashes), 0) + COALESCE(pg_column_size(keys), 0))::bigint AS sz FROM grove.nodes;
 
-CREATE TEMP TABLE packed AS SELECT pgit.repack(50) AS n;
+CREATE TEMP TABLE packed AS SELECT grove.repack(50) AS n;
 
 SELECT cmp_ok((SELECT n FROM packed), '>', 100, 'delta ops: depth 50 deltified over a hundred nodes');
 
 SELECT is(
-  (SELECT count(*) FROM before_entries b WHERE b.e IS DISTINCT FROM pgit.entries_of(b.hash)),
+  (SELECT count(*) FROM before_entries b WHERE b.e IS DISTINCT FROM grove.entries_of(b.hash)),
   0::bigint,
   'delta ops: every node still resolves byte identically after a depth 50 repack');
 
 SELECT is(
   (SELECT count(*) FROM (
-     SELECT * FROM pgit.diff((SELECT sha FROM a), pgit.resolve('main'))
+     SELECT * FROM grove.diff((SELECT sha FROM a), grove.resolve('main'))
      EXCEPT ALL SELECT * FROM before_diff) q), 0::bigint,
   'delta ops: diff across the whole range returns the same rows');
 
 SELECT is(
-  pgit.write_tree('t'),
-  (SELECT root_hash FROM pgit.trees WHERE commit_sha = pgit.resolve('main') AND tbl = 't'),
+  grove.write_tree('t'),
+  (SELECT root_hash FROM grove.trees WHERE commit_sha = grove.resolve('main') AND tbl = 't'),
   'delta ops: a fresh full rebuild still matches the packed tree');
 
 SELECT cmp_ok(
-  (SELECT sum(pg_column_size(entries) + COALESCE(pg_column_size(delta), 0) + COALESCE(pg_column_size(hashes), 0) + COALESCE(pg_column_size(keys), 0))::bigint FROM pgit.nodes),
+  (SELECT sum(pg_column_size(entries) + COALESCE(pg_column_size(delta), 0) + COALESCE(pg_column_size(hashes), 0) + COALESCE(pg_column_size(keys), 0))::bigint FROM grove.nodes),
   '<', (SELECT sz / 2 FROM before_size),
   'delta ops: two changed rows per commit pack to under half the stored bytes');
 
-SELECT is((SELECT pgit.unpack()), (SELECT n FROM packed),
+SELECT is((SELECT grove.unpack()), (SELECT n FROM packed),
   'delta ops: unpack materialises exactly the deltified nodes again');
 
 SELECT * FROM finish();

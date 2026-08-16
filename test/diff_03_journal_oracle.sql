@@ -2,11 +2,11 @@ BEGIN;
 SELECT plan(5);
 
 CREATE TABLE t (id int PRIMARY KEY, name text, hits int);
-SELECT pgit.track('t');
+SELECT grove.track('t');
 INSERT INTO t SELECT g, 'row-' || g, 0 FROM generate_series(1, 300) g;
 
 CREATE TEMP TABLE chain (n serial, sha bytea);
-INSERT INTO chain (sha) SELECT pgit.commit('base', 'fuzz');
+INSERT INTO chain (sha) SELECT grove.commit('base', 'fuzz');
 
 DO $$
 DECLARE
@@ -26,7 +26,7 @@ BEGIN
         DELETE FROM t WHERE id = k;
       END IF;
     END LOOP;
-    INSERT INTO chain (sha) SELECT pgit.commit('round ' || i, 'fuzz');
+    INSERT INTO chain (sha) SELECT grove.commit('round ' || i, 'fuzz');
   END LOOP;
 END $$;
 
@@ -43,16 +43,16 @@ LIMIT 40;
 
 CREATE TEMP TABLE compared AS
 SELECT p.a, p.b,
-  (SELECT count(*) FROM pgit.diff(p.a, p.b))         AS tree_rows,
-  (SELECT count(*) FROM pgit.diff_journal(p.a, p.b)) AS journal_rows,
+  (SELECT count(*) FROM grove.diff(p.a, p.b))         AS tree_rows,
+  (SELECT count(*) FROM grove.diff_journal(p.a, p.b)) AS journal_rows,
   (SELECT count(*) FROM (
-     (SELECT d.tbl, d.op, d.before, d.after FROM pgit.diff(p.a, p.b) d
+     (SELECT d.tbl, d.op, d.before, d.after FROM grove.diff(p.a, p.b) d
       EXCEPT ALL
-      SELECT j.tbl, j.op, j.before, j.after FROM pgit.diff_journal(p.a, p.b) j)
+      SELECT j.tbl, j.op, j.before, j.after FROM grove.diff_journal(p.a, p.b) j)
      UNION ALL
-     (SELECT j.tbl, j.op, j.before, j.after FROM pgit.diff_journal(p.a, p.b) j
+     (SELECT j.tbl, j.op, j.before, j.after FROM grove.diff_journal(p.a, p.b) j
       EXCEPT ALL
-      SELECT d.tbl, d.op, d.before, d.after FROM pgit.diff(p.a, p.b) d)
+      SELECT d.tbl, d.op, d.before, d.after FROM grove.diff(p.a, p.b) d)
    ) q) AS mismatches
 FROM pairs p;
 

@@ -2,10 +2,10 @@
 set -uo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
-LOG="${HUNT_LOG:-/tmp/pgit-hunt.log}"
+LOG="${HUNT_LOG:-/tmp/grove-hunt.log}"
 BATCHES="${HUNT_BATCHES:-6}"
 
-echo "# pgit hunt started $(date -u +%FT%TZ), $BATCHES batches" | tee -a "$LOG"
+echo "# grove hunt started $(date -u +%FT%TZ), $BATCHES batches" | tee -a "$LOG"
 
 found=0
 batch=0

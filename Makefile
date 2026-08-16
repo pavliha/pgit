@@ -1,4 +1,4 @@
-PSQL ?= psql "postgresql://postgres:pgit@localhost:5460/pgit_test"
+PSQL ?= psql "postgresql://postgres:grove@localhost:5460/grove_test"
 
 .PHONY: up down install test test-only test-fast verify psql reset bench bench-git
 

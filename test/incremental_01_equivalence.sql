@@ -2,9 +2,9 @@ BEGIN;
 SELECT plan(4);
 
 CREATE TABLE t (id int PRIMARY KEY, name text, hits int);
-SELECT pgit.track('t');
+SELECT grove.track('t');
 INSERT INTO t SELECT g, 'row-' || g, 0 FROM generate_series(1, 2000) g;
-SELECT pgit.commit('base', 'fuzz');
+SELECT grove.commit('base', 'fuzz');
 
 CREATE TEMP TABLE mismatch (round int, inc bytea, full_root bytea);
 
@@ -14,8 +14,8 @@ DECLARE
   prev bytea; inc bytea; fullr bytea;
 BEGIN
   PERFORM setseed(0.7);
-  prev := (SELECT root_hash FROM pgit.trees
-           WHERE commit_sha = pgit.resolve('main') AND tbl = 't');
+  prev := (SELECT root_hash FROM grove.trees
+           WHERE commit_sha = grove.resolve('main') AND tbl = 't');
 
   FOR i IN 1..30 LOOP
     FOR j IN 1..6 LOOP
@@ -31,14 +31,14 @@ BEGIN
       END IF;
     END LOOP;
 
-    inc   := pgit.write_tree_incremental('t', prev);
-    fullr := pgit.write_tree('t');
+    inc   := grove.write_tree_incremental('t', prev);
+    fullr := grove.write_tree('t');
 
     IF inc IS DISTINCT FROM fullr THEN
       INSERT INTO mismatch VALUES (i, inc, fullr);
     END IF;
 
-    PERFORM pgit.commit('round ' || i, 'fuzz');
+    PERFORM grove.commit('round ' || i, 'fuzz');
     prev := fullr;
   END LOOP;
 END $$;
@@ -49,31 +49,31 @@ SELECT is(
 );
 
 SELECT is(
-  (SELECT count(*) FROM pgit.commits), 31::bigint,
+  (SELECT count(*) FROM grove.commits), 31::bigint,
   'incremental: the fuzz ran the expected number of commits'
 );
 
 DELETE FROM t WHERE id IN (SELECT id FROM t ORDER BY id LIMIT 300);
 CREATE TEMP TABLE prev2 AS
-  SELECT root_hash AS root FROM pgit.trees
-  WHERE commit_sha = pgit.resolve('main') AND tbl = 't';
+  SELECT root_hash AS root FROM grove.trees
+  WHERE commit_sha = grove.resolve('main') AND tbl = 't';
 
 SELECT is(
-  pgit.write_tree_incremental('t', (SELECT root FROM prev2)),
-  pgit.write_tree('t'),
+  grove.write_tree_incremental('t', (SELECT root FROM prev2)),
+  grove.write_tree('t'),
   'incremental: a bulk delete of 300 consecutive rows still matches the full rebuild'
 );
 
-SELECT pgit.commit('bulk delete', 'fuzz');
+SELECT grove.commit('bulk delete', 'fuzz');
 
 INSERT INTO t SELECT g, 'late-' || g, 1 FROM generate_series(5000, 5400) g;
 CREATE TEMP TABLE prev3 AS
-  SELECT root_hash AS root FROM pgit.trees
-  WHERE commit_sha = pgit.resolve('main') AND tbl = 't';
+  SELECT root_hash AS root FROM grove.trees
+  WHERE commit_sha = grove.resolve('main') AND tbl = 't';
 
 SELECT is(
-  pgit.write_tree_incremental('t', (SELECT root FROM prev3)),
-  pgit.write_tree('t'),
+  grove.write_tree_incremental('t', (SELECT root FROM prev3)),
+  grove.write_tree('t'),
   'incremental: appending 400 rows past the end still matches the full rebuild'
 );
 

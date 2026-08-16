@@ -1,13 +1,13 @@
-# Running pgit
+# Running grove
 
-Everything here is checkable from SQL. pgit derives from your tables and never becomes the only copy,
+Everything here is checkable from SQL. grove derives from your tables and never becomes the only copy,
 so the worst honest outcome is always "throw the history away and rebuild it".
 
 ## Is it healthy
 
 ```sql
-SELECT * FROM pgit.health();          -- everything
-SELECT * FROM pgit.needs_attention(); -- only what wants a human
+SELECT * FROM grove.health();          -- everything
+SELECT * FROM grove.needs_attention(); -- only what wants a human
 ```
 
 `needs_attention()` returning no rows is the green state. Poll it; alert on non-empty.
@@ -16,12 +16,12 @@ SELECT * FROM pgit.needs_attention(); -- only what wants a human
 | --- | --- | --- |
 | `fsck problems` > 0 | a node is unreachable, malformed, or a tree does not hash to its root | see **fsck reports something** below |
 | `journal awaiting commit` large | rows are being written faster than they are committed, or nobody is committing | commit, or stop tracking the table |
-| `nodes packed by gc` low with many nodes | `gc` has not run and storage is larger than it needs to be | `SELECT pgit.repack();` |
-| `tracked tables` = 0 | pgit is installed but versioning nothing | expected right after install, otherwise someone untracked |
+| `nodes packed by gc` low with many nodes | `gc` has not run and storage is larger than it needs to be | `SELECT grove.repack();` |
+| `tracked tables` = 0 | grove is installed but versioning nothing | expected right after install, otherwise someone untracked |
 | `merge in progress` | a merge stopped on conflicts and is waiting for a human | resolve them, then `merge_finish`, or `merge_abort` |
-| `conflicts awaiting resolution` > 0 | rows the merge could not decide | `SELECT * FROM pgit.conflicts WHERE NOT resolved;` then `pgit.resolve_conflict(...)` |
-| `bisect in progress` | someone started a bisect and never reset it | `SELECT pgit.bisect_reset();` |
-| `rebase in progress` | a rebase stopped part way | finish it, or `SELECT pgit.rebase_abort();` |
+| `conflicts awaiting resolution` > 0 | rows the merge could not decide | `SELECT * FROM grove.conflicts WHERE NOT resolved;` then `grove.resolve_conflict(...)` |
+| `bisect in progress` | someone started a bisect and never reset it | `SELECT grove.bisect_reset();` |
+| `rebase in progress` | a rebase stopped part way | finish it, or `SELECT grove.rebase_abort();` |
 
 ## What happened, and how long it took
 
@@ -30,7 +30,7 @@ operation, with the high cardinality fields on it:
 
 ```sql
 SELECT at, verb, ok, actor, branch, duration_ms, detail
-FROM pgit.events ORDER BY id DESC LIMIT 20;
+FROM grove.events ORDER BY id DESC LIMIT 20;
 ```
 
 ```
@@ -52,21 +52,21 @@ Ask it the questions you actually have:
 
 ```sql
 SELECT verb, count(*), round(avg(duration_ms)) avg_ms, max(duration_ms) worst_ms
-FROM pgit.events GROUP BY verb ORDER BY 4 DESC;              -- what is slow
+FROM grove.events GROUP BY verb ORDER BY 4 DESC;              -- what is slow
 
-SELECT * FROM pgit.events WHERE NOT ok ORDER BY id DESC;     -- what failed
+SELECT * FROM grove.events WHERE NOT ok ORDER BY id DESC;     -- what failed
 
-SELECT * FROM pgit.events
+SELECT * FROM grove.events
 WHERE detail ->> 'sha' = 'f59dd63';                          -- who made this commit, and when
 ```
 
 | setting | default | what it does |
 | --- | --- | --- |
-| `log_events` | `on` | write a row to `pgit.events` per operation |
+| `log_events` | `on` | write a row to `grove.events` per operation |
 | `log_server` | `off` | also `RAISE LOG` the same event as one JSON line, for Loki, journald or CloudWatch |
-| `log_retain_days` | `30` | `pgit.repack()` deletes events older than this, so the table is self limiting |
+| `log_retain_days` | `30` | `grove.repack()` deletes events older than this, so the table is self limiting |
 
-Change one with `UPDATE pgit.meta SET value = 'on' WHERE key = 'log_server';`.
+Change one with `UPDATE grove.meta SET value = 'on' WHERE key = 'log_server';`.
 
 Events live in the transaction that made them, so a rolled back operation leaves no row. The
 history and the event log cannot disagree. The flip side: a **failed** operation usually rolls its
@@ -76,18 +76,18 @@ transactional. Set `log_error_verbosity = terse` on the server to keep each even
 ## Who changed this row
 
 ```sql
-SELECT col, actor, at, value, exact FROM pgit.blame('products', '42');
+SELECT col, actor, at, value, exact FROM grove.blame('products', '42');
 ```
 
 `exact` is the column that matters. **true** means a journal entry proves that commit changed that
 column. **false** means only that the value was already there at that commit. The change itself
-happened earlier, in history pgit no longer holds, either because the row predates `track()` or
+happened earlier, in history grove no longer holds, either because the row predates `track()` or
 because `prune` removed the commit that carried the evidence.
 
 Never attribute a `false` row to a person. For an audit that has to stand up, filter:
 
 ```sql
-SELECT * FROM pgit.blame('products', '42') WHERE exact;
+SELECT * FROM grove.blame('products', '42') WHERE exact;
 ```
 
 This is the direct cost of a retention policy: `prune` buys storage with attribution. If blame has
@@ -96,18 +96,18 @@ to be provable for N days, `prune` cannot cut closer than N days.
 ## Numbers for a dashboard
 
 ```sql
-SELECT * FROM pgit.metrics();
+SELECT * FROM grove.metrics();
 ```
 
-Returns `(metric, value)` numerics, ready to scrape: `pgit_commits_total`, `pgit_nodes_total`,
-`pgit_nodes_packed`, `pgit_node_bytes`, `pgit_journal_rows`, `pgit_journal_pending`,
-`pgit_merges_open`, `pgit_conflicts_unresolved`, `pgit_events_total`, `pgit_events_failed`,
-`pgit_commit_ms_p50`, `pgit_commit_ms_p95`, `pgit_commit_ms_max`,
-`pgit_seconds_since_last_commit`.
+Returns `(metric, value)` numerics, ready to scrape: `grove_commits_total`, `grove_nodes_total`,
+`grove_nodes_packed`, `grove_node_bytes`, `grove_journal_rows`, `grove_journal_pending`,
+`grove_merges_open`, `grove_conflicts_unresolved`, `grove_events_total`, `grove_events_failed`,
+`grove_commit_ms_p50`, `grove_commit_ms_p95`, `grove_commit_ms_max`,
+`grove_seconds_since_last_commit`.
 
 `health()` answers "is it healthy right now"; `metrics()` is the same database as time series.
-Alert on `pgit_conflicts_unresolved > 0`, `pgit_journal_pending` climbing, and
-`pgit_commit_ms_p95` crossing whatever your writes can tolerate.
+Alert on `grove_conflicts_unresolved > 0`, `grove_journal_pending` climbing, and
+`grove_commit_ms_p95` crossing whatever your writes can tolerate.
 
 ## The invariant that matters
 
@@ -115,9 +115,9 @@ Everything else is convenience. This is the one that must hold:
 
 ```sql
 SELECT t.tbl
-FROM pgit.trees t
-WHERE t.commit_sha = pgit.resolve(pgit.head())
-  AND pgit.write_tree(t.tbl::regclass) IS DISTINCT FROM t.root_hash;
+FROM grove.trees t
+WHERE t.commit_sha = grove.resolve(grove.head())
+  AND grove.write_tree(t.tbl::regclass) IS DISTINCT FROM t.root_hash;
 ```
 
 No rows means every recorded tree still matches a full rebuild from the live table. Run it after any
@@ -125,28 +125,28 @@ incident. It costs a full rebuild per table, so schedule it rather than polling 
 
 ## fsck reports something
 
-1. `SELECT * FROM pgit.fsck();` — it names what and where.
+1. `SELECT * FROM grove.fsck();` — it names what and where.
 2. Run the invariant query above. If the trees still match, history is intact and the problem is in
-   unreachable nodes: `SELECT pgit.repack();` then `SELECT pgit.prune(now() - interval '90 days');`
+   unreachable nodes: `SELECT grove.repack();` then `SELECT grove.prune(now() - interval '90 days');`
 3. If a tree does **not** match, the recorded history disagrees with your data. Your data is right and
    the history is wrong. Recommit from the live tables:
    ```sql
-   SELECT pgit.commit('rebuild after fsck', pgit.head());
+   SELECT grove.commit('rebuild after fsck', grove.head());
    ```
 4. If that still disagrees, drop the history and start again. Nothing of your data is at risk:
    ```sql
-   TRUNCATE pgit.nodes, pgit.trees, pgit.commits, pgit.commit_parent, pgit.changes CASCADE;
-   SELECT pgit.commit('fresh start', 'main');
+   TRUNCATE grove.nodes, grove.trees, grove.commits, grove.commit_parent, grove.changes CASCADE;
+   SELECT grove.commit('fresh start', 'main');
    ```
 
 ## Scheduled work
 
 | job | cadence | why |
 | --- | --- | --- |
-| `SELECT pgit.repack();` | nightly | storage grows with commits until it runs; also rotates `pgit.events` |
-| `SELECT count(*) FROM pgit.fsck();` | hourly | cheap, catches corruption early |
+| `SELECT grove.repack();` | nightly | storage grows with commits until it runs; also rotates `grove.events` |
+| `SELECT count(*) FROM grove.fsck();` | hourly | cheap, catches corruption early |
 | the invariant query above | daily | expensive, and the only complete check |
-| `SELECT pgit.prune(now() - interval 'N days');` | weekly | bounds history; it is a retention policy, so pick N deliberately |
+| `SELECT grove.prune(now() - interval 'N days');` | weekly | bounds history; it is a retention policy, so pick N deliberately |
 
 ## Backup
 
@@ -158,12 +158,12 @@ Nothing special is needed. Back up the database.
 
 ## Who can do what
 
-Nothing in `pgit` is reachable until granted. Create the role, then pick a level:
+Nothing in `grove` is reachable until granted. Create the role, then pick a level:
 
 ```sql
-SELECT pgit.grant_read('analytics');   -- log, diff, blame, show
-SELECT pgit.grant_write('app');        -- and commit, branch, merge, revert
-SELECT pgit.grant_admin('dba');        -- and track, gc, prune, reset, unbundle
+SELECT grove.grant_read('analytics');   -- log, diff, blame, show
+SELECT grove.grant_write('app');        -- and commit, branch, merge, revert
+SELECT grove.grant_admin('dba');        -- and track, gc, prune, reset, unbundle
 ```
 
 `unbundle` and `clone_from` accept data from elsewhere and are admin only for that reason. Column
@@ -175,7 +175,7 @@ input.
 16, 17 and 18, all in CI, all producing bit identical trees for the same data. A bundle written on
 one is readable on another.
 
-## Upgrading pgit
+## Upgrading grove
 
 `sql/install.sql` is idempotent — run it again. It refuses to install over a database whose on-disk
 format it cannot read rather than corrupting it, and tells you what to run first. There is no

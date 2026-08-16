@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-PGIT_ADMIN_DSN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
-PGIT_DSN="${PGIT_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_test}"
-PGIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GROVE_ADMIN_DSN="${GROVE_ADMIN_DSN:-postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/postgres}"
+GROVE_DSN="${GROVE_DSN:-postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/grove_test}"
+GROVE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 N=0
 FAILED=0

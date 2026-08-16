@@ -13,8 +13,8 @@ ROUNDS="${FUZZ_ROUNDS:-3}"
 REGRESSION_SEEDS="0.772185 0.775743 0.319870"
 
 
-ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
-FDB="pgit_fuzz_$$"
+ADMIN="${GROVE_ADMIN_DSN:-postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/postgres}"
+FDB="grove_fuzz_$$"
 trap 'psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS $FDB WITH (FORCE)" >/dev/null 2>&1' EXIT
 
 seeds=()
@@ -30,7 +30,7 @@ fi
 survived=0
 for s in "${seeds[@]}"; do
 
-  D="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/$FDB"
+  D="postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/$FDB"
   prepare() {
     psql "$ADMIN" -X -q -v ON_ERROR_STOP=1 \
       -c "DROP DATABASE IF EXISTS $FDB WITH (FORCE)" \

@@ -12,22 +12,22 @@ INSERT INTO n_tilde VALUES (1, '~');
 INSERT INTO n_absent VALUES (1);
 
 SELECT isnt(
-  pgit.tree_root('n_null'), pgit.tree_root('n_empty'),
+  grove.tree_root('n_null'), grove.tree_root('n_empty'),
   'AC-CANON-03: NULL and empty string are distinct'
 );
 
 SELECT isnt(
-  pgit.tree_root('n_null'), pgit.tree_root('n_absent'),
+  grove.tree_root('n_null'), grove.tree_root('n_absent'),
   'AC-CANON-03: NULL and an absent column are distinct'
 );
 
 SELECT isnt(
-  pgit.tree_root('n_empty'), pgit.tree_root('n_absent'),
+  grove.tree_root('n_empty'), grove.tree_root('n_absent'),
   'AC-CANON-03: empty string and an absent column are distinct'
 );
 
 SELECT isnt(
-  pgit.tree_root('n_null'), pgit.tree_root('n_tilde'),
+  grove.tree_root('n_null'), grove.tree_root('n_tilde'),
   'AC-CANON-03: the NULL marker cannot be forged by a literal value'
 );
 

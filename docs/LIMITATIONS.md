@@ -1,4 +1,4 @@
-# What pgit does not do
+# What grove does not do
 
 Everything here is measured or deliberate. Numbers come from [../PERF.md](../PERF.md); nothing in
 this document is an estimate presented as a result.
@@ -6,7 +6,7 @@ this document is an estimate presented as a result.
 ## Costs
 
 **Reads are free.** Measured over three runs on a 1M-row table: 26–31 ms untracked, 26–29 ms tracked
-— identical within noise. pgit's triggers are write-side and your data never moves. Tracking does add
+— identical within noise. grove's triggers are write-side and your data never moves. Tracking does add
 one expression index to the table, which is not free on the write path or in storage.
 
 **Writes cost about 15 µs per changed row.** A 10,000-row `UPDATE` goes from 26–30 ms to 146–183 ms;
@@ -50,16 +50,16 @@ the default depth and 1.2× at `--depth 50`. The journal adds about 300 bytes pe
 ## Faster than git above ~50 MB, slower below it
 
 Git's commit is O(file): it re-hashes and re-compresses the whole thing however little changed.
-pgit's is O(changed): it rewrites only the chunks holding changed rows. So there is a crossover, not
+grove's is O(changed): it rewrites only the chunks holding changed rows. So there is a crossover, not
 a verdict.
 
-| same 12.7M rows | git | pgit |
+| same 12.7M rows | git | grove |
 | --- | --- | --- |
 | 28 MB of it, ~5,300 changed rows | **492 ms** | 1,801 ms |
 | all 1.0 GB of it, 100 changed rows | 12,062 ms | **527 ms** |
 
-Below roughly 50 MB git wins on constants — it hashes and zlib-compresses a byte stream, while pgit
-canonicalises every changed row and writes nodes durably under MVCC with WAL. Above it pgit wins on
+Below roughly 50 MB git wins on constants — it hashes and zlib-compresses a byte stream, while grove
+canonicalises every changed row and writes nodes durably under MVCC with WAL. Above it grove wins on
 complexity, and the gap grows linearly.
 
 **Diff is the exception and is genuinely slower**: 391 ms against 12.0 s over the same 30 commits,
@@ -81,13 +81,13 @@ temporal tables, audit triggers — or having no version control on your data at
 checked, because a bundle written on one has to be readable on another.
 
 16 is the floor only because that is the oldest one tested, not because 15 is known to fail. There is
-one thing to watch when editing: pgit used `min(bytea)`, which exists only on 18, and that silently
+one thing to watch when editing: grove used `min(bytea)`, which exists only on 18, and that silently
 made 16 and 17 impossible to use at all — `commit` failed outright — until a version matrix existed
 to notice. Any aggregate or function added in a recent major will do the same.
 
 ## Schema changes are not versioned
 
-pgit versions rows. It records the **shape** of each table per commit and uses it as a guard, but it
+grove versions rows. It records the **shape** of each table per commit and uses it as a guard, but it
 does not version DDL and cannot replay it.
 
 - a commit after `ADD COLUMN` is a full rebuild, because every row's canonical form changed and no
@@ -97,7 +97,7 @@ does not version DDL and cannot replay it.
 - a renamed table is **detected** by content similarity and refused with both names and a match
   percentage — detected, not followed
 
-Migrations own DDL. pgit works alongside them; it does not replace them.
+Migrations own DDL. grove works alongside them; it does not replace them.
 
 ## One database holds one branch at a time
 
@@ -107,7 +107,7 @@ bundle between them.
 
 ## A commit claims every pending change, whoever made it
 
-`pgit.commit()` records every journal row that has not been committed yet, not only the rows the
+`grove.commit()` records every journal row that has not been committed yet, not only the rows the
 caller wrote. Two people writing to the same database before either commits get one commit
 containing both their changes, authored by whoever ran `commit`.
 
@@ -118,7 +118,7 @@ What survives is the part that matters for an audit. The journal captures the ac
 it is written, so `blame` still credits the right person even when the commit around it does not:
 
 ```sql
-SELECT col, actor, exact FROM pgit.blame('products', '42');
+SELECT col, actor, exact FROM grove.blame('products', '42');
 ```
 
 If you need commits that contain only one actor's work, serialise them. Take an advisory lock across
@@ -134,18 +134,18 @@ anything the pruned commits changed. It does not guess: those columns come back 
 
 Pick the retention window from how long attribution has to be provable, not from disk.
 
-## pgit does not move data over a network
+## grove does not move data over a network
 
 `remote_add` records a name and a URL, and **nothing dials that URL**. It is a label saying where a
 bundle came from, not a connection string. There is no `git://`, no ssh, no polling. A real
-transport would need `dblink` or `postgres_fdw`, and pgit is deliberately extension free.
+transport would need `dblink` or `postgres_fdw`, and grove is deliberately extension free.
 
 Moving history is therefore yours to do, with whatever you already trust:
 
 ```bash
-psql "$SRC" -At -c "SELECT pgit.bundle(ARRAY['main'])" > pack.json
+psql "$SRC" -At -c "SELECT grove.bundle(ARRAY['main'])" > pack.json
 scp pack.json elsewhere:                       # or s3 cp, or a pipe, or email
-psql "$DST" -v b="$(cat pack.json)" -c "SELECT pgit.fetch('origin', :'b'::jsonb)"
+psql "$DST" -v b="$(cat pack.json)" -c "SELECT grove.fetch('origin', :'b'::jsonb)"
 ```
 
 `fetch` writes only `remotes/<name>/*`; `receive` moves local branches and enforces fast forward.
@@ -154,7 +154,7 @@ You just have to be the courier.
 
 ## Anything outside the database does not branch
 
-Search indexes, object storage, payment providers, outbound notifications, caches. pgit versions rows
+Search indexes, object storage, payment providers, outbound notifications, caches. grove versions rows
 in one database. Reverting a row does not un-send an email, and checking out a branch does not
 reindex Meilisearch. Whatever else your application does in response to a write remains your
 application's problem — which is why replay suppresses your triggers rather than re-firing them.
@@ -166,7 +166,7 @@ Handled, with tests:
 - `GENERATED ALWAYS AS` columns — excluded from writes, recomputed by Postgres
 - `GENERATED ALWAYS AS IDENTITY` keys — inserted with `OVERRIDING SYSTEM VALUE`
 - columns named `n`, `o`, `cols`, `t`, `s`, `v`, `k` or `e`, which collide with identifiers the
-  generated SQL uses. Row aliases are `"pgit row"` and `"pgit img"` — quoted and containing a space,
+  generated SQL uses. Row aliases are `"grove row"` and `"grove img"` — quoted and containing a space,
   so no unquoted column name can equal one. A table with a column of either of those two names is
   **refused at `track()`**, because the failure would otherwise be silent: `to_jsonb()` would resolve
   to the column instead of the row and every stored image would be a scalar
@@ -194,4 +194,4 @@ Octopus merges exist but follow git in refusing to resolve conflicts at all.
 Pre-alpha. 621 checks pass from an empty database, including 19 against a real 63-table application
 schema, but nothing here has run in production and the on-disk format has changed twice this month.
 There is no upgrade path between format versions other than rebuilding from your tables, which is
-always possible because your tables are the source of truth — pgit never becomes the only copy.
+always possible because your tables are the source of truth — grove never becomes the only copy.

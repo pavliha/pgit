@@ -40,7 +40,7 @@ against a number from an hour ago.
 | path | what |
 | --- | --- |
 | `sql/install.sql` | the whole implementation |
-| `bin/pgit` | the CLI, a thin shell over the SQL |
+| `bin/grove` | the CLI, a thin shell over the SQL |
 | `test/*.sql` | pgTAP, run by `test/run.sh` |
 | `test/*_test.sh` | suites that need more than one session or database |
 | `test/fuzz/` | randomised schemas and operations, replayable by seed |
@@ -50,14 +50,14 @@ against a number from an hour ago.
 
 ## Tests
 
-Every write verb must leave an event in `pgit.events`; `test/obs_02_every_commit_audited.sql`
+Every write verb must leave an event in `grove.events`; `test/obs_02_every_commit_audited.sql`
 enforces that every commit in the database has an event that created it, so a new verb cannot
 quietly bypass the audit log.
 
 The fuzzer is worth understanding before you trust a green run. Its tables use a small
 `chunk_target` so the trees are deep enough to exercise the incremental write path. At the default
 of 64 a small table produces a level 1 root, which short circuits to a full rebuild and tests the
-wrong code. If you change the fuzz fixture, check `pgit.nodes` still reaches level 2 or more.
+wrong code. If you change the fuzz fixture, check `grove.nodes` still reaches level 2 or more.
 
 ## Reporting a bug
 
@@ -70,9 +70,9 @@ FUZZ_SEED=0.209411 FUZZ_ROUNDS=1 FUZZ_OPS=60 ./test/fuzz_test.sh
 For anything about correctness of history, the reproduction that matters is the invariant:
 
 ```sql
-SELECT t.tbl FROM pgit.trees t
-WHERE t.commit_sha = pgit.resolve(pgit.head())
-  AND pgit.write_tree(t.tbl::regclass) IS DISTINCT FROM t.root_hash;
+SELECT t.tbl FROM grove.trees t
+WHERE t.commit_sha = grove.resolve(grove.head())
+  AND grove.write_tree(t.tbl::regclass) IS DISTINCT FROM t.root_hash;
 ```
 
 No rows means every recorded tree still rebuilds from the live table. Rows mean a real bug.

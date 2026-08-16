@@ -2,13 +2,13 @@ BEGIN;
 SELECT plan(3);
 
 CREATE TABLE t (id int PRIMARY KEY, name text, hits int);
-SELECT pgit.track('t');
+SELECT grove.track('t');
 INSERT INTO t SELECT g, 'row-' || g, 0 FROM generate_series(1, 20000) g;
-SELECT pgit.commit('base', 'fuzz');
+SELECT grove.commit('base', 'fuzz');
 
 SELECT cmp_ok(
-  pgit.node_level((SELECT root_hash FROM pgit.trees
-                   WHERE commit_sha = pgit.resolve('main') AND tbl = 't')),
+  grove.node_level((SELECT root_hash FROM grove.trees
+                   WHERE commit_sha = grove.resolve('main') AND tbl = 't')),
   '>=', 2,
   'incremental: 20000 rows build a tree at least three levels deep, so the level 1 splice is exercised'
 );
@@ -21,8 +21,8 @@ DECLARE
   prev bytea; inc bytea; fullr bytea;
 BEGIN
   PERFORM setseed(0.31);
-  prev := (SELECT root_hash FROM pgit.trees
-           WHERE commit_sha = pgit.resolve('main') AND tbl = 't');
+  prev := (SELECT root_hash FROM grove.trees
+           WHERE commit_sha = grove.resolve('main') AND tbl = 't');
 
   FOR i IN 1..15 LOOP
     FOR j IN 1..8 LOOP
@@ -38,13 +38,13 @@ BEGIN
       END IF;
     END LOOP;
 
-    inc   := pgit.write_tree_incremental('t', prev);
-    fullr := pgit.write_tree('t');
+    inc   := grove.write_tree_incremental('t', prev);
+    fullr := grove.write_tree('t');
     IF inc IS DISTINCT FROM fullr THEN
       INSERT INTO mismatch VALUES (i);
     END IF;
 
-    PERFORM pgit.commit('round ' || i, 'fuzz');
+    PERFORM grove.commit('round ' || i, 'fuzz');
     prev := fullr;
   END LOOP;
 END $$;
@@ -56,12 +56,12 @@ SELECT is(
 
 DELETE FROM t WHERE id BETWEEN 8000 AND 11000;
 CREATE TEMP TABLE prev2 AS
-  SELECT root_hash AS root FROM pgit.trees
-  WHERE commit_sha = pgit.resolve('main') AND tbl = 't';
+  SELECT root_hash AS root FROM grove.trees
+  WHERE commit_sha = grove.resolve('main') AND tbl = 't';
 
 SELECT is(
-  pgit.write_tree_incremental('t', (SELECT root FROM prev2)),
-  pgit.write_tree('t'),
+  grove.write_tree_incremental('t', (SELECT root FROM prev2)),
+  grove.write_tree('t'),
   'incremental: deleting 3000 consecutive rows spanning many level 1 nodes still matches'
 );
 

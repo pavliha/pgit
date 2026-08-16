@@ -2,42 +2,42 @@ BEGIN;
 SELECT plan(6);
 
 CREATE TABLE tune (id int PRIMARY KEY, v text, n int);
-SELECT pgit.track('tune');
+SELECT grove.track('tune');
 INSERT INTO tune SELECT g, 'v' || g, 0 FROM generate_series(1, 3000) g;
-CREATE TEMP TABLE base_c AS SELECT pgit.commit('tune base', 'main') AS sha;
+CREATE TEMP TABLE base_c AS SELECT grove.commit('tune base', 'main') AS sha;
 
 SELECT is(
-  (SELECT value FROM pgit.meta WHERE key = 'max_tree_depth'), '40',
+  (SELECT value FROM grove.meta WHERE key = 'max_tree_depth'), '40',
   'settings: max_tree_depth has a default');
 
-UPDATE pgit.meta SET value = '1' WHERE key = 'max_tree_depth';
+UPDATE grove.meta SET value = '1' WHERE key = 'max_tree_depth';
 
 SELECT throws_ok(
-  $$SELECT pgit.write_tree('tune')$$,
+  $$SELECT grove.write_tree('tune')$$,
   NULL,
   'settings: lowering max_tree_depth really does stop the build, so it is read');
 
-UPDATE pgit.meta SET value = '40' WHERE key = 'max_tree_depth';
+UPDATE grove.meta SET value = '40' WHERE key = 'max_tree_depth';
 
 SELECT lives_ok(
-  $$SELECT pgit.write_tree('tune')$$,
+  $$SELECT grove.write_tree('tune')$$,
   'settings: and restoring it lets the build finish again');
 
 CREATE TEMP TABLE base_root AS
-SELECT root_hash AS root FROM pgit.trees
+SELECT root_hash AS root FROM grove.trees
 WHERE commit_sha = (SELECT sha FROM base_c) AND tbl = 'tune';
 
 UPDATE tune SET n = 1 WHERE id % 7 = 0;
 
-UPDATE pgit.meta SET value = '100000' WHERE key = 'splice_max_changes_per_chunk';
-CREATE TEMP TABLE spliced AS SELECT pgit.write_tree_incremental('tune',
-  (SELECT root_hash FROM pgit.trees WHERE commit_sha = (SELECT sha FROM base_c) AND tbl = 'tune')) AS root;
+UPDATE grove.meta SET value = '100000' WHERE key = 'splice_max_changes_per_chunk';
+CREATE TEMP TABLE spliced AS SELECT grove.write_tree_incremental('tune',
+  (SELECT root_hash FROM grove.trees WHERE commit_sha = (SELECT sha FROM base_c) AND tbl = 'tune')) AS root;
 
-UPDATE pgit.meta SET value = '0' WHERE key = 'splice_max_changes_per_chunk';
-CREATE TEMP TABLE ranged AS SELECT pgit.write_tree_incremental('tune',
-  (SELECT root_hash FROM pgit.trees WHERE commit_sha = (SELECT sha FROM base_c) AND tbl = 'tune')) AS root;
+UPDATE grove.meta SET value = '0' WHERE key = 'splice_max_changes_per_chunk';
+CREATE TEMP TABLE ranged AS SELECT grove.write_tree_incremental('tune',
+  (SELECT root_hash FROM grove.trees WHERE commit_sha = (SELECT sha FROM base_c) AND tbl = 'tune')) AS root;
 
-UPDATE pgit.meta SET value = '8' WHERE key = 'splice_max_changes_per_chunk';
+UPDATE grove.meta SET value = '8' WHERE key = 'splice_max_changes_per_chunk';
 
 SELECT isnt(
   (SELECT root FROM spliced), (SELECT root FROM base_root),
@@ -48,7 +48,7 @@ SELECT is(
   'settings: splicing chunks and rebuilding their ranges produce the same tree');
 
 SELECT is(
-  (SELECT root FROM spliced), pgit.write_tree('tune'),
+  (SELECT root FROM spliced), grove.write_tree('tune'),
   'settings: and both agree with a full rebuild');
 
 SELECT * FROM finish();

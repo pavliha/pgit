@@ -1,17 +1,17 @@
 # Security
 
-## What pgit is, in security terms
+## What grove is, in security terms
 
-pgit is SQL that runs inside your database, under the privileges of whoever calls it. It installs no
+grove is SQL that runs inside your database, under the privileges of whoever calls it. It installs no
 extension, opens no socket, and dials nothing. There is no network transport at all, so history
 moves between databases only when you carry a bundle yourself.
 
-Nothing in the `pgit` schema is reachable until it is granted:
+Nothing in the `grove` schema is reachable until it is granted:
 
 ```sql
-SELECT pgit.grant_read('analytics');   -- log, diff, blame, show
-SELECT pgit.grant_write('app');        -- and commit, branch, merge, revert
-SELECT pgit.grant_admin('dba');        -- and track, gc, prune, reset, unbundle
+SELECT grove.grant_read('analytics');   -- log, diff, blame, show
+SELECT grove.grant_write('app');        -- and commit, branch, merge, revert
+SELECT grove.grant_admin('dba');        -- and track, gc, prune, reset, unbundle
 ```
 
 ## The parts that take foreign input
@@ -41,13 +41,13 @@ Open a GitHub security advisory on this repository ("Security" → "Report a vul
 keeps the report private until a fix exists. Please include the Postgres major version and, where
 you can, a reproduction as SQL.
 
-If you find a way to make pgit execute attacker-controlled SQL, write to a table the caller has no
+If you find a way to make grove execute attacker-controlled SQL, write to a table the caller has no
 rights to, or record a tree that disagrees with the data it claims to describe, that is the class of
 bug worth reporting privately first.
 
 ## What is not a vulnerability
 
-- Anything requiring the `pgit` admin grant. An admin can already drop your tables.
+- Anything requiring the `grove` admin grant. An admin can already drop your tables.
 - Reading history you were granted read access to.
 - `prune` losing `blame` attribution. That is documented in `docs/LIMITATIONS.md`: pruning buys
   storage with attribution, and `blame` marks the affected rows `exact = false` rather than guessing.

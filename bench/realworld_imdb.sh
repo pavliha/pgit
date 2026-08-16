@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
-DSN="${PGIT_IMDB_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_imdb}"
+ADMIN="${GROVE_ADMIN_DSN:-postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/postgres}"
+DSN="${GROVE_IMDB_DSN:-postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/grove_imdb}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DATA="${DATA:?set DATA to the directory holding the imdb tsv.gz files}"
 NIGHTS="${NIGHTS:-30}"
 
 q(){ psql "$DSN" -X -q -At -v ON_ERROR_STOP=1 -c "$1"; }
-compact(){ psql "$DSN" -X -q -c "VACUUM FULL pgit.nodes" >/dev/null; }
+compact(){ psql "$DSN" -X -q -c "VACUUM FULL grove.nodes" >/dev/null; }
 sz(){ q "SELECT pg_size_pretty(pg_total_relation_size('$1'))"; }
 
-psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_imdb" -c "CREATE DATABASE pgit_imdb" >/dev/null 2>&1
+psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS grove_imdb" -c "CREATE DATABASE grove_imdb" >/dev/null 2>&1
 psql "$DSN" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null
 
 q "CREATE TABLE title_basics (
@@ -31,22 +31,22 @@ BROWS=$(q "SELECT count(*) FROM title_basics")
 RROWS=$(q "SELECT count(*) FROM title_ratings")
 echo "# title_basics $BROWS rows $(sz title_basics), title_ratings $RROWS rows $(sz title_ratings)"
 
-q "SELECT pgit.track('title_basics')" >/dev/null
-q "SELECT pgit.track('title_ratings')" >/dev/null
+q "SELECT grove.track('title_basics')" >/dev/null
+q "SELECT grove.track('title_ratings')" >/dev/null
 
 echo "# baseline commit"
 q "DO \$\$
    DECLARE t0 timestamptz := clock_timestamp();
    BEGIN
-     PERFORM pgit.commit('imdb baseline','imdb');
+     PERFORM grove.commit('imdb baseline','imdb');
      RAISE NOTICE 'baseline commit % ms', round(extract(epoch FROM clock_timestamp()-t0)*1000);
    END \$\$" 2>&1 | sed 's/^NOTICE:  /# /'
 
 q "CREATE TABLE bench_shas (label text PRIMARY KEY, sha bytea)" >/dev/null
-q "INSERT INTO bench_shas VALUES ('night0', pgit.resolve('main'))" >/dev/null
+q "INSERT INTO bench_shas VALUES ('night0', grove.resolve('main'))" >/dev/null
 
 compact
-echo "# after baseline: nodes $(sz pgit.nodes) against $(q "SELECT pg_size_pretty((pg_total_relation_size('title_basics')+pg_total_relation_size('title_ratings'))::bigint)") of data"
+echo "# after baseline: nodes $(sz grove.nodes) against $(q "SELECT pg_size_pretty((pg_total_relation_size('title_basics')+pg_total_relation_size('title_ratings'))::bigint)") of data"
 
 echo "# $NIGHTS nightly ratings updates, weighted to popular titles like the real feed"
 q "DO \$\$
@@ -69,21 +69,21 @@ q "DO \$\$
        update_ms := update_ms + extract(epoch FROM clock_timestamp()-t0)*1000;
 
        -- Only the commit is timed. The md5 scan and the UPDATE above are the
-       -- fixture's own cost and were previously being charged to pgit.
+       -- fixture's own cost and were previously being charged to grove.
        t0 := clock_timestamp();
-       PERFORM pgit.commit('ratings night ' || n, 'imdb');
+       PERFORM grove.commit('ratings night ' || n, 'imdb');
        commit_ms := commit_ms + extract(epoch FROM clock_timestamp()-t0)*1000;
      END LOOP;
      RAISE NOTICE '% rows over % nights: mean % ms per COMMIT, plus % ms of fixture work per night',
        touched, $NIGHTS, round(commit_ms/$NIGHTS), round(update_ms/$NIGHTS);
    END \$\$" 2>&1 | sed 's/^NOTICE:  /# /'
 
-q "INSERT INTO bench_shas VALUES ('night_last', pgit.resolve('main'))" >/dev/null
+q "INSERT INTO bench_shas VALUES ('night_last', grove.resolve('main'))" >/dev/null
 
 q "DO \$\$
    DECLARE t0 timestamptz := clock_timestamp(); c bigint;
    BEGIN
-     SELECT count(*) INTO c FROM pgit.diff(
+     SELECT count(*) INTO c FROM grove.diff(
        (SELECT sha FROM bench_shas WHERE label='night0'),
        (SELECT sha FROM bench_shas WHERE label='night_last'));
      RAISE NOTICE 'diff across all % nights: % rows in % ms',
@@ -93,26 +93,26 @@ q "DO \$\$
 q "DO \$\$
    DECLARE t0 timestamptz := clock_timestamp(); c bigint;
    BEGIN
-     SELECT count(*) INTO c FROM pgit.diff(
-       (SELECT sha FROM bench_shas WHERE label='night_last'), pgit.resolve('main'), 'title_basics');
+     SELECT count(*) INTO c FROM grove.diff(
+       (SELECT sha FROM bench_shas WHERE label='night_last'), grove.resolve('main'), 'title_basics');
      RAISE NOTICE 'diff of the 12.7M row table nobody touched: % rows in % ms',
        c, round(extract(epoch FROM clock_timestamp()-t0)*1000);
    END \$\$" 2>&1 | sed 's/^NOTICE:  /# /'
 
 compact
-RAW=$(q "SELECT pg_total_relation_size('pgit.nodes')")
-echo "# nodes before repack $(sz pgit.nodes)"
+RAW=$(q "SELECT pg_total_relation_size('grove.nodes')")
+echo "# nodes before repack $(sz grove.nodes)"
 
 RP0=$(date +%s)
-PACKED=$(q "SELECT pgit.repack()")
+PACKED=$(q "SELECT grove.repack()")
 RP1=$(date +%s)
 echo "# repack itself took $((RP1-RP0))s"
 compact
-B=$(q "SELECT pg_total_relation_size('pgit.nodes')")
-echo "# nodes after repack at the default depth $(sz pgit.nodes) — $(q "SELECT round(100 - ($B::numeric / $RAW * 100))")% off, $PACKED packed"
+B=$(q "SELECT pg_total_relation_size('grove.nodes')")
+echo "# nodes after repack at the default depth $(sz grove.nodes) — $(q "SELECT round(100 - ($B::numeric / $RAW * 100))")% off, $PACKED packed"
 
-echo "# fsck problems: $(q "SELECT count(*) FROM pgit.fsck()")"
+echo "# fsck problems: $(q "SELECT count(*) FROM grove.fsck()")"
 echo "# every table still rebuilds to its recorded root: $(q "
-  SELECT count(*) = 0 FROM pgit.tracked t
-  JOIN pgit.trees r ON r.tbl = t.tbl::text AND r.commit_sha = pgit.resolve('main')
-  WHERE pgit.write_tree(t.tbl) IS DISTINCT FROM r.root_hash")"
+  SELECT count(*) = 0 FROM grove.tracked t
+  JOIN grove.trees r ON r.tbl = t.tbl::text AND r.commit_sha = grove.resolve('main')
+  WHERE grove.write_tree(t.tbl) IS DISTINCT FROM r.root_hash")"

@@ -3,7 +3,7 @@ SELECT plan(3);
 
 CREATE TABLE bo (id int PRIMARY KEY, v int NOT NULL);
 INSERT INTO bo SELECT g, 0 FROM generate_series(1, 120) g;
-SELECT pgit.track('bo');
+SELECT grove.track('bo');
 
 CREATE TEMP TABLE bisect_result (len int, poison int, expected text, got text);
 
@@ -19,40 +19,40 @@ DECLARE
 BEGIN
   FOR len IN 4..9 LOOP
     FOR poison IN 2..len LOOP
-      TRUNCATE pgit.nodes, pgit.trees, pgit.commits, pgit.commit_parent,
-               pgit.changes, pgit.refs, pgit.schemas, pgit.reflog, pgit.bisect CASCADE;
-      DELETE FROM pgit.meta WHERE key = 'head';
+      TRUNCATE grove.nodes, grove.trees, grove.commits, grove.commit_parent,
+               grove.changes, grove.refs, grove.schemas, grove.reflog, grove.bisect CASCADE;
+      DELETE FROM grove.meta WHERE key = 'head';
 
       UPDATE bo SET v = 0;
-      PERFORM pgit.commit('c1', NULL, now(), true);
+      PERFORM grove.commit('c1', NULL, now(), true);
 
       FOR step IN 2..len LOOP
         UPDATE bo SET v = CASE WHEN step >= poison THEN 999 ELSE step END WHERE id = 1;
-        PERFORM pgit.commit('c' || step, NULL, now(), true);
+        PERFORM grove.commit('c' || step, NULL, now(), true);
       END LOOP;
 
-      SELECT c.message INTO want FROM pgit.commits c
+      SELECT c.message INTO want FROM grove.commits c
       WHERE c.message = 'c' || poison;
 
       prev  := NULL;
       guard := 0;
-      pick  := pgit.bisect_start('HEAD~' || (len - 1), 'HEAD');
+      pick  := grove.bisect_start('HEAD~' || (len - 1), 'HEAD');
 
       WHILE pick IS NOT NULL AND pick IS DISTINCT FROM prev AND guard < 30 LOOP
         prev  := pick;
         guard := guard + 1;
         IF (SELECT v FROM bo WHERE id = 1) = 999 THEN
-          pick := pgit.bisect_bad();
+          pick := grove.bisect_bad();
         ELSE
-          pick := pgit.bisect_good();
+          pick := grove.bisect_good();
         END IF;
       END LOOP;
 
       INSERT INTO bisect_result
       SELECT len, poison, want,
-             (SELECT c.message FROM pgit.commits c JOIN pgit.bisect b ON b.bad = c.sha);
+             (SELECT c.message FROM grove.commits c JOIN grove.bisect b ON b.bad = c.sha);
 
-      PERFORM pgit.bisect_reset();
+      PERFORM grove.bisect_reset();
     END LOOP;
   END LOOP;
 END $$;

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-DSN="${PGIT_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_test}"
+DSN="${GROVE_DSN:-postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/grove_test}"
 
-die()   { echo "pgit: $*" >&2; exit 129; }
+die()   { echo "grove: $*" >&2; exit 129; }
 q()     { psql "$DSN" -X -q -At -F $'\t' -v ON_ERROR_STOP=1 -c "$1"; }
 lit()   { printf "%s" "$1" | sed "s/'/''/g"; }
 qf()    { { printf '\\set b `cat %s`\n' "$1"; echo "$2"; } | psql "$DSN" -X -q -At -v ON_ERROR_STOP=1; }
@@ -45,7 +45,7 @@ positional() {
 
 usage() {
   cat <<'EOF'
-usage: pgit <command> [<args>]
+usage: grove <command> [<args>]
 
 record
    track <table>          start journalling a table
@@ -92,7 +92,7 @@ maintain
    fsck                   verify hashes and reachability
    notes add <rev> -m <text> | notes show|rm [<rev>] | notes list
 
-Connects with $PGIT_DSN, or $PGIT_HOST against the local test database.
+Connects with $GROVE_DSN, or $GROVE_HOST against the local test database.
 EOF
 }
 
@@ -109,20 +109,20 @@ gc)
   allow "--depth" "$@"
   depth=4
   while [ $# -gt 0 ]; do case "$1" in --depth) depth="${2:-4}"; shift 2 ;; *) shift ;; esac; done
-  n=$(q "SELECT pgit.repack($depth)")
+  n=$(q "SELECT grove.repack($depth)")
   echo "packed $n node versions as deltas (depth $depth)"
   ;;
 
 unpack)
   allow "" "$@"
-  n=$(q "SELECT pgit.unpack()")
+  n=$(q "SELECT grove.unpack()")
   echo "materialised $n node versions"
   ;;
 
 status)
   allow "" "$@"
-  echo "On branch $(q "SELECT pgit.head()")"
-  if [ "$(q "SELECT pgit.is_dirty()")" = "t" ]; then
+  echo "On branch $(q "SELECT grove.head()")"
+  if [ "$(q "SELECT grove.is_dirty()")" = "t" ]; then
     echo "Changes not staged for commit"
     exit 0
   fi
@@ -142,11 +142,11 @@ log)
     prev="$a"
   done
   if [[ " $* " == *" --oneline "* ]]; then
-    q "SELECT pgit.short_sha(sha) || ' ' || message FROM pgit.log(NULL, $ps, $lim, $since, $auth)"
+    q "SELECT grove.short_sha(sha) || ' ' || message FROM grove.log(NULL, $ps, $lim, $since, $auth)"
   else
     q "SELECT 'commit ' || encode(sha,'hex') || E'\nAuthor: ' || COALESCE(author,'') ||
               E'\nDate:   ' || at || E'\n\n    ' || message || E'\n'
-       FROM pgit.log(NULL, $ps, $lim, $since, $auth)"
+       FROM grove.log(NULL, $ps, $lim, $since, $auth)"
   fi
   ;;
 
@@ -156,7 +156,7 @@ show)
   [ -n "$sha" ] || die "show needs a commit"
   ps=$(sql_pathspec "$@")
   q "SELECT op || E'\t' || tbl || E'\t' || COALESCE(after::text, before::text)
-     FROM pgit.show(pgit.rev('$(lit "$sha")'), $ps)"
+     FROM grove.show(grove.rev('$(lit "$sha")'), $ps)"
   ;;
 
 diff)
@@ -167,29 +167,29 @@ diff)
 
   if [ -z "$a" ]; then
     out=$(q "SELECT op || E'\t' || tbl || E'\t' || COALESCE(after::text, before::text)
-             FROM pgit.diff_working($ps)")
+             FROM grove.diff_working($ps)")
     [ -n "$out" ] && printf '%s\n' "$out"
     if [[ " $* " == *" --exit-code "* ]]; then
-      n=$(q "SELECT count(*) FROM pgit.diff_working($ps)")
+      n=$(q "SELECT count(*) FROM grove.diff_working($ps)")
       [ "$n" = "0" ] || exit 1
     fi
     exit 0
   fi
 
   [ -n "$b" ] || die "diff needs two commits, or none for the working tree"
-  A="pgit.rev('$(lit "$a")')"; B="pgit.rev('$(lit "$b")')"
+  A="grove.rev('$(lit "$a")')"; B="grove.rev('$(lit "$b")')"
 
-  if   [[ " $* " == *" --numstat "*    ]]; then out=$(q "SELECT added || E'\t' || removed || E'\t' || tbl FROM pgit.diff_numstat($A,$B,$ps)")
-  elif [[ " $* " == *" --shortstat "*  ]]; then out=$(q "SELECT tables || ' tables changed, ' || insertions || ' insertions(+), ' || deletions || ' deletions(-)' FROM pgit.diff_shortstat($A,$B,$ps)")
-  elif [[ " $* " == *" --name-only "*  ]]; then out=$(q "SELECT tbl FROM pgit.diff_name_only($A,$B,$ps)")
-  elif [[ " $* " == *" --name-status "* ]]; then out=$(q "SELECT status || E'\t' || tbl FROM pgit.diff_name_status($A,$B,$ps)")
-  elif [[ " $* " == *" --stat "*       ]]; then out=$(q "SELECT ' ' || tbl || ' | ' || (inserted+updated+deleted) || ' ' || repeat('+', LEAST(inserted+updated,40)) || repeat('-', LEAST(deleted,40)) FROM pgit.diff_stat($A,$B,$ps)")
-  else out=$(q "SELECT op || E'\t' || tbl || E'\t' || COALESCE(after::text, before::text) FROM pgit.diff($A,$B,$ps)")
+  if   [[ " $* " == *" --numstat "*    ]]; then out=$(q "SELECT added || E'\t' || removed || E'\t' || tbl FROM grove.diff_numstat($A,$B,$ps)")
+  elif [[ " $* " == *" --shortstat "*  ]]; then out=$(q "SELECT tables || ' tables changed, ' || insertions || ' insertions(+), ' || deletions || ' deletions(-)' FROM grove.diff_shortstat($A,$B,$ps)")
+  elif [[ " $* " == *" --name-only "*  ]]; then out=$(q "SELECT tbl FROM grove.diff_name_only($A,$B,$ps)")
+  elif [[ " $* " == *" --name-status "* ]]; then out=$(q "SELECT status || E'\t' || tbl FROM grove.diff_name_status($A,$B,$ps)")
+  elif [[ " $* " == *" --stat "*       ]]; then out=$(q "SELECT ' ' || tbl || ' | ' || (inserted+updated+deleted) || ' ' || repeat('+', LEAST(inserted+updated,40)) || repeat('-', LEAST(deleted,40)) FROM grove.diff_stat($A,$B,$ps)")
+  else out=$(q "SELECT op || E'\t' || tbl || E'\t' || COALESCE(after::text, before::text) FROM grove.diff($A,$B,$ps)")
   fi
 
   [ -n "$out" ] && printf "%s\n" "$out"
   if [[ " $* " == *" --exit-code "* ]]; then
-    n=$(q "SELECT count(*) FROM pgit.diff($A,$B,$ps)")
+    n=$(q "SELECT count(*) FROM grove.diff($A,$B,$ps)")
     [ "$n" = "0" ] || exit 1
   fi
   ;;
@@ -198,9 +198,9 @@ blame)
   allow "" "$@"
   mapfile -t args < <(positional "$@")
   [ -n "${args[0]:-}" ] && [ -n "${args[1]:-}" ] || die "blame needs a table and a key"
-  q "SELECT COALESCE(pgit.short_sha(commit_sha),'0000000') || ' (' || COALESCE(actor,'unknown') ||
+  q "SELECT COALESCE(grove.short_sha(commit_sha),'0000000') || ' (' || COALESCE(actor,'unknown') ||
             ') ' || col || ' = ' || COALESCE(value::text,'null')
-     FROM pgit.blame('$(lit "${args[0]}")','$(lit "${args[1]}")')"
+     FROM grove.blame('$(lit "${args[0]}")','$(lit "${args[1]}")')"
   ;;
 
 branch)
@@ -209,11 +209,11 @@ branch)
   name="${args[0]:-}"
   if [[ " $* " == *" -d "* ]]; then
     [ -n "$name" ] || die "branch -d needs a name"
-    q "SELECT pgit.delete_branch('$(lit "$name")')" >/dev/null
+    q "SELECT grove.delete_branch('$(lit "$name")')" >/dev/null
   elif [ -n "$name" ]; then
-    q "SELECT pgit.branch('$(lit "$name")')" >/dev/null
+    q "SELECT grove.branch('$(lit "$name")')" >/dev/null
   else
-    q "SELECT CASE WHEN is_head THEN '* ' ELSE '  ' END || name FROM pgit.branches()"
+    q "SELECT CASE WHEN is_head THEN '* ' ELSE '  ' END || name FROM grove.branches()"
   fi
   ;;
 
@@ -222,7 +222,7 @@ checkout)
   name=$(positional "$@" | head -1)
   [ -n "$name" ] || die "checkout needs a branch"
   force=false; [[ " $* " == *" -f "* ]] && force=true
-  n=$(q "SELECT pgit.checkout('$(lit "$name")', $force)") || exit 1
+  n=$(q "SELECT grove.checkout('$(lit "$name")', $force)") || exit 1
   echo "Switched to branch '$name' ($n rows updated)"
   ;;
 
@@ -233,23 +233,23 @@ commit)
     case "$1" in -m) msg="${2:-}"; shift 2 ;; *) shift ;; esac
   done
   [ -n "$msg" ] || die "commit needs -m <message>"
-  sha=$(q "SELECT encode(pgit.commit('$(lit "$msg")'),'hex')") || exit 1
-  echo "[$(q "SELECT pgit.head()") ${sha:0:7}] $msg"
+  sha=$(q "SELECT encode(grove.commit('$(lit "$msg")'),'hex')") || exit 1
+  echo "[$(q "SELECT grove.head()") ${sha:0:7}] $msg"
   ;;
 
 merge)
   allow "-X -s --continue --abort" "$@"
-  mid=$(q "SELECT COALESCE(max(id)::text,'') FROM pgit.merges")
+  mid=$(q "SELECT COALESCE(max(id)::text,'') FROM grove.merges")
 
   if [[ " $* " == *" --abort "* ]]; then
     [ -n "$mid" ] || die "no merge in progress"
-    q "SELECT pgit.merge_abort($mid)" >/dev/null && echo "merge aborted"
+    q "SELECT grove.merge_abort($mid)" >/dev/null && echo "merge aborted"
     exit 0
   fi
 
   if [[ " $* " == *" --continue "* ]]; then
     [ -n "$mid" ] || die "no merge in progress"
-    q "SELECT pgit.merge_finish($mid)" >/dev/null || exit 1
+    q "SELECT grove.merge_finish($mid)" >/dev/null || exit 1
     echo "merge complete"
     exit 0
   fi
@@ -272,16 +272,16 @@ merge)
     arr=""
     for a in "${names[@]}"; do arr="$arr,'$(lit "$a")'"; done
     arr="ARRAY[${arr:1}]"
-    q "SELECT pgit.merge_octopus($arr)" >/dev/null || exit 1
+    q "SELECT grove.merge_octopus($arr)" >/dev/null || exit 1
     echo "merged ${names[*]}"
     exit 0
   fi
 
   name="${names[0]}"
   optsql="NULL"; [ -n "$opt" ] && optsql="'$(lit "$opt")'"
-  n=$(q "SELECT pgit.merge('$(lit "$name")', NULL, $optsql)") || exit 1
+  n=$(q "SELECT grove.merge('$(lit "$name")', NULL, $optsql)") || exit 1
   if [ "$n" = "0" ]; then echo "merged $name"; else
-    echo "$n conflict(s); resolve with 'pgit resolve', then 'pgit merge --continue'"; exit 1
+    echo "$n conflict(s); resolve with 'grove resolve', then 'grove merge --continue'"; exit 1
   fi
   ;;
 
@@ -290,13 +290,13 @@ tag)
   mapfile -t args < <(positional "$@")
   if [[ " $* " == *" -d "* ]]; then
     [ -n "${args[0]:-}" ] || die "tag -d needs a name"
-    q "SELECT pgit.tag_delete('$(lit "${args[0]}")')" >/dev/null && echo "deleted tag ${args[0]}"
+    q "SELECT grove.tag_delete('$(lit "${args[0]}")')" >/dev/null && echo "deleted tag ${args[0]}"
   elif [ -n "${args[0]:-}" ]; then
     f=false; [[ " $* " == *" -f "* ]] && f=true
-    q "SELECT pgit.tag('$(lit "${args[0]}")','$(lit "${args[1]:-HEAD}")',NULL,$f)" >/dev/null \
+    q "SELECT grove.tag('$(lit "${args[0]}")','$(lit "${args[1]:-HEAD}")',NULL,$f)" >/dev/null \
       && echo "tagged ${args[0]}"
   else
-    q "SELECT name || E'\t' || pgit.short_sha(sha) || COALESCE(E'\t' || message,'') FROM pgit.tags ORDER BY name"
+    q "SELECT name || E'\t' || grove.short_sha(sha) || COALESCE(E'\t' || message,'') FROM grove.tags ORDER BY name"
   fi
   ;;
 
@@ -305,7 +305,7 @@ restore)
   rev=$(positional "$@" | head -1)
   ps=$(pathspec_of "$@")
   [ -n "$rev" ] && [ -n "$ps" ] || die "restore needs <revision> -- <table[:key]>"
-  n=$(q "SELECT pgit.restore('$(lit "$rev")','$(lit "$ps")')") || exit 1
+  n=$(q "SELECT grove.restore('$(lit "$rev")','$(lit "$ps")')") || exit 1
   echo "restored $n row(s) from $rev"
   ;;
 
@@ -313,9 +313,9 @@ stash)
   allow "" "$@"
   sub=$(positional "$@" | head -1)
   case "${sub:-push}" in
-    push) echo "saved $(q "SELECT pgit.stash_push('stash')")" ;;
-    pop)  echo "applied $(q "SELECT pgit.stash_pop()") change(s)" ;;
-    list) q "SELECT slot || E'\t' || message FROM pgit.stash_list()" ;;
+    push) echo "saved $(q "SELECT grove.stash_push('stash')")" ;;
+    pop)  echo "applied $(q "SELECT grove.stash_pop()") change(s)" ;;
+    list) q "SELECT slot || E'\t' || message FROM grove.stash_list()" ;;
     *)    die "stash takes push, pop or list" ;;
   esac
   ;;
@@ -325,11 +325,11 @@ bisect)
   mapfile -t args < <(positional "$@")
   case "${args[0]:-}" in
     start) [ -n "${args[1]:-}" ] && [ -n "${args[2]:-}" ] || die "bisect start needs <good> <bad>"
-           echo "testing $(q "SELECT pgit.short_sha(pgit.bisect_start('$(lit "${args[1]}")','$(lit "${args[2]}")'))")" ;;
-    good)  echo "testing $(q "SELECT COALESCE(pgit.short_sha(pgit.bisect_good()),'done')")" ;;
-    bad)   echo "testing $(q "SELECT COALESCE(pgit.short_sha(pgit.bisect_bad()),'done')")" ;;
-    reset) q "SELECT pgit.bisect_reset()" >/dev/null && echo "bisect reset" ;;
-    *)     q "SELECT 'good ' || pgit.short_sha(good) || E'\nbad  ' || pgit.short_sha(bad) FROM pgit.bisect" ;;
+           echo "testing $(q "SELECT grove.short_sha(grove.bisect_start('$(lit "${args[1]}")','$(lit "${args[2]}")'))")" ;;
+    good)  echo "testing $(q "SELECT COALESCE(grove.short_sha(grove.bisect_good()),'done')")" ;;
+    bad)   echo "testing $(q "SELECT COALESCE(grove.short_sha(grove.bisect_bad()),'done')")" ;;
+    reset) q "SELECT grove.bisect_reset()" >/dev/null && echo "bisect reset" ;;
+    *)     q "SELECT 'good ' || grove.short_sha(good) || E'\nbad  ' || grove.short_sha(bad) FROM grove.bisect" ;;
   esac
   ;;
 
@@ -339,7 +339,7 @@ prune)
   prev=""
   for a in "$@"; do [ "$prev" = "--before" ] && before="$a"; prev="$a"; done
   [ -n "$before" ] || die "prune needs --before <timestamp>"
-  n=$(q "SELECT pgit.prune('$(lit "$before")'::timestamptz)") || exit 1
+  n=$(q "SELECT grove.prune('$(lit "$before")'::timestamptz)") || exit 1
   echo "pruned $n commit(s) and collected unreachable nodes"
   ;;
 
@@ -348,16 +348,16 @@ remote)
   mapfile -t args < <(positional "$@")
   if [ "${args[0]:-}" = "add" ]; then
     [ -n "${args[1]:-}" ] && [ -n "${args[2]:-}" ] || die "remote add needs <name> <url>"
-    q "SELECT pgit.remote_add('$(lit "${args[1]}")','$(lit "${args[2]}")')" >/dev/null
+    q "SELECT grove.remote_add('$(lit "${args[1]}")','$(lit "${args[2]}")')" >/dev/null
     echo "added remote ${args[1]}"
   else
-    q "SELECT name || E'\t' || url FROM pgit.remotes ORDER BY name"
+    q "SELECT name || E'\t' || url FROM grove.remotes ORDER BY name"
   fi
   ;;
 
 have)
   allow "" "$@"
-  q "SELECT COALESCE(jsonb_agg(encode(x,'hex'))::text,'[]') FROM unnest(pgit.have()) x"
+  q "SELECT COALESCE(jsonb_agg(encode(x,'hex'))::text,'[]') FROM unnest(grove.have()) x"
   ;;
 
 bundle)
@@ -370,7 +370,7 @@ bundle)
     [ "$prev" = "--have" ] && hv="COALESCE((SELECT array_agg(decode(x,'hex')) FROM jsonb_array_elements_text(\$\$$(cat "$a")\$\$::jsonb) x),'{}'::bytea[])"
     prev="$a"
   done
-  q "SELECT pgit.bundle(ARRAY['$(lit "$ref")'], $hv)"
+  q "SELECT grove.bundle(ARRAY['$(lit "$ref")'], $hv)"
   ;;
 
 clone)
@@ -379,7 +379,7 @@ clone)
   [ -n "$f" ] || die "clone needs a bundle file"
   br=main; prev=""
   for a in "$@"; do [ "$prev" = "--branch" ] && br="$a"; prev="$a"; done
-  n=$(qf "$f" "SELECT pgit.clone_from(:'b'::jsonb, '$(lit "$br")');") || exit 1
+  n=$(qf "$f" "SELECT grove.clone_from(:'b'::jsonb, '$(lit "$br")');") || exit 1
   echo "cloned $br, created $n table(s)"
   ;;
 
@@ -387,7 +387,7 @@ fetch)
   allow "" "$@"
   mapfile -t args < <(positional "$@")
   [ -n "${args[0]:-}" ] && [ -n "${args[1]:-}" ] || die "fetch needs <remote> <bundle-file>"
-  n=$(qf "${args[1]}" "SELECT pgit.fetch('$(lit "${args[0]}")', :'b'::jsonb);") || exit 1
+  n=$(qf "${args[1]}" "SELECT grove.fetch('$(lit "${args[0]}")', :'b'::jsonb);") || exit 1
   echo "fetched $n object(s) into remotes/${args[0]}/*"
   ;;
 
@@ -396,7 +396,7 @@ receive)
   f=$(positional "$@" | head -1)
   [ -n "$f" ] || die "receive needs a bundle file"
   force=false; [[ " $* " == *" --force "* ]] && force=true
-  n=$(qf "$f" "SELECT pgit.receive(:'b'::jsonb, $force);") || exit 1
+  n=$(qf "$f" "SELECT grove.receive(:'b'::jsonb, $force);") || exit 1
   echo "received $n object(s)"
   ;;
 
@@ -409,16 +409,16 @@ notes)
   case "${args[0]:-show}" in
     add)  rev="${args[1]:-HEAD}"
           [ -n "$msg" ] || die "notes add needs -m <text>"
-          q "SELECT pgit.note_add('$(lit "$rev")','$(lit "$msg")')" >/dev/null || exit 1
-          echo "noted $(q "SELECT pgit.short_sha(pgit.rev('$(lit "$rev")'))")" ;;
+          q "SELECT grove.note_add('$(lit "$rev")','$(lit "$msg")')" >/dev/null || exit 1
+          echo "noted $(q "SELECT grove.short_sha(grove.rev('$(lit "$rev")'))")" ;;
     show) rev="${args[1]:-HEAD}"
-          out=$(q "SELECT COALESCE(pgit.note_show('$(lit "$rev")'),'')") || exit 1
+          out=$(q "SELECT COALESCE(grove.note_show('$(lit "$rev")'),'')") || exit 1
           [ -n "$out" ] || die "no note on $rev"
           echo "$out" ;;
     rm)   rev="${args[1]:-HEAD}"
-          q "SELECT pgit.note_delete('$(lit "$rev")')" >/dev/null || exit 1
+          q "SELECT grove.note_delete('$(lit "$rev")')" >/dev/null || exit 1
           echo "removed note on $rev" ;;
-    list) q "SELECT pgit.short_sha(commit_sha) || E'\t' || note FROM pgit.notes ORDER BY at DESC" ;;
+    list) q "SELECT grove.short_sha(commit_sha) || E'\t' || note FROM grove.notes ORDER BY at DESC" ;;
     *)    die "notes takes add, show, rm or list" ;;
   esac
   ;;
@@ -427,8 +427,8 @@ rerere)
   allow "" "$@"
   sub=$(positional "$@" | head -1)
   case "${sub:-status}" in
-    status) q "SELECT tbl || E'\t' || resolution_kind || E'\t' || used || ' use(s)' FROM pgit.rerere ORDER BY at DESC" ;;
-    forget) n=$(q "WITH d AS (DELETE FROM pgit.rerere RETURNING 1) SELECT count(*) FROM d")
+    status) q "SELECT tbl || E'\t' || resolution_kind || E'\t' || used || ' use(s)' FROM grove.rerere ORDER BY at DESC" ;;
+    forget) n=$(q "WITH d AS (DELETE FROM grove.rerere RETURNING 1) SELECT count(*) FROM d")
             echo "forgot $n recorded resolution(s)" ;;
     *)      die "rerere takes status or forget" ;;
   esac
@@ -439,13 +439,13 @@ renames)
   mapfile -t args < <(positional "$@")
   [ -n "${args[0]:-}" ] && [ -n "${args[1]:-}" ] || die "renames needs <a> <b>"
   q "SELECT old_tbl || E'\t' || new_tbl || E'\t' || kind || E'\t' || round(similarity * 100) || '%'
-     FROM pgit.table_renames(pgit.rev('$(lit "${args[0]}")'), pgit.rev('$(lit "${args[1]}")'))
+     FROM grove.table_renames(grove.rev('$(lit "${args[0]}")'), grove.rev('$(lit "${args[1]}")'))
      ORDER BY similarity DESC, old_tbl" || exit 1
   ;;
 
 fsck)
   allow "" "$@"
-  out=$(q "SELECT problem || E'\t' || detail FROM pgit.fsck()")
+  out=$(q "SELECT problem || E'\t' || detail FROM grove.fsck()")
   if [ -z "$out" ]; then echo "ok: no problems found"; exit 0; fi
   printf '%s\n' "$out" >&2
   echo "$(printf '%s\n' "$out" | wc -l | tr -d ' ') problem(s)" >&2
@@ -458,32 +458,32 @@ reset)
   [[ " $* " == *" --soft "* ]] && mode=soft
   spec=$(positional "$@" | head -1)
   [ -n "$spec" ] || die "reset needs a revision"
-  n=$(q "SELECT pgit.reset('$(lit "$spec")', '$mode')") || exit 1
+  n=$(q "SELECT grove.reset('$(lit "$spec")', '$mode')") || exit 1
   echo "reset --$mode to $spec ($n rows rewritten)"
   ;;
 
 reflog)
   allow "" "$@"
-  q "SELECT pgit.short_sha(new_sha) || ' ' || ref || ': ' || action ||
-            COALESCE(' (was ' || pgit.short_sha(old_sha) || ')','')
-     FROM pgit.reflog ORDER BY id DESC"
+  q "SELECT grove.short_sha(new_sha) || ' ' || ref || ': ' || action ||
+            COALESCE(' (was ' || grove.short_sha(old_sha) || ')','')
+     FROM grove.reflog ORDER BY id DESC"
   ;;
 
 conflicts)
   allow "" "$@"
   q "SELECT tbl || E'\t' || k || E'\t' || COALESCE(col,'(row)') || E'\t' ||
             CASE WHEN resolved THEN 'resolved:' || resolution_kind ELSE 'UNRESOLVED' END
-     FROM pgit.conflicts ORDER BY id"
+     FROM grove.conflicts ORDER BY id"
   ;;
 
 resolve)
   allow "" "$@"
   mapfile -t args < <(positional "$@")
-  mid=$(q "SELECT COALESCE(max(id)::text,'') FROM pgit.merges")
+  mid=$(q "SELECT COALESCE(max(id)::text,'') FROM grove.merges")
   [ -n "$mid" ] || die "no merge in progress"
   [ -n "${args[0]:-}" ] && [ -n "${args[1]:-}" ] && [ -n "${args[2]:-}" ] \
     || die "resolve needs <table> <key> <ours|theirs|base|delete>"
-  q "SELECT pgit.resolve_conflict($mid, '$(lit "${args[0]}")', '$(lit "${args[1]}")', '$(lit "${args[2]}")')" >/dev/null || exit 1
+  q "SELECT grove.resolve_conflict($mid, '$(lit "${args[0]}")', '$(lit "${args[1]}")', '$(lit "${args[2]}")')" >/dev/null || exit 1
   echo "resolved ${args[0]} ${args[1]} as ${args[2]}"
   ;;
 
@@ -493,24 +493,24 @@ rebase|cherry-pick|revert|track|untrack)
     *)      allow "" "$@" ;;
   esac
   if [ "$cmd" = rebase ] && [[ " $* " == *" --abort "* ]]; then
-    q "SELECT pgit.rebase_abort()" >/dev/null && echo "rebase aborted"
+    q "SELECT grove.rebase_abort()" >/dev/null && echo "rebase aborted"
     exit $?
   fi
   arg=$(positional "$@" | head -1)
   [ -n "$arg" ] || die "$cmd needs an argument"
   case "$cmd" in
-    rebase)      n=$(q "SELECT pgit.rebase('$(lit "$arg")')")       || exit 1
+    rebase)      n=$(q "SELECT grove.rebase('$(lit "$arg")')")       || exit 1
                  [ "$n" = "0" ] && echo "rebased onto $arg" || { echo "$n conflict(s), rebase stopped"; exit 1; } ;;
-    cherry-pick) n=$(q "SELECT pgit.cherry_pick(pgit.rev('$(lit "$arg")'))") || exit 1
+    cherry-pick) n=$(q "SELECT grove.cherry_pick(grove.rev('$(lit "$arg")'))") || exit 1
                  [ "$n" = "0" ] && echo "picked $arg" || { echo "$n conflict(s), nothing applied"; exit 1; } ;;
-    revert)      sha=$(q "SELECT encode(pgit.revert(pgit.rev('$(lit "$arg")')),'hex')") || exit 1
-                 echo "[$(q "SELECT pgit.head()") ${sha:0:7}] reverted $arg" ;;
-    track)       q "SELECT pgit.track('$(lit "$arg")')" >/dev/null && echo "tracking $arg" ;;
-    untrack)     q "SELECT pgit.untrack('$(lit "$arg")')" >/dev/null && echo "untracked $arg" ;;
+    revert)      sha=$(q "SELECT encode(grove.revert(grove.rev('$(lit "$arg")')),'hex')") || exit 1
+                 echo "[$(q "SELECT grove.head()") ${sha:0:7}] reverted $arg" ;;
+    track)       q "SELECT grove.track('$(lit "$arg")')" >/dev/null && echo "tracking $arg" ;;
+    untrack)     q "SELECT grove.untrack('$(lit "$arg")')" >/dev/null && echo "untracked $arg" ;;
   esac
   ;;
 
 *)
-  die "'$cmd' is not a pgit command. See 'pgit help'."
+  die "'$cmd' is not a grove command. See 'grove help'."
   ;;
 esac

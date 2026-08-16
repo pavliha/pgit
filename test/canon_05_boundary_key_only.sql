@@ -11,11 +11,11 @@ CREATE TABLE k3 (LIKE k1 INCLUDING ALL);
 INSERT INTO k3 SELECT id, 'completely different payload' FROM k1;
 
 CREATE TEMP TABLE b1 AS
-  SELECT key_bytes FROM pgit.row_hashes('k1') WHERE pgit.is_boundary(key_bytes);
+  SELECT key_bytes FROM grove.row_hashes('k1') WHERE grove.is_boundary(key_bytes);
 CREATE TEMP TABLE b2 AS
-  SELECT key_bytes FROM pgit.row_hashes('k2') WHERE pgit.is_boundary(key_bytes);
+  SELECT key_bytes FROM grove.row_hashes('k2') WHERE grove.is_boundary(key_bytes);
 CREATE TEMP TABLE b3 AS
-  SELECT key_bytes FROM pgit.row_hashes('k3') WHERE pgit.is_boundary(key_bytes);
+  SELECT key_bytes FROM grove.row_hashes('k3') WHERE grove.is_boundary(key_bytes);
 
 SELECT ok(
   NOT EXISTS (SELECT key_bytes FROM b1 EXCEPT SELECT key_bytes FROM b2)

@@ -36,7 +36,7 @@ entry and a WAL record. Measured on a 200k-row fixture with 22 commits: 20,583 n
 | zlib per object, and the pack compresses as a unit | partly — TOAST compresses per node, not per pack |
 | loose objects for new writes, packed later by `gc` | maps exactly onto the current write/`repack` split |
 
-The one thing pgit does not have is the pack: a single value holding many nodes, delta-chained
+The one thing grove does not have is the pack: a single value holding many nodes, delta-chained
 against each other, compressed as a unit.
 
 That is not a stylistic difference. An earlier experiment already proved the mechanism from the other
@@ -55,7 +55,7 @@ node := [count uint32]
         [img_off   count × uint32][image bytes]
 ```
 
-- the node's own hash is `pgit.hash(substring(rec, 5, count*32))` — one slice, as it is today
+- the node's own hash is `grove.hash(substring(rec, 5, count*32))` — one slice, as it is today
 - entry *i*'s key and image are two offset reads and a `substring`
 - **the whole node is one byte string, so a delta over it covers everything** — which is the property
   the current three-column layout lacks and the reason `gc` collapsed to 10%
@@ -66,15 +66,15 @@ none of the canonicalisation changes.
 ### 2. Packs: many nodes per row
 
 ```sql
-pgit.packs      (id bigserial, data bytea)          -- many nodes, delta-chained, one value
-pgit.pack_index (hash bytea primary key, pack_id, offset int, length int)
-pgit.nodes      (hash bytea primary key, rec bytea) -- loose, written by commits
+grove.packs      (id bigserial, data bytea)          -- many nodes, delta-chained, one value
+grove.pack_index (hash bytea primary key, pack_id, offset int, length int)
+grove.nodes      (hash bytea primary key, rec bytea) -- loose, written by commits
 ```
 
 - commits write **loose** nodes, as now, so the write path keeps its current speed
 - `gc` rewrites loose nodes into a pack: sort by (level, first key, seq), delta each against the
   previous, concatenate, store as one `bytea`
-- reads check `pgit.nodes` first, then `pack_index`
+- reads check `grove.nodes` first, then `pack_index`
 
 One TOASTed value per pack means one compression unit spanning thousands of nodes, one heap tuple,
 one WAL record. This is the change that makes `gc` behave like git's.
@@ -83,7 +83,7 @@ one WAL record. This is the change that makes `gc` behave like git's.
 
 Write amplification is ~15 µs per changed row, and it is the journal's *content*: two full row images
 per change. Profiling put `to_jsonb` at ~5% — the rest is heap, WAL and index maintenance on
-`pgit.changes`.
+`grove.changes`.
 
 Store the row hash and the changed columns rather than both whole images. `blame` reads a column's
 value from the tree at the commit that changed it; the revert guard compares hashes. This is the open
@@ -108,20 +108,20 @@ never revisited after the packed format brought it to 3.7×, and it generalised 
 small enough that git's whole-file cost is invisible. Measured properly, the two costs scale
 differently and there is a crossover, not a verdict:
 
-| same 12.7M rows | git | pgit |
+| same 12.7M rows | git | grove |
 | --- | --- | --- |
 | 28 MB of it, ~5,300 changed rows | **492 ms** | 1,801 ms |
 | all 1.0 GB of it, 100 changed rows | 12,062 ms | **527 ms** |
 
 **git's commit is O(file)** — it re-hashes and re-compresses everything however little changed.
-**pgit's is O(changed)** — it rewrites only the chunks holding changed rows. Below roughly 18 MB for
+**grove's is O(changed)** — it rewrites only the chunks holding changed rows. Below roughly 18 MB for
 a 100-row change git
-wins on constants; above it pgit wins on complexity, and the gap grows linearly. At 1 GB pgit is
+wins on constants; above it grove wins on complexity, and the gap grows linearly. At 1 GB grove is
 **22.9× faster**, and that is the size range a database lives in.
 
 So the target is not parity — parity is already passed where it matters. What is left is the constant
 factor on small datasets, and that is what packs and a leaner journal are for. Absolute parity on a
-28 MB file is still unlikely: git hashes a byte stream and appends it, while pgit canonicalises every
+28 MB file is still unlikely: git hashes a byte stream and appends it, while grove canonicalises every
 changed row and writes durably under MVCC with WAL. That is a constant, not a scaling wall, and it is
 worth much less than it appeared.
 
@@ -130,7 +130,7 @@ worth much less than it appeared.
 Per-field access into a binary record from SQL means `substring` and `get_byte` calls where jsonb
 gets a C-optimised accessor. A C extension would make the node codec fast and unambiguous.
 
-The project rejected C for one reason: distribution. No extension to install is what makes pgit work
+The project rejected C for one reason: distribution. No extension to install is what makes grove work
 unchanged on RDS, Neon and Supabase, and that is worth more than the constant factor. If a build
 target ever exists, the node codec is the first and probably only thing worth moving.
 
@@ -163,7 +163,7 @@ shape set in 23 seconds, so each can be measured before the next is started.
    made this step look dangerous was measured and is not real — per-entry `substring` + cast against
    one `jsonb_array_elements` is 2.7 ms vs 1.15 ms per 200 nodes, negligible beside the terms above.
    *Checkpoint met: 532 checks green, storage unchanged at 53% off, `repack` 29 s → 24 s.*
-3. **Packs.** Adds `pgit.packs`, `pgit.pack_index`, and a `gc` that writes packs.
+3. **Packs.** Adds `grove.packs`, `grove.pack_index`, and a `gc` that writes packs.
    *Checkpoint: store after `gc` versus the 10 MB git achieves on the same data.*
 4. **Slim the journal.** Independent of 1–3, and the only thing that moves write amplification.
    *Checkpoint: the 10,000-row UPDATE, currently 146–183 ms against a 26–30 ms baseline.*

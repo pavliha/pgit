@@ -6,14 +6,14 @@ TRUNCATE fuzz_log;
 SET fuzz.ops  = :ops;
 SET fuzz.seed = :seed;
 SET fuzz.rows = :rows;
-UPDATE pgit.meta SET value = :'chunk' WHERE key = 'chunk_target';
+UPDATE grove.meta SET value = :'chunk' WHERE key = 'chunk_target';
 
 DO $fuzz$
 DECLARE
   ops     int := current_setting('fuzz.ops')::int;
   seedv   float8 := current_setting('fuzz.seed')::float8;
   tbls    text[] := ARRAY['fz_a', 'fz_b'];
-  hostile text[] := ARRAY['t','s','n','o','v','k','e','cols','pgit_t','img','hash','keys'];
+  hostile text[] := ARRAY['t','s','n','o','v','k','e','cols','grove_t','img','hash','keys'];
   types   text[] := ARRAY['int','text','numeric(10,2)','timestamptz','boolean','jsonb','bytea','varchar(40)','int[]'];
   i       int;
   pick    int;
@@ -39,9 +39,9 @@ BEGIN
                                % array_length(hostile,1)]);
     EXECUTE format('INSERT INTO %I SELECT g, ''v'' || g, g FROM generate_series(1, %s) g',
                    tb, current_setting('fuzz.rows')::int);
-    PERFORM pgit.track(tb::regclass);
+    PERFORM grove.track(tb::regclass);
   END LOOP;
-  PERFORM pgit.commit('fuzz base', 'main');
+  PERFORM grove.commit('fuzz base', 'main');
 
   FOR i IN 1..ops LOOP
     tb   := tbls[1 + floor(random() * array_length(tbls,1))::int];
@@ -81,9 +81,9 @@ BEGIN
 
       ELSIF pick = 9 THEN
         br := 'b' || i;
-        PERFORM pgit.branch(br, pgit.resolve(pgit.head()));
+        PERFORM grove.branch(br, grove.resolve(grove.head()));
         branches := branches || br;
-        PERFORM pgit.checkout(br);
+        PERFORM grove.checkout(br);
         INSERT INTO fuzz_log VALUES (i, 'branch+checkout', br);
 
       ELSIF pick = 10 AND i > 3 THEN
@@ -93,7 +93,7 @@ BEGIN
         ORDER BY a.attnum LIMIT 1;
         IF col IS NOT NULL THEN
           EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 13 = 0', tb, col, 'pruned-' || i);
-          PERFORM pgit.prune((SELECT c.at FROM pgit.commits c ORDER BY c.at DESC OFFSET 1 LIMIT 1));
+          PERFORM grove.prune((SELECT c.at FROM grove.commits c ORDER BY c.at DESC OFFSET 1 LIMIT 1));
           INSERT INTO fuzz_log VALUES (i, 'change then prune', tb || '.' || col);
         END IF;
 
@@ -104,26 +104,26 @@ BEGIN
         ORDER BY a.attnum LIMIT 1;
 
         IF col IS NOT NULL THEN
-          home := pgit.head();
+          home := grove.head();
           br   := 'm' || i;
-          PERFORM pgit.branch(br);
-          PERFORM pgit.checkout(br);
+          PERFORM grove.branch(br);
+          PERFORM grove.checkout(br);
           EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 11 = 0', tb, col, 'theirs-' || i);
-          PERFORM pgit.commit('theirs ' || i, pgit.head(), now(), true);
-          PERFORM pgit.checkout(home);
+          PERFORM grove.commit('theirs ' || i, grove.head(), now(), true);
+          PERFORM grove.checkout(home);
           EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 11 = 0', tb, col, 'ours-' || i);
-          PERFORM pgit.commit('ours ' || i, pgit.head(), now(), true);
+          PERFORM grove.commit('ours ' || i, grove.head(), now(), true);
           branches := branches || br;
 
-          cnt := pgit.merge(br, 'fuzz merge ' || i);
+          cnt := grove.merge(br, 'fuzz merge ' || i);
           IF cnt > 0 THEN
-            SELECT max(m.id) INTO mid FROM pgit.merges m;
+            SELECT max(m.id) INTO mid FROM grove.merges m;
             IF random() < 0.5 THEN
-              PERFORM pgit.resolve_all(mid, CASE WHEN random() < 0.5 THEN 'ours' ELSE 'theirs' END);
-              PERFORM pgit.merge_finish(mid);
+              PERFORM grove.resolve_all(mid, CASE WHEN random() < 0.5 THEN 'ours' ELSE 'theirs' END);
+              PERFORM grove.merge_finish(mid);
               INSERT INTO fuzz_log VALUES (i, 'merge resolved', br || ' (' || cnt || ' conflicts)');
             ELSE
-              PERFORM pgit.merge_abort(mid);
+              PERFORM grove.merge_abort(mid);
               INSERT INTO fuzz_log VALUES (i, 'merge aborted', br || ' (' || cnt || ' conflicts)');
             END IF;
           ELSE
@@ -138,25 +138,25 @@ BEGIN
         ORDER BY a.attnum LIMIT 1;
 
         IF col IS NOT NULL THEN
-          home := pgit.head();
+          home := grove.head();
           br   := 'oa' || i;
           br2  := 'ob' || i;
 
-          PERFORM pgit.branch(br);
-          PERFORM pgit.checkout(br);
+          PERFORM grove.branch(br);
+          PERFORM grove.checkout(br);
           EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 17 = 0 AND id %% 2 = 0', tb, col, 'oct-a-' || i);
-          PERFORM pgit.commit('octopus a ' || i, pgit.head(), now(), true);
-          PERFORM pgit.checkout(home);
+          PERFORM grove.commit('octopus a ' || i, grove.head(), now(), true);
+          PERFORM grove.checkout(home);
 
-          PERFORM pgit.branch(br2);
-          PERFORM pgit.checkout(br2);
+          PERFORM grove.branch(br2);
+          PERFORM grove.checkout(br2);
           EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 19 = 0 AND id %% 2 = 1', tb, col, 'oct-b-' || i);
-          PERFORM pgit.commit('octopus b ' || i, pgit.head(), now(), true);
-          PERFORM pgit.checkout(home);
+          PERFORM grove.commit('octopus b ' || i, grove.head(), now(), true);
+          PERFORM grove.checkout(home);
 
           branches := branches || br || br2;
           BEGIN
-            cnt := pgit.merge_octopus(ARRAY[br, br2], 'fuzz octopus ' || i);
+            cnt := grove.merge_octopus(ARRAY[br, br2], 'fuzz octopus ' || i);
             INSERT INTO fuzz_log VALUES (i, 'octopus merged', br || ',' || br2);
           EXCEPTION WHEN others THEN
             INSERT INTO fuzz_log VALUES (i, 'octopus refused', SQLERRM);
@@ -170,9 +170,9 @@ BEGIN
         ORDER BY a.attnum LIMIT 1;
         IF col IS NOT NULL THEN
           EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 23 = 0', tb, col, 'to-revert-' || i);
-          PERFORM pgit.commit('to revert ' || i, pgit.head(), now(), true);
+          PERFORM grove.commit('to revert ' || i, grove.head(), now(), true);
           BEGIN
-            PERFORM pgit.revert(pgit.resolve(pgit.head()));
+            PERFORM grove.revert(grove.resolve(grove.head()));
             INSERT INTO fuzz_log VALUES (i, 'revert', tb);
           EXCEPTION WHEN others THEN
             INSERT INTO fuzz_log VALUES (i, 'revert refused', SQLERRM);
@@ -185,16 +185,16 @@ BEGIN
           AND a.attname <> 'id' AND a.atttypid = 'text'::regtype
         ORDER BY a.attnum LIMIT 1;
         IF col IS NOT NULL THEN
-          home := pgit.head();
+          home := grove.head();
           br   := 'cp' || i;
-          PERFORM pgit.branch(br);
-          PERFORM pgit.checkout(br);
+          PERFORM grove.branch(br);
+          PERFORM grove.checkout(br);
           EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 29 = 0', tb, col, 'picked-' || i);
-          PERFORM pgit.commit('pick source ' || i, pgit.head(), now(), true);
-          PERFORM pgit.checkout(home);
+          PERFORM grove.commit('pick source ' || i, grove.head(), now(), true);
+          PERFORM grove.checkout(home);
           branches := branches || br;
           BEGIN
-            cnt := pgit.cherry_pick(pgit.resolve(br), 'fuzz pick ' || i);
+            cnt := grove.cherry_pick(grove.resolve(br), 'fuzz pick ' || i);
             INSERT INTO fuzz_log VALUES (i, 'cherry_pick', br || ' -> ' || cnt);
           EXCEPTION WHEN others THEN
             INSERT INTO fuzz_log VALUES (i, 'cherry_pick refused', SQLERRM);
@@ -207,21 +207,21 @@ BEGIN
           AND a.attname <> 'id' AND a.atttypid = 'text'::regtype
         ORDER BY a.attnum LIMIT 1;
         IF col IS NOT NULL THEN
-          home := pgit.head();
+          home := grove.head();
           br   := 'rb' || i;
-          PERFORM pgit.branch(br);
-          PERFORM pgit.checkout(br);
+          PERFORM grove.branch(br);
+          PERFORM grove.checkout(br);
           EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 31 = 0', tb, col, 'rebase-side-' || i);
-          PERFORM pgit.commit('rebase side ' || i, pgit.head(), now(), true);
-          PERFORM pgit.checkout(home);
+          PERFORM grove.commit('rebase side ' || i, grove.head(), now(), true);
+          PERFORM grove.checkout(home);
           EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 37 = 0', tb, col, 'rebase-home-' || i);
-          PERFORM pgit.commit('rebase home ' || i, pgit.head(), now(), true);
-          PERFORM pgit.checkout(br);
+          PERFORM grove.commit('rebase home ' || i, grove.head(), now(), true);
+          PERFORM grove.checkout(br);
           branches := branches || br;
           BEGIN
-            cnt := pgit.rebase(home);
+            cnt := grove.rebase(home);
             IF cnt > 0 THEN
-              PERFORM pgit.rebase_abort();
+              PERFORM grove.rebase_abort();
               INSERT INTO fuzz_log VALUES (i, 'rebase aborted', home || ' (' || cnt || ' conflicts)');
             ELSE
               INSERT INTO fuzz_log VALUES (i, 'rebase', home);
@@ -234,10 +234,10 @@ BEGIN
       ELSE
         IF array_length(branches,1) > 1 AND random() < 0.5 THEN
           br := branches[1 + floor(random() * array_length(branches,1))::int];
-          PERFORM pgit.checkout(br);
+          PERFORM grove.checkout(br);
           INSERT INTO fuzz_log VALUES (i, 'checkout', br);
         ELSE
-          PERFORM pgit.repack();
+          PERFORM grove.repack();
           INSERT INTO fuzz_log VALUES (i, 'repack', '');
         END IF;
       END IF;
@@ -246,18 +246,18 @@ BEGIN
       CONTINUE;
     END;
 
-    PERFORM pgit.commit('fuzz ' || i, pgit.head(), now(), true);
+    PERFORM grove.commit('fuzz ' || i, grove.head(), now(), true);
 
     SELECT count(*) INTO bad
-    FROM pgit.trees t
-    WHERE t.commit_sha = pgit.resolve(pgit.head())
-      AND pgit.write_tree(t.tbl::regclass) IS DISTINCT FROM t.root_hash;
+    FROM grove.trees t
+    WHERE t.commit_sha = grove.resolve(grove.head())
+      AND grove.write_tree(t.tbl::regclass) IS DISTINCT FROM t.root_hash;
 
     IF bad > 0 THEN
       RAISE EXCEPTION 'fuzz: op % left % tree(s) disagreeing with a rebuild', i, bad;
     END IF;
 
-    SELECT count(*) INTO cnt FROM pgit.fsck();
+    SELECT count(*) INTO cnt FROM grove.fsck();
     IF cnt > 0 THEN
       RAISE EXCEPTION 'fuzz: op % left % fsck problem(s)', i, cnt;
     END IF;

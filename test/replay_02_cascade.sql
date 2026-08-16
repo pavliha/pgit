@@ -8,13 +8,13 @@ CREATE TABLE children (
   note      text
 );
 
-SELECT pgit.track('parents');
-SELECT pgit.track('children');
+SELECT grove.track('parents');
+SELECT grove.track('children');
 
 INSERT INTO parents SELECT g, 'parent-' || g FROM generate_series(1, 20) g;
 INSERT INTO children SELECT g, 1 + (g % 20), 'child-' || g FROM generate_series(1, 100) g;
 
-CREATE TEMP TABLE a AS SELECT pgit.commit('a', 'pavlo') AS sha;
+CREATE TEMP TABLE a AS SELECT grove.commit('a', 'pavlo') AS sha;
 
 DELETE FROM parents WHERE id = 3;
 
@@ -23,14 +23,14 @@ SELECT is(
   'the cascade removed the children'
 );
 
-CREATE TEMP TABLE b AS SELECT pgit.commit('b', 'pavlo') AS sha;
+CREATE TEMP TABLE b AS SELECT grove.commit('b', 'pavlo') AS sha;
 
 SELECT ok(
-  (SELECT count(*) FROM pgit.diff((SELECT sha FROM a), (SELECT sha FROM b), 'children')) > 0,
+  (SELECT count(*) FROM grove.diff((SELECT sha FROM a), (SELECT sha FROM b), 'children')) > 0,
   'the cascaded child deletes were journalled and appear in the diff'
 );
 
-SELECT pgit.revert((SELECT sha FROM b));
+SELECT grove.revert((SELECT sha FROM b));
 
 SELECT is(
   (SELECT count(*) FROM parents WHERE id = 3), 1::bigint,
@@ -38,8 +38,8 @@ SELECT is(
 );
 
 SELECT is(
-  pgit.tree_root('children'),
-  (SELECT root_hash FROM pgit.trees WHERE commit_sha = (SELECT sha FROM a) AND tbl = 'children'),
+  grove.tree_root('children'),
+  (SELECT root_hash FROM grove.trees WHERE commit_sha = (SELECT sha FROM a) AND tbl = 'children'),
   'AC-REPLAY-05: revert restores every cascaded child, by root hash'
 );
 

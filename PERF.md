@@ -46,7 +46,7 @@ no previous tree to reuse in the first case, and no reusable node in the second.
 | Node storage, after a schema change | **195 MB** | none set | a schema change shares no nodes |
 
 **AC-PERF-03 is now measured, by block counts rather than wall clock as the criterion requires.**
-Across a 50-table database, `diff --stat` fetches **494 blocks** from `pgit.nodes` when one table
+Across a 50-table database, `diff --stat` fetches **494 blocks** from `grove.nodes` when one table
 changed and **24,700** when all fifty did — a ratio of exactly **50.0**. Reads scale with the number
 of *changed* tables and cost nothing for unchanged ones, because an untouched table keeps a bit-
 identical root hash and the descent short-circuits before reading a single node.
@@ -57,9 +57,9 @@ identical root hash and the descent short-circuits before reading a single node.
 set against it. That is **stricter than RDS**, where the master user is `rds_superuser`.
 
 It found one real dependency: `session_replication_role` is superuser-only, so **`revert` and
-`checkout` failed outright** — everything else already worked. Both now call `pgit.replay_begin()`,
+`checkout` failed outright** — everything else already worked. Both now call `grove.replay_begin()`,
 which tries the session GUC and, on `insufficient_privilege`, falls back to disabling each
-non-pgit trigger by name and restoring its exact prior state afterwards.
+non-grove trigger by name and restoring its exact prior state afterwards.
 
 The fallback is arguably the better path: `DISABLE TRIGGER` skips internal triggers, so **referential
 integrity stays enforced during replay**, which closes the FK gap that replica mode left open. It
@@ -80,7 +80,7 @@ storage design was chosen for, holding on real data. The absolute number misses 
 
 **The write side does not, and the cause is structural, not a constant.** Commit cost is
 *flat* — 15,852 ms for ten changed rows, 16,846 ms for a thousand, 18,723 ms to build from
-nothing. `pgit.write_tree` rescans and rehashes the entire table on every commit. The design
+nothing. `grove.write_tree` rescans and rehashes the entire table on every commit. The design
 document said tree maintenance should happen "over the touched keys only"; the implementation does
 a full rebuild. Nothing about the storage model is wrong — the maintenance algorithm is simply the
 naive one.
@@ -102,7 +102,7 @@ runs a migration on a large tracked table.
 
 ## History costs storage, and the number is large
 
-The 10,000-commit run grew `pgit.nodes` to **540 MB against a 107 MB table — five times the data it
+The 10,000-commit run grew `grove.nodes` to **540 MB against a 107 MB table — five times the data it
 versions.** None of it is garbage: every one of those commits is reachable from `main`, so no
 collector could reclaim any of it.
 
@@ -112,7 +112,7 @@ image** of all ~64 rows in its chunk. Ten thousand commits therefore rewrite ~64
 even though only 100,000 row versions were actually written.
 
 Storage grows with **number of commits**, not with data size. A busy table committed per request
-will outgrow itself quickly. There is no `pgit gc`, and for a linear history there would be nothing
+will outgrow itself quickly. There is no `grove gc`, and for a linear history there would be nothing
 for it to collect — what is actually needed is a **retention policy**, which does not exist yet.
 
 ### Two things measured here, one of which overturned the obvious fix
@@ -186,9 +186,9 @@ hundred times costs a hundred chunk versions; batching those changes into one co
 ## Delta compression between node versions
 
 Built as a **repack step**, the way git does it: the write path is untouched and commits stay at
-25 ms, then `pgit.repack()` — `pgit gc` from the CLI — rewrites older versions of a chunk as deltas
+25 ms, then `grove.repack()` — `grove gc` from the CLI — rewrites older versions of a chunk as deltas
 against the next newer one. Content addressing is preserved because a node's hash stays the hash of
-its logical content; the delta is purely a storage form. `pgit.unpack()` reverses it.
+its logical content; the delta is purely a storage form. `grove.unpack()` reverses it.
 
 Measured on 20k rows and 300 commits, with `VACUUM FULL` so the on-disk numbers are real.
 
@@ -204,7 +204,7 @@ two rows changed at opposite ends of a chunk force the middle to span everything
 does not have this problem because a packfile delta is a sequence of instructions: copy N bytes from
 the base at offset O, or insert these literal bytes.
 
-`pgit.make_delta` now aligns base and target entries by key and, per target entry, emits either a
+`grove.make_delta` now aligns base and target entries by key and, per target entry, emits either a
 copy of that entry's byte range in the base or — when the entry changed — a prefix copy, an insert
 of the differing middle, and a suffix copy. Adjacent copies that are contiguous in the base coalesce,
 so a run of unchanged entries collapses to a single op. Applying is still pure memcpy.
@@ -264,7 +264,7 @@ titles — about 5,300 scattered rows a night.
 
 The diff figures are a controlled A/B: same database, same trees, same 83,798 rows returned, only the
 function replaced. The nightly figure excludes the fixture's own scan and update, which are 707 ms a
-night — worth measuring separately, because the harness used to charge them to pgit and they turned
+night — worth measuring separately, because the harness used to charge them to grove and they turned
 out to be 1.5% of the total rather than the explanation.
 
 **Diff was doing two root-to-leaf walks per candidate row.** After 30 nights nearly every chunk
@@ -348,14 +348,14 @@ the machine and are not trustworthy; the sizes in the table are unaffected by th
 format on the hot path. Byte-level delta application was available in plain SQL as soon as the delta
 stopped being a relational operation.
 
-What pgit still does not do that git does: **a packed binary node format**. Deltas now apply as byte
+What grove still does not do that git does: **a packed binary node format**. Deltas now apply as byte
 copies, but each resolution still parses jsonb once at the end, and every entry still carries its
 column names. That last parse is what caps useful depth around 16. Three
 hundred near-identical chunk versions are stored in full. That, not blob separation, is the
 remaining gap.
 
 Mean commit cost in one long transaction also grew from **16 ms at 500 commits to 34 ms at 10,000**,
-as `pgit.changes` accumulated 100,000 rows and the node table grew. Roughly 2× for 20× the commits.
+as `grove.changes` accumulated 100,000 rows and the node table grew. Roughly 2× for 20× the commits.
 
 ## gc was quadratic in the number of node groups
 
@@ -513,7 +513,7 @@ in constant time, against a length walk that has to happen anyway for the length
 expression, zero rows canonicalising differently.
 
 **Every function was PARALLEL UNSAFE.** PostgreSQL defaults a function to `PARALLEL UNSAFE`, and a
-single unsafe function anywhere in a query forbids parallel workers for the *whole* query. `pgit.hash`,
+single unsafe function anywhere in a query forbids parallel workers for the *whole* query. `grove.hash`,
 all six `canon_*` functions, `is_boundary` and `setting` are pure computations or plain table reads,
 so every one of them was mislabelled by omission — and they appear in the expression that builds every
 row hash. Marking them `PARALLEL SAFE` is a one-word change per function: **1,265 ms → 868 ms, 1.46×**,
@@ -582,7 +582,7 @@ the clever part: it references the hash exactly once in a flat expression.
 
 Two more that were tested and changed nothing: raising `work_mem` from 4 MB to 256 MB (707 ms against
 712 ms — the spill in the plan is not on the critical path), and dropping all three secondary indexes
-on `pgit.changes` (9%, inside the run-to-run spread).
+on `grove.changes` (9%, inside the run-to-run spread).
 
 > [!warning]
 > The splice batching measured 456 → 427 ms on one run each and looked like a 6% win. Three runs a
@@ -608,7 +608,7 @@ The per-hop term was `substring()` on UTF-8 `text`: Postgres walks the string to
 offset, while the same call on `bytea` is pointer arithmetic. Measured directly, 4,000 substrings
 over 13 kB values cost 18.3 ms on `text` against 4.5 ms on `bytea`.
 
-Deltas now record **byte** offsets and apply with `pgit.apply_delta_bin` on `bytea`. Insert literals
+Deltas now record **byte** offsets and apply with `grove.apply_delta_bin` on `bytea`. Insert literals
 stay `text`, because the prefix and suffix are still found in characters — so a literal is always
 whole characters and valid UTF-8, and no base64 inflation is needed.
 
@@ -623,7 +623,7 @@ whole characters and valid UTF-8, and no base64 inflation is needed.
 > [!warning]
 > Two measurements taken while finding this were wrong and neither was published. `SELECT count(*)
 > FROM t, LATERAL (SELECT expr)` reports ~0 ms because the unused expression is optimised away — it
-> measures nothing. And calling `node_items(pgit.hash(...))` per row timed my own harness at 267 ms
+> measures nothing. And calling `node_items(grove.hash(...))` per row timed my own harness at 267 ms
 > for work that actually costs 10 ms. **Check that a micro-benchmark consumes its result and does no
 > setup inside the timed statement**, or it will confidently answer a question you did not ask.
 
@@ -701,7 +701,7 @@ Profiling a diff of 21,076 changed rows, `pg_stat_statements` with nested tracki
 
 | ms | calls | |
 | --- | --- | --- |
-| **6,635** | **84,304** | `node_entries` inside `pgit.lookup`'s descent |
+| **6,635** | **84,304** | `node_entries` inside `grove.lookup`'s descent |
 | 1,151 | 42,152 | `node_items` inside `lookup`'s leaf read |
 | 1,567 | 2,760 | the tree descent itself |
 
@@ -755,12 +755,12 @@ packed nodes pay.
 
 A node used to be a jsonb array of `{k, h, v}`. It is now three columns: `keys text[]`, `hashes
 bytea` — the child hashes packed at a 32 byte stride, in key order — and `entries jsonb` holding
-only the row images. `hashes` is exactly the pre-image of the node's own hash, so `pgit.hash(hashes)`
+only the row images. `hashes` is exactly the pre-image of the node's own hash, so `grove.hash(hashes)`
 is the node hash and every existing hash value is unchanged.
 
 That makes the operations that dominated a commit into whole-value C calls rather than one SQL row
 per entry: `array_position` finds an entry, `overlay` replaces its 32 bytes, `jsonb_set` replaces its
-image, and rehashing is a single `pgit.hash`.
+image, and rehashing is a single `grove.hash`.
 
 | 1.7M rows | jsonb nodes | packed nodes |
 | --- | --- | --- |
@@ -794,7 +794,7 @@ eliminated. What the profile actually found:
 | finding | effect |
 | --- | --- |
 | the splice widened the touched region by one chunk either side | 11,308 chunks rebuilt to change 5,000 rows |
-| `pgit.setting('chunk_target')` read per row | 872,204 queries in one commit, for a constant |
+| `grove.setting('chunk_target')` read per row | 872,204 queries in one commit, for a constant |
 | the canonical row expression rebuilt from the catalogue per region | 10,073 calls |
 
 Boundaries are `is_boundary(key)`, so only an inserted or deleted key can move one — the widening is
@@ -837,17 +837,17 @@ rows per commit.
 
 | rows | as a TSV | first commit | commit 100 rows | diff one commit | store after gc |
 | ---: | ---: | --- | --- | --- | --- |
-| 50,000 | 1.7 MB | git 81 ms / pgit 388 ms | git 75 ms / pgit 114 ms | git 33 ms / pgit 118 ms | git 488 kB / pgit 4.2 MB |
-| 500,000 | 18 MB | git 139 ms / pgit 2,603 ms | git 235 ms / **pgit 211 ms** | git 126 ms / pgit 146 ms | git 3.6 MB / pgit 33.6 MB |
-| 2,000,000 | 74 MB | git 373 ms / pgit 11,147 ms | git 931 ms / **pgit 436 ms** | git 519 ms / **pgit 169 ms** | git 14.6 MB / pgit 135 MB |
+| 50,000 | 1.7 MB | git 81 ms / grove 388 ms | git 75 ms / grove 114 ms | git 33 ms / grove 118 ms | git 488 kB / grove 4.2 MB |
+| 500,000 | 18 MB | git 139 ms / grove 2,603 ms | git 235 ms / **grove 211 ms** | git 126 ms / grove 146 ms | git 3.6 MB / grove 33.6 MB |
+| 2,000,000 | 74 MB | git 373 ms / grove 11,147 ms | git 931 ms / **grove 436 ms** | git 519 ms / **grove 169 ms** | git 14.6 MB / grove 135 MB |
 
 **There are two crossovers, not one, and both depend on how much you changed rather than on size
 alone.** For a 100-row change, commit crosses at about 18 MB and diff at about 75 MB. The older
 figure of "around 50 MB" in this file came from a fixture changing 5,300 rows per commit, and it was
 quoted afterwards as though it were a property of the data size. It is not. git pays O(file) whatever
-you touched, so the smaller the change, the earlier pgit wins.
+you touched, so the smaller the change, the earlier grove wins.
 
-**pgit's diff is close to flat and git's is not.** Across 40x more data, pgit's diff went 118 ms to
+**grove's diff is close to flat and git's is not.** Across 40x more data, grove's diff went 118 ms to
 146 ms to 169 ms; git's went 33 ms to 126 ms to 519 ms, which is linear in the file. This is the one
 result worth caring about, because it is the property the whole design was chosen for, and it is
 visible directly rather than inferred.
@@ -862,26 +862,26 @@ collection. This is the honest weakness, it does not improve with scale, and `do
 is about what closing it would take.
 
 One asymmetry the script does not charge to either side: git is timed on `add` plus `commit` of a
-file that already exists on disk. Producing that file from the table takes pgit's `COPY` a second or
-two at 2M rows, and a real git-for-data workflow would pay it on every commit. Against that, the pgit
+file that already exists on disk. Producing that file from the table takes grove's `COPY` a second or
+two at 2M rows, and a real git-for-data workflow would pay it on every commit. Against that, the grove
 copy is a queryable table the entire time and the git copy is a TSV you have to load before you can
 ask it anything.
 
-## Where pgit beats git, and where it does not
+## Where grove beats git, and where it does not
 
 The comparison below this one used a 28 MB file, which flatters git: its commit cost is O(file), so a
 small fixture hides it. The same 12.7M-row IMDb data at full size, same 100-row change:
 
-| | git | pgit |
+| | git | grove |
 | --- | --- | --- |
 | 12.7M rows as a 1.0 GB TSV / a tracked table | | |
 | baseline commit | 10,817 ms | 253,868 ms |
 | **100 changed rows** | **12,062 ms** | **527 ms — 22.9× faster** |
 | 28 MB slice, ~5,300 changed rows | **492 ms** | 1,801 ms |
 
-**git re-hashes and re-compresses the whole file on every commit**; pgit rewrites only the chunks
+**git re-hashes and re-compresses the whole file on every commit**; grove rewrites only the chunks
 holding changed rows. For a change this size the crossover is around 50 MB. Below it git wins on
-constants, above it pgit
+constants, above it grove
 wins on complexity and the gap grows linearly with the data.
 
 git still wins the first commit outright — 10.8 s against 254 s — because a full tree build
@@ -892,10 +892,10 @@ a one-time cost, but it is real and it is 23×.
 
 The claim "git's diff performance" was in the README for weeks. It is wrong, and this is by how much.
 The same 1.7M row IMDb ratings table, 30 commits, each changing ~5,300 scattered rows: as a TSV in a
-git repository, and as a tracked table in pgit. Identical change sets — git saw 152,349 modified
-rows, pgit 152,068.
+git repository, and as a tracked table in grove. Identical change sets — git saw 152,349 modified
+rows, grove 152,068.
 
-| | git | pgit, as first measured | pgit, current | |
+| | git | grove, as first measured | grove, current | |
 | --- | --- | --- | --- | --- |
 | mean commit over 30 | **492 ms** | 13,383 ms — 27× | 1,801 ms | 3.7× |
 | diff across all 30 commits, no `gc` | **391 ms** | 60,940 ms — 156× | 7,633 ms | 19× |
@@ -905,7 +905,7 @@ rows, pgit 152,068.
 | gc | 11 s | 33 min, killed | see below | |
 
 Git's diff is a linear Myers diff over two sorted 28 MB text blobs; its commit is a hash and a zlib
-pass over the same. pgit canonicalises every changed row (`normalize`, `trim_scale`, sha256 each),
+pass over the same. grove canonicalises every changed row (`normalize`, `trim_scale`, sha256 each),
 computes content-defined boundaries, builds jsonb nodes, and writes them to a heap with WAL and
 index maintenance.
 
@@ -913,7 +913,7 @@ index maintenance.
 > An earlier version of this section concluded "that is not a constant factor away from a byte-stream
 > hash and **it will not close**." That was wrong, and it was wrong in the way conclusions usually are
 > — it generalised a 27× gap on a 28 MB fixture into a law. The gap is now 3.7×, and on a 1 GB table
-> pgit commits **22.9× faster than git**, because git's commit is O(file) and pgit's is O(changed).
+> grove commits **22.9× faster than git**, because git's commit is O(file) and grove's is O(changed).
 > The crossover depends on the change size as well as the data size: for a 100-row change it is
 > about 18 MB for commit. See "Against git, reproducibly" above.
 
@@ -931,17 +931,17 @@ and byte-offset fixes landed. Like for like, both sides garbage collected, it is
 
 **What does hold is the scaling property the design was chosen for.** Diff cost tracks the size of
 the difference, not the history between two commits: 10 rows 10,000 commits apart costs 163 ms, the
-same as one commit apart. Git has that property and so does pgit. The shape matches; the constant
+same as one commit apart. Git has that property and so does grove. The shape matches; the constant
 is about 100× worse.
 
-**One structural axis favours pgit, and this fixture hides it.** Git's per-commit cost is O(file):
-changing 5,300 rows in a 28 MB TSV re-hashes and re-compresses all 28 MB. pgit's is O(changed
+**One structural axis favours grove, and this fixture hides it.** Git's per-commit cost is O(file):
+changing 5,300 rows in a 28 MB TSV re-hashes and re-compresses all 28 MB. grove's is O(changed
 chunks). At 28 MB git's whole-file cost is an invisible 492 ms; on the full 2.6 GB IMDb set the same
-commit would re-process 2.6 GB, while pgit's untouched 12.7M row table costs **100 ms**. A fair
+commit would re-process 2.6 GB, while grove's untouched 12.7M row table costs **100 ms**. A fair
 comparison at that scale has not been run, so this is stated as a structural difference rather than
 a measurement.
 
-And the part git does not do at all: the pgit copy is a live database — indexed, constrained,
+And the part git does not do at all: the grove copy is a live database — indexed, constrained,
 transactional, queryable — throughout. The git copy is a file you must materialise to use.
 
 ## What tracking a table actually costs
@@ -956,7 +956,7 @@ Re-measured after the commit and diff work, on a 1M-row table with four columns.
 | `DELETE` 10,000 rows | — | 100 ms | |
 | journal storage | — | **296 bytes per changed row** | before and after images |
 
-**Reads are unaffected**, which had been argued from structure and is now measured: pgit's triggers
+**Reads are unaffected**, which had been argued from structure and is now measured: grove's triggers
 are write-side and the data never moves. It does add one expression index to the tracked table for
 canonical key lookups, which costs on the write path and in storage.
 
@@ -975,11 +975,11 @@ does not reach it.
 The remaining cost is not per-statement overhead, it is the **content**: every journalled row builds
 two `jsonb` images and inserts them, so a 10,000-row update writes 20,000 jsonb objects on top of
 the 10,000 row versions Postgres already wrote. Roughly 2× the data of the write itself, plus index
-maintenance on `pgit.changes`.
+maintenance on `grove.changes`.
 
 Three ways to close it, none of them free, none taken:
 
-1. **Drop the `before` image.** It is recoverable from the parent commit's tree via `pgit.lookup`.
+1. **Drop the `before` image.** It is recoverable from the parent commit's tree via `grove.lookup`.
    That halves journal volume, but `blame` reads before/after per column and the revert conflict
    guard compares against it, so both would need reworking to read the tree instead.
 2. **Journal only changed columns** rather than whole rows. Smaller, but makes every consumer

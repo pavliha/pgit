@@ -1,4 +1,4 @@
-<h1 align="center">pgit</h1>
+<h1 align="center">grove</h1>
 
 <p align="center">
   <strong>git for your data. Branch, diff, merge and blame your rows.</strong><br>
@@ -16,16 +16,16 @@
 ---
 
 ```sql
-SELECT pgit.track('products');
-SELECT pgit.commit('the catalogue as it stands');
+SELECT grove.track('products');
+SELECT grove.commit('the catalogue as it stands');
 
-SELECT pgit.branch('black-friday');           -- branch your data
-SELECT pgit.checkout('black-friday');
+SELECT grove.branch('black-friday');           -- branch your data
+SELECT grove.checkout('black-friday');
 UPDATE products SET price = price * 0.7;      -- 40,000 rows, one statement
-SELECT pgit.commit('30% off everything');
+SELECT grove.commit('30% off everything');
 
-SELECT pgit.checkout('main');                 -- prices are back. all of them.
-SELECT pgit.merge('black-friday');            -- ship it, column by column
+SELECT grove.checkout('main');                 -- prices are back. all of them.
+SELECT grove.merge('black-friday');            -- ship it, column by column
 ```
 
 None of that is a metaphor. `products` stays an ordinary Postgres table the whole way through,
@@ -46,17 +46,17 @@ Run it yourself with `make bench-git`. Same generated data, same change sets, me
 
 | rows | as a TSV | first commit | commit 100 rows | diff one commit | store after gc |
 | ---: | ---: | --- | --- | --- | --- |
-| 50,000 | 1.7 MB | git **81 ms** / pgit 388 ms | git **75 ms** / pgit 114 ms | git **33 ms** / pgit 118 ms | git **488 kB** / pgit 4.2 MB |
-| 500,000 | 18 MB | git **139 ms** / pgit 2,603 ms | git 235 ms / pgit **211 ms** | git **126 ms** / pgit 146 ms | git **3.6 MB** / pgit 33.6 MB |
-| 2,000,000 | 74 MB | git **373 ms** / pgit 11,147 ms | git 931 ms / pgit **436 ms** | git 519 ms / pgit **169 ms** | git **14.6 MB** / pgit 135 MB |
+| 50,000 | 1.7 MB | git **81 ms** / grove 388 ms | git **75 ms** / grove 114 ms | git **33 ms** / grove 118 ms | git **488 kB** / grove 4.2 MB |
+| 500,000 | 18 MB | git **139 ms** / grove 2,603 ms | git 235 ms / grove **211 ms** | git **126 ms** / grove 146 ms | git **3.6 MB** / grove 33.6 MB |
+| 2,000,000 | 74 MB | git **373 ms** / grove 11,147 ms | git 931 ms / grove **436 ms** | git 519 ms / grove **169 ms** | git **14.6 MB** / grove 135 MB |
 
-Read the diff column downwards. pgit goes 118, 146, 169 ms across 40x more data. git goes 33, 126,
-519 ms, which is linear in the file, because git diffs two whole blobs and pgit walks only the part
+Read the diff column downwards. grove goes 118, 146, 169 ms across 40x more data. git goes 33, 126,
+519 ms, which is linear in the file, because git diffs two whole blobs and grove walks only the part
 of the tree that changed.
 
 Commit tells the same story more slowly. git's commit is O(file): it re-hashes and re-compresses
-everything however little changed. pgit's is O(changed). For a 100-row change they cross at about
-18 MB, and by 74 MB pgit is 2.1x ahead. Change 5,000 rows instead and the crossover moves up, so it
+everything however little changed. grove's is O(changed). For a 100-row change they cross at about
+18 MB, and by 74 MB grove is 2.1x ahead. Change 5,000 rows instead and the crossover moves up, so it
 depends on how much you touched and not on size alone.
 
 Two things git wins outright. **The first commit, always**, by 4.7x at 50k rows and 29.8x at 2M,
@@ -65,7 +65,7 @@ byte stream. And **storage, by about 9x at every size**, which is the flattest n
 and does not improve with scale.
 
 git is also doing a different job. What it hands back is a file you have to load before you can ask
-it anything. What pgit hands back is still a database.
+it anything. What grove hands back is still a database.
 
 ## Runs where your data already lives
 
@@ -82,38 +82,38 @@ psql "$DATABASE_URL" -f sql/install.sql
 ## The full verb set
 
 ```
-pgit status                     pgit log --oneline
-pgit diff <a> <b> --stat -- products.price_amount
-pgit blame products 42          pgit show HEAD~2      # HEAD, HEAD~N, HEAD^, branch, short sha
-pgit branch feature && pgit checkout feature
-pgit commit -m "..."            pgit reflog
+grove status                     grove log --oneline
+grove diff <a> <b> --stat -- products.price_amount
+grove blame products 42          grove show HEAD~2      # HEAD, HEAD~N, HEAD^, branch, short sha
+grove branch feature && grove checkout feature
+grove commit -m "..."            grove reflog
 
-pgit merge main                 # -X ours | -X theirs | -s ours
-pgit merge a b c                # octopus: one commit, N parents, refuses on conflict like git
-pgit conflicts                  # base/ours/theirs per conflict, queryable
-pgit resolve products 42 theirs # or ours | base | delete
-pgit merge --continue           # or --abort
-pgit rerere status              # the same conflict resolves itself next time
-pgit rebase main                pgit cherry-pick <sha>      pgit revert <sha>
-pgit renames <a> <b>            # a renamed table, matched by content not by shape
+grove merge main                 # -X ours | -X theirs | -s ours
+grove merge a b c                # octopus: one commit, N parents, refuses on conflict like git
+grove conflicts                  # base/ours/theirs per conflict, queryable
+grove resolve products 42 theirs # or ours | base | delete
+grove merge --continue           # or --abort
+grove rerere status              # the same conflict resolves itself next time
+grove rebase main                grove cherry-pick <sha>      grove revert <sha>
+grove renames <a> <b>            # a renamed table, matched by content not by shape
 
-pgit reset HEAD~1 --hard        # or --soft
-pgit restore HEAD~3 -- products:42   # one row, or a whole table, without moving the branch
-pgit stash / stash pop / stash list
-pgit bisect start <good> <bad>  # then: bisect good | bisect bad
-pgit tag v1.0 HEAD~2            pgit notes add HEAD -m "..."
+grove reset HEAD~1 --hard        # or --soft
+grove restore HEAD~3 -- products:42   # one row, or a whole table, without moving the branch
+grove stash / stash pop / stash list
+grove bisect start <good> <bad>  # then: bisect good | bisect bad
+grove tag v1.0 HEAD~2            grove notes add HEAD -m "..."
 
-pgit fsck                       # verify every hash, ref, chain and tree
-pgit gc                         # pack node versions as deltas, and rotate the event log
-pgit prune --before 2026-01-01  # truncate history, then collect unreachable nodes
+grove fsck                       # verify every hash, ref, chain and tree
+grove gc                         # pack node versions as deltas, and rotate the event log
+grove prune --before 2026-01-01  # truncate history, then collect unreachable nodes
 
-pgit clone pack.json            # creates the tables, tracks them, materialises the data
-pgit bundle main > pack.json    # or: --have have.json for an incremental pack
-pgit fetch origin pack.json     # updates remotes/origin/* only, never your branches
-pgit receive pack.json          # updates local branches, fast-forward enforced
+grove clone pack.json            # creates the tables, tracks them, materialises the data
+grove bundle main > pack.json    # or: --have have.json for an incremental pack
+grove fetch origin pack.json     # updates remotes/origin/* only, never your branches
+grove receive pack.json          # updates local branches, fast-forward enforced
 ```
 
-Anything git offers that pgit does not implement is refused by name. An unimplemented flag exits 129
+Anything git offers that grove does not implement is refused by name. An unimplemented flag exits 129
 and tells you which flag, so nothing gets silently ignored.
 
 ## It tells you what it did
@@ -121,7 +121,7 @@ and tells you which flag, so nothing gets silently ignored.
 Every write records one wide event rather than a scatter of log lines:
 
 ```sql
-SELECT verb, ok, actor, branch, duration_ms, detail FROM pgit.events ORDER BY id DESC;
+SELECT verb, ok, actor, branch, duration_ms, detail FROM grove.events ORDER BY id DESC;
 ```
 
 ```
@@ -132,7 +132,7 @@ rebase   | t  | dba   | feat   |     104.220 | {"onto": "main", "was": "38d1a2c"
 ```
 
 Every commit in the database has an event that created it, and a test enforces that, so a new verb
-cannot quietly bypass the audit log. `SELECT * FROM pgit.metrics()` gives you the same database as
+cannot quietly bypass the audit log. `SELECT * FROM grove.metrics()` gives you the same database as
 numbers to scrape, including commit latency percentiles.
 
 ## What it costs
@@ -141,7 +141,7 @@ Up front, because you will find them anyway:
 
 - Journalling costs about **10x the write it records**. A 10,000-row `UPDATE` goes from 26-30 ms to
   146-183 ms. That is the honest headline cost.
-- History costs storage. About 4.5x the table after 10,000 commits, until `pgit gc` takes it to 1.8x
+- History costs storage. About 4.5x the table after 10,000 commits, until `grove gc` takes it to 1.8x
   at the default depth and 1.2x at `--depth 50`.
 - Pruning buys that storage with attribution. `blame` marks whatever it can no longer prove as
   `exact = false` instead of guessing at an author.
@@ -232,8 +232,11 @@ incremental install. CI runs the same script on the same image.
 
 ## Naming
 
-`pgit` collides with two unrelated projects (`ImGajeed76/pgit`, `evoludigit/pgGit`). Renaming is
-cheap while the repo is this small. It has not been decided.
+Named for what it builds: a merkle **forest**, one tree per tracked table, which is what makes a
+diff cost the size of the difference rather than the length of the history.
+
+It was called `pgit` until it had users to confuse, which is to say never. That name collided with
+two unrelated projects (`ImGajeed76/pgit`, `evoludigit/pgGit`) and said nothing about the design.
 
 ## License
 

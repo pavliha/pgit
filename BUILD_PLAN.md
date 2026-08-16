@@ -16,7 +16,7 @@ the ones a green test suite failed to catch — including several where the test
 | Hash | `sha256` from core | no pgcrypto dependency |
 | Chunk target | 64 | measured within 4× across sequential, uuidv4, uuidv7 and common-prefix keys |
 | License | MIT | swap before any public release if a patent grant is wanted |
-| Dirtiness | decided by **content** (live tree root vs HEAD's recorded root), not by unstamped journal rows | pgit's journal is ENABLE ALWAYS, so checkout's own writes would make the tree look dirty the instant it finished. Content is also more faithful to git: edit a value and put it back and you are clean. |
+| Dirtiness | decided by **content** (live tree root vs HEAD's recorded root), not by unstamped journal rows | grove's journal is ENABLE ALWAYS, so checkout's own writes would make the tree look dirty the instant it finished. Content is also more faithful to git: edit a value and put it back and you are clean. |
 | Checkout journal rows | `checkout` deletes its own unstamped journal rows | a checkout is a *materialisation*, not an edit. A revert produces new content that should become a commit; a checkout reproduces a commit that already exists. |
 | DDL detection | **catalogue fingerprint at commit time**, no event trigger | an event trigger needs superuser and buys nothing for correctness here — the fingerprint recorded per commit is what every guard actually reads. This is the AC-PORT-04 fallback promoted to being the mechanism, so the portable path is the only path. |
 | Merge runs with triggers ON | merge does **not** use replica mode, unlike revert and checkout | replica mode disables referential-integrity triggers, which would defeat the entire point of AC-MERGE-08. A merge is a real write to the working tree, so constraints and user triggers behave exactly as they would for any other write. |
@@ -26,50 +26,50 @@ the ones a green test suite failed to catch — including several where the test
 
 - [x] **canon** — canonical row form, content-defined boundaries, tree root. 34 assertions green.
       AC-CANON-01 through -07.
-- [x] **journal** — `pgit.changes`, `pgit.tracked`, one generic row trigger, `pgit.track` /
-      `pgit.untrack`, actor and source from `SET LOCAL pgit.actor` / `pgit.source`, and a
+- [x] **journal** — `grove.changes`, `grove.tracked`, one generic row trigger, `grove.track` /
+      `grove.untrack`, actor and source from `SET LOCAL grove.actor` / `grove.source`, and a
       `BEFORE TRUNCATE` statement trigger that journals every destroyed row. 21 assertions.
       AC-COMMIT-01, -03, -07, AC-DDL-05, -06.
-- [x] **objects** — `pgit.nodes`, `pgit.trees`, `pgit.write_tree` persisting every level
+- [x] **objects** — `grove.nodes`, `grove.trees`, `grove.write_tree` persisting every level
       content-addressed. `tree_root` now delegates to it, so there is one hashing implementation.
       8 assertions.
-- [x] **commit** — `pgit.commits` DAG, `pgit.refs`, `pgit.head`/`pgit.resolve`,
-      `pgit.commit(msg, who, ts)`, and `pgit.advance_ref` as a compare-and-swap. 15 assertions.
+- [x] **commit** — `grove.commits` DAG, `grove.refs`, `grove.head`/`grove.resolve`,
+      `grove.commit(msg, who, ts)`, and `grove.advance_ref` as a compare-and-swap. 15 assertions.
       AC-COMMIT-02, -05, -06, AC-REF-01.
-- [x] **diff-core** — `pgit.leaves`, `pgit.diff_leaves` (pruning descent), `pgit.diff_tree`,
-      `pgit.diff(a_sha, b_sha)`, and `pgit.apply_diff` for the round trip. 14 assertions.
+- [x] **diff-core** — `grove.leaves`, `grove.diff_leaves` (pruning descent), `grove.diff_tree`,
+      `grove.diff(a_sha, b_sha)`, and `grove.apply_diff` for the round trip. 14 assertions.
       AC-DIFF-01, -02, -03.
-- [x] **diff-oracle** — `pgit.changes.commit_sha` stamped at commit, `pgit.ancestry`,
-      `pgit.diff_journal` (independent replay implementation), `pgit.lookup` point lookup, and a
+- [x] **diff-oracle** — `grove.changes.commit_sha` stamped at commit, `grove.ancestry`,
+      `grove.diff_journal` (independent replay implementation), `grove.lookup` point lookup, and a
       randomised differential test: 1000 operations, 51 commits, 40 sampled commit pairs.
       5 assertions. AC-DIFF-04. **Found three real bugs in the tree diff.**
 - [x] **diff-surface** — `diff_stat`, `diff_numstat`, `diff_shortstat`, `diff_name_only`,
-      `diff_name_status`, and a `pathspec` argument on `pgit.diff` addressing table, row
+      `diff_name_status`, and a `pathspec` argument on `grove.diff` addressing table, row
       (`t1:5`) and column (`t1.name`). 14 assertions. AC-DIFF-06, -07.
-- [x] **revert** — `pgit.revert(sha)` with a per-row conflict guard, replay under
-      `session_replication_role = replica`, and `pgit.live_hash`. 14 assertions.
+- [x] **revert** — `grove.revert(sha)` with a per-row conflict guard, replay under
+      `session_replication_role = replica`, and `grove.live_hash`. 14 assertions.
       AC-REPLAY-01 through -05.
-- [x] **blame** — `pgit.blame(tbl, key)` returning the last writer, actor, timestamp and current
+- [x] **blame** — `grove.blame(tbl, key)` returning the last writer, actor, timestamp and current
       value per column, from the journal. 8 assertions. AC-BLAME-01, -02.
-- [x] **log-show** — `pgit.log(start, pathspec)` walking the DAG by depth, `pgit.show(sha)`,
-      `pgit.short_sha`. 10 assertions. AC-LOG-01, -02, AC-SHOW-01.
-- [x] **branch** — `pgit.branch`, `pgit.branches`, `pgit.checkout`, `pgit.delete_branch`,
-      `pgit.is_dirty`. 13 assertions. AC-REF-02, -03, -04.
-- [x] **merge** — `pgit.ancestors`, `pgit.merge_base` (refusing criss-cross), `pgit.merge_plan`
-      (three-way per cell), `pgit.apply_row`, `pgit.conflicts`, `pgit.merge` with fast-forward and
+- [x] **log-show** — `grove.log(start, pathspec)` walking the DAG by depth, `grove.show(sha)`,
+      `grove.short_sha`. 10 assertions. AC-LOG-01, -02, AC-SHOW-01.
+- [x] **branch** — `grove.branch`, `grove.branches`, `grove.checkout`, `grove.delete_branch`,
+      `grove.is_dirty`. 13 assertions. AC-REF-02, -03, -04.
+- [x] **merge** — `grove.ancestors`, `grove.merge_base` (refusing criss-cross), `grove.merge_plan`
+      (three-way per cell), `grove.apply_row`, `grove.conflicts`, `grove.merge` with fast-forward and
       two-parent merge commits. 23 assertions across four files.
       **AC-MERGE-07 and -08 both pass — the central architectural argument is proven.**
-- [x] **replay-verbs** — `pgit.cherry_pick`, `pgit.rebase`, `pgit.rebase_abort`,
-      `pgit.materialise`, `pgit.record_conflicts`, `pgit.rebase_state`. 16 assertions across three
+- [x] **replay-verbs** — `grove.cherry_pick`, `grove.rebase`, `grove.rebase_abort`,
+      `grove.materialise`, `grove.record_conflicts`, `grove.rebase_state`. 16 assertions across three
       files. AC-REPLAY-06 through -09.
 - [x] **perf-1m** — `bench/` fixture, commit and diff harnesses, `make bench`, results in
       `PERF.md`. No pgTAP assertions: timing assertions are flaky and would be worse than no test.
       **AC-PERF-01 property holds, AC-PERF-04 and -05 miss; both gaps recorded, neither target
       touched.**
-- [x] **ddl** — `pgit.schemas`, `schema_fingerprint`, `schema_columns`, `record_schemas`,
+- [x] **ddl** — `grove.schemas`, `schema_fingerprint`, `schema_columns`, `record_schemas`,
       `assert_same_schema` guarding cherry-pick and merge. 9 assertions.
       AC-DDL-01, -02, -04, AC-REPLAY-10, AC-MERGE-12.
-- [x] **cli** — `bin/pgit`, a bash-over-psql CLI: status, log, show, diff (with --stat, --numstat,
+- [x] **cli** — `bin/grove`, a bash-over-psql CLI: status, log, show, diff (with --stat, --numstat,
       --shortstat, --name-only, --name-status, --exit-code), blame, branch, checkout, commit,
       merge, rebase, cherry-pick, revert, track. 15 checks in `test/cli_test.sh`.
       AC-CLI-01 through -04.
@@ -81,19 +81,19 @@ the ones a green test suite failed to catch — including several where the test
       than 15,600 leaves), with `nodes_at_level` and `build_one_level`. 3 more assertions, including
       a three-level-deep fuzz. **Commit of 10 rows: 394 ms → 25 ms. AC-PERF-02 and AC-PERF-04 now
       pass at 1M.**
-- [x] **reuse temp tables across calls** — `pgit.ensure_scratch` creates nine scratch tables once
+- [x] **reuse temp tables across calls** — `grove.ensure_scratch` creates nine scratch tables once
       per session; every tree function now `TRUNCATE`s and refills them instead of
       `DROP`/`CREATE`. 3 assertions. **500 commits in one transaction: crashed → 16 ms mean.**
 - [x] **AC-PERF-03** — 50-table fixture, diff locality measured by block counts. 5 assertions.
       **494 blocks for one changed table against 24,700 for fifty — a ratio of exactly 50.0.**
-- [x] **statement-level journal trigger** — `pgit.journal_stmt` with `REFERENCING OLD TABLE`/`NEW
+- [x] **statement-level journal trigger** — `grove.journal_stmt` with `REFERENCING OLD TABLE`/`NEW
       TABLE`, three statement triggers per tracked table. 6 assertions.
       **Write amplification 15× → 10.1×. AC-PERF-05 still misses its 2× target; see `PERF.md`.**
 - [x] **AC-REPLAY-11** — `test/kill_test.sh`, a two-session harness that kills a backend mid-rebase.
       9 checks, wired into `make test`.
 - [x] **AC-PERF-02 at the full 10,000 commits** — **163 ms for 10 rows 10,000 commits apart, against
       179 ms one commit apart.** Criterion met at the stated figure, not a reduced one.
-- [x] **checkout across a schema change** — `pgit.assert_live_schema` runs before the dirty check
+- [x] **checkout across a schema change** — `grove.assert_live_schema` runs before the dirty check
       and names the table and both column lists. 5 assertions.
 
 **Every item in the original plan is done.** What follows was raised by measurement.
@@ -109,7 +109,7 @@ engineering.
 - **AC-PERF-05 needs a decision, not more code.** Write amplification is 10.1× against a 2× target,
   and the remaining cost is the journal's *content*: two jsonb images per changed row. Profiling
   shows `to_jsonb` is only ~5% of it — the rest is heap writes, WAL and index maintenance on
-  `pgit.changes`, which no amount of optimisation avoids. Options: (a) drop the `before` image and
+  `grove.changes`, which no amount of optimisation avoids. Options: (a) drop the `before` image and
   have `blame` and the revert guard read it from the parent tree, (b) journal only changed columns,
   or (c) decide 2× was the wrong number for a journal that stores full row images.
   **Not moving the target unilaterally.**
@@ -126,7 +126,7 @@ engineering.
   compresses a whole chunk as one unit while individual row blobs fall below the TOAST threshold.
   And **`chunk_target=16` is worse than 64 at 1M rows** (6× slower commits, 27% more storage),
   inverting a 20k-row result that suggested otherwise.
-  **Delta compression is now built** (`pgit.repack`, default depth 1: 34% of the node store for 11%
+  **Delta compression is now built** (`grove.repack`, default depth 1: 34% of the node store for 11%
   read cost — see `PERF.md` for the full depth curve). What remains: auto-tune `chunk_target` from
   table size, add a retention policy, or make deep delta chains affordable with a compact binary node
   encoding so deltas apply as byte copies rather than jsonb rebuilds.
@@ -140,17 +140,17 @@ engineering.
   dangling reference undetected. Before shipping partial revert, either re-validate the touched
   constraints afterwards or use `ALTER TABLE … DISABLE TRIGGER USER`, which suppresses only user
   triggers and leaves RI active (at the cost of an ACCESS EXCLUSIVE lock).
-- **Checkout across a schema change still only refuses politely.** `pgit.assert_live_schema` now
+- **Checkout across a schema change still only refuses politely.** `grove.assert_live_schema` now
   names the table and both column lists instead of blaming uncommitted changes, but `checkout` still
   materialises data and not shape. Actually versioning DDL and replaying it on checkout is a project,
   not an afternoon, and remains undone.
-- **The conflict guard is O(table) per revert.** `pgit.live_hash` computes `row_hashes` over the whole
+- **The conflict guard is O(table) per revert.** `grove.live_hash` computes `row_hashes` over the whole
   table for each key it checks. Correct but wasteful; it should become a keyed lookup before the
   perf gates.
 - **Git verbs deliberately not built, with the reason.** The inventory is now closed except these,
   and each is a judgement rather than a backlog item.
   - **`subtree`, `submodule`** — no analogue. Both compose *repositories*; there is one database and
-    one history here, and a nested history would be a second `pgit` schema with its own refs, which is
+    one history here, and a nested history would be a second `grove` schema with its own refs, which is
     just two databases and a bundle.
   - **Signed commits** — needs key management, a trust model and a verification story that none of the
     rest of this has. Real work, not a missing function.
@@ -168,7 +168,7 @@ Newest last. One line per completed item: what was built, assertion count, anyth
 - **journal** — 21 assertions, suite now 55/55. `BEFORE TRUNCATE` can still read the table, so
   truncate journals all 500 rows as real DELETEs and stays revertible — AC-COMMIT-07 is satisfied
   properly rather than by recording a bare "truncated" marker. Two traps: a plpgsql parameter
-  named `tbl` is ambiguous against `pgit.tracked.tbl`, and `CREATE OR REPLACE FUNCTION` cannot
+  named `tbl` is ambiguous against `grove.tracked.tbl`, and `CREATE OR REPLACE FUNCTION` cannot
   rename a parameter, so renaming it needs an explicit `DROP FUNCTION IF EXISTS` to keep
   `install.sql` re-runnable. Any later signature change needs the same treatment.
 - **objects** — 8 assertions, suite now 63/63. The headline measurement: changing **one row** in a
@@ -177,7 +177,7 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   storage bet works. `write_tree` now always wraps leaves in a node (the old `tree_root` returned
   a bare row hash for single-row tables, which left the root with no node to descend), and
   `tree_root` delegates to `write_tree` so the two can never drift apart.
-- **commit** — 15 assertions, suite now 78/78. `pgit.commit(...)` is callable unquoted; COMMIT is
+- **commit** — 15 assertions, suite now 78/78. `grove.commit(...)` is callable unquoted; COMMIT is
   a non-reserved keyword, so the git-shaped name survives. Naming parameters `msg`/`who`/`ts`
   rather than `message`/`author`/`at` avoided the shadowing trap from the journal item — apply
   that rule to every future function. The real observation is AC-COMMIT-02: commits, tree nodes
@@ -204,7 +204,7 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   and only one differs, descending that pair emits all of the A-child's leaves, but the unchanged
   rows' B-side copies live in the *other* B-child that was correctly skipped as equal — so they
   read as deletes. **The descent is only a candidate finder; every candidate key must then be
-  resolved by point lookup in both trees.** That is what `pgit.lookup` is for, and it is the
+  resolved by point lookup in both trees.** That is what `grove.lookup` is for, and it is the
   correct shape: O(candidates × depth) rather than O(table).
   Method note for the next tick: the first two fixes were guesses made without re-measuring, and
   both were wrong about the real cause. What actually worked was comparing three implementations —
@@ -221,8 +221,8 @@ Newest last. One line per completed item: what was built, assertion count, anyth
 - **revert** — 14 assertions, suite now 125/125 from an empty database, green on the first run.
   The find of the tick is **`ALTER TABLE … ENABLE ALWAYS TRIGGER`**. Replaying under
   `session_replication_role = replica` suppresses user triggers — proven by a side-effect table that
-  stays empty while a revert rewrites 3 rows — but it would equally silence pgit's own journal and
-  leave history blind exactly when the database is being rewritten. Marking `pgit_journal` as
+  stays empty while a revert rewrites 3 rows — but it would equally silence grove's own journal and
+  leave history blind exactly when the database is being rewritten. Marking `grove_journal` as
   ALWAYS makes it fire in replica mode while everything else stays quiet. That is the precise
   behaviour the design wanted and it is one `ALTER TABLE` away in stock Postgres.
   Also worth stating plainly: replica mode disables **foreign-key enforcement** too. A whole-commit
@@ -248,7 +248,7 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   matters: checking out a branch that differs by **3 rows in a 200 row table writes exactly 3
   rows** — AC-REF-03 verified by counting writes rather than by wall clock, so it cannot be
   fooled by a fast machine. Two decisions fell out of building it, both in the table above:
-  dirtiness had to become **content-based**, because pgit's own ENABLE ALWAYS journal would
+  dirtiness had to become **content-based**, because grove's own ENABLE ALWAYS journal would
   otherwise make the tree look dirty the moment a checkout finished; and `checkout` now deletes
   its own unstamped journal rows, since materialising an existing commit is not an edit.
   The runner also earned its keep again — it flagged the file as INCOMPLETE at 13 assertions
@@ -344,13 +344,13 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   joining the transition tables **on the primary key**, so an update that *changes* a primary key is
   recorded as a **DELETE plus an INSERT** — correct, because the key is row identity.
 - **AC-REPLAY-11** — 9 checks in a two-session shell harness that kills a backend mid-rebase. Be
-  precise about what it proves: the criterion says "releases its **advisory** locks" and **pgit takes
+  precise about what it proves: the criterion says "releases its **advisory** locks" and **grove takes
   no advisory locks anywhere**, so that half is vacuous, not passed. What it does show is that crash
   safety is **inherited** — every ref move, node write and journal row is an ordinary table write in
   the caller's transaction.
 - **AC-PERF-02 in full** — **163 ms for 10 rows 10,000 commits apart, against 179 ms one commit
   apart.** Flat in history at the stated figure. The run also produced the most uncomfortable number
-  in the project: 10,000 commits grew `pgit.nodes` to **540 MB for a 107 MB table**, none of it
+  in the project: 10,000 commits grew `grove.nodes` to **540 MB for a 107 MB table**, none of it
   garbage. See Blocked.
 - **checkout across a schema change** — 5 assertions. `assert_live_schema` runs before the dirty
   check and names the table and both column lists. Previously it failed with "uncommitted changes",
@@ -364,8 +364,8 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   both times from extrapolating a small fixture.** Anything storage- or depth-related has to be
   measured at target scale or not claimed.
 - **delta compression** — 10 assertions (240 total + 15 CLI + 9 kill). Built as a **repack step**
-  like git's, so the write path is untouched and commits stay at 25 ms; `pgit.repack()` / `pgit gc`
-  rewrites older chunk versions as deltas against the next newer one, and `pgit.unpack()` reverses
+  like git's, so the write path is untouched and commits stay at 25 ms; `grove.repack()` / `grove gc`
+  rewrites older chunk versions as deltas against the next newer one, and `grove.unpack()` reverses
   it. Content addressing survives because a node's hash stays the hash of its *logical* content —
   the delta is a storage form only, and the tests pin that: after repack every node resolves to
   byte-identical entries, no tree root moves, `diff` and `blame` return the same rows, a fresh full
@@ -398,19 +398,19 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   construction.
   The portability claim had been asserted in the README all night and never tested. Testing it found
   a real dependency immediately: `session_replication_role` is superuser-only, so **`revert` and
-  `checkout` failed outright** while everything else already worked. `pgit.replay_begin()` now tries
-  the GUC and falls back on `insufficient_privilege` to disabling each non-pgit trigger by name,
+  `checkout` failed outright** while everything else already worked. `grove.replay_begin()` now tries
+  the GUC and falls back on `insufficient_privilege` to disabling each non-grove trigger by name,
   restoring its exact prior state afterwards — asserted, since `ENABLE TRIGGER USER` would have
   flattened an `ENABLE ALWAYS` trigger to `ENABLE`.
   The fallback is arguably the better path: `DISABLE TRIGGER` skips internal triggers, so
   **referential integrity stays enforced during replay**, closing the FK gap replica mode left open
   and listed under Follow-ups. It costs an ACCESS EXCLUSIVE lock per tracked table.
 - **conflict resolution** — 19 new assertions (259 pgTAP + 19 CLI + 9 kill + 12 RDS = 299). Before
-  this, `pgit.conflicts` was **written and never read** — a conflicted merge reported a count,
-  applied nothing, and offered no way forward. Now: `pgit.merges` tracks an in-progress merge,
+  this, `grove.conflicts` was **written and never read** — a conflicted merge reported a count,
+  applied nothing, and offered no way forward. Now: `grove.merges` tracks an in-progress merge,
   conflicts carry a resolution, and `resolve_conflict` / `resolve_all` / `merge_finish` /
-  `merge_abort` close the loop. CLI: `pgit conflicts`, `pgit resolve`, `pgit merge --continue`,
-  `pgit merge --abort`.
+  `merge_abort` close the loop. CLI: `grove conflicts`, `grove resolve`, `grove merge --continue`,
+  `grove merge --abort`.
   **`-X ours` / `-X theirs`** resolve every conflict to one side while still taking the other
   branch's *non-conflicting* changes — the git semantic, and asserted as such, since the naive
   reading ("take our whole tree") is a different feature. That different feature is `-s ours`,
@@ -426,8 +426,8 @@ Newest last. One line per completed item: what was built, assertion count, anyth
 - **rename detection in merge** — 9 assertions (268 pgTAP + 19 CLI + 9 kill + 12 RDS = 308). The
   row analogue of git's file-rename detection: **a primary-key change is journalled as a delete plus
   an insert**, so if the other branch edited that row you previously got a spurious delete-versus-
-  modify conflict *and* silently lost the edit. `pgit.rename_pairs` pairs deleted keys with inserted
-  ones by `pgit.row_similarity` over non-key columns — mutual-best-match, one-to-one, default
+  modify conflict *and* silently lost the edit. `grove.rename_pairs` pairs deleted keys with inserted
+  ones by `grove.row_similarity` over non-key columns — mutual-best-match, one-to-one, default
   threshold 0.5, the same shape as git's `-M`. `merge_plan` is now a wrapper over `merge_plan_raw`
   that rewrites those conflicts into a three-way merge **at the new key**.
   Tested in both directions, which matters more than the happy path: a key change with an otherwise
@@ -435,17 +435,17 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   renamed row; a delete-plus-insert of *dissimilar* content is **not** mistaken for a rename and
   still surfaces as a real conflict; and raising the threshold above 1.0 finds nothing, proving the
   threshold is actually honoured rather than decorative.
-  `pgit.rename_pairs` is public, so wiring `-M` into `diff` later is a small change. Still absent by
+  `grove.rename_pairs` is public, so wiring `-M` into `diff` later is a small change. Still absent by
   choice: octopus merges, `subtree`, `rerere`, and **table**-level rename detection (a table renamed
   by DDL is currently refused by the schema-fingerprint guard rather than followed).
 - **fsck, revisions, reset/reflog, working-tree diff** — 30 new assertions (291 pgTAP + 26 CLI +
   9 kill + 12 RDS = 338).
-  **`pgit.fsck`** recomputes every node's hash from its children, follows every delta chain, and
+  **`grove.fsck`** recomputes every node's hash from its children, follows every delta chain, and
   checks refs, commit parents, tree roots and child links. It reports zero on a healthy repo *and*
   zero after `repack(50)`, which is the useful part — it verifies delta chains end to end. It is
   also tested **negatively**: a tampered node is caught, and a delta pointing at a missing base is
   caught. Without those two, "fsck returns 0" would be indistinguishable from "fsck checks nothing".
-  **`pgit.rev`** gives `HEAD`, `HEAD~N`, `HEAD^`, `HEAD^2`, branch names and abbreviated shas, and
+  **`grove.rev`** gives `HEAD`, `HEAD~N`, `HEAD^`, `HEAD^2`, branch names and abbreviated shas, and
   the CLI now routes `show`, `diff`, `revert` and `cherry-pick` through it — so the tool takes
   revisions instead of 64-character hashes.
   **`log`** gained `-n`, `--author` and `--since`. **`reflog`** records every ref movement, which
@@ -461,7 +461,7 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   five suites). History moves as a **bundle**: a single self-contained jsonb value carrying commits,
   trees, schemas and fully-materialised nodes. No `dblink`, no `postgres_fdw`, no network coupling —
   which is what keeps the RDS story intact and makes the whole thing testable locally.
-  `pgit.bundle(refs, have)` does real **negotiation**: commits are walked back only to what the
+  `grove.bundle(refs, have)` does real **negotiation**: commits are walked back only to what the
   receiver already has, and nodes reachable from the receiver's existing trees are excluded. Measured
   in the test: a full pack is 15 nodes, the incremental after one commit is **3**.
   Two properties are worth more than the rest. **The clone's tree hashes identically to origin's** —
@@ -479,8 +479,8 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   its own DDL first. That is arguably right for a database tool, where migrations own DDL, but it
   means `clone` is `receive` plus your own `CREATE TABLE` rather than one command.
 - **tags, restore, stash, bisect, prune** — 20 assertions (371 total across five suites).
-  **`tag`** is a separate table rather than a ref, with annotated message and tagger, and `pgit.rev`
-  resolves tag names — so `pgit show v1.0` works. Re-tagging is refused without `-f`.
+  **`tag`** is a separate table rather than a ref, with annotated message and tagger, and `grove.rev`
+  resolves tag names — so `grove show v1.0` works. Re-tagging is refused without `-f`.
   **`restore`** brings a table or a **single row** back from any revision without moving the branch,
   which is the operation people actually want from a database ("put products back to Tuesday").
   Asserted that restoring row 5 leaves row 6's independent change alone.
@@ -501,9 +501,9 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   ambiguity in favour of an error, which is the merciful outcome; the rule needs to be *prefix every
   local*, not *remember to check*.
 - **clone as one command** — 9 more checks in the remote suite (380 total across five suites).
-  The gap was that `pgit.schemas` recorded column names and types but **not the primary key**, so a
+  The gap was that `grove.schemas` recorded column names and types but **not the primary key**, so a
   receiving database could not build the table. `pk_cols` is now recorded, travels in the bundle, and
-  `pgit.clone_from` creates each missing table from the recorded shape, tracks it, sets the branch and
+  `grove.clone_from` creates each missing table from the recorded shape, tracks it, sets the branch and
   materialises the data.
   Tested against a database with **no DDL of its own**: it asserts `to_regclass('t') IS NULL` first,
   then that one call created the table, tracked it, moved HEAD, brought all 300 rows, and that the
@@ -514,7 +514,7 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   a table that holds the data and hashes identically, not a faithful DDL copy. For a tool where
   migrations own DDL that is the right boundary, but it should be read as "clone the history", not
   "clone the schema".
-  Also fixed a real annoyance found by the test: `pgit.track` was emitting `DROP TRIGGER IF EXISTS`
+  Also fixed a real annoyance found by the test: `grove.track` was emitting `DROP TRIGGER IF EXISTS`
   notices on every call, so any script using it filled the console with noise. Silenced at source.
 - **tooling** — the progress log above lost 11 entries to silent failure. They were appended with a
   Python `str.replace()` anchored on text that did not exist, and `replace()` returns the original
@@ -523,18 +523,18 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   **Use a tool that fails loudly, or assert the match count — never a silent string replace.**
 - **notes, rerere and table rename detection** — the three items from the missing-functionality
   inventory that genuinely apply to a row-oriented system. 16 pgTAP assertions, 10 CLI checks.
-  `pgit.notes` attaches text to a commit sha; `pgit notes add|show|rm|list`.
+  `grove.notes` attaches text to a commit sha; `grove notes add|show|rm|list`.
   `rerere` records `(tbl, base, ours, theirs) → resolution` on `merge --continue` and replays it
   automatically the next time the identical conflict appears, so a repeated branch merge stops asking.
   The test proves this is not vacuous: it asserts the `used` counter incremented before checking the
   conflict count dropped to zero — otherwise "no conflicts" could just mean the second merge differed.
-  `pgit rerere status|forget`.
+  `grove rerere status|forget`.
   **Table rename detection uses tree similarity, not shape.** Comparing column names and types
   false-positives constantly — `(id int, v text)` is every other table. It matches by content
   instead: Dice coefficient over `(key, row hash)` leaf pairs, threshold 0.5, best match per dropped
   table. Identical roots score 1.0 without descending. A rename plus an edit of 2 of 10 rows scores
   exactly 0.8 and is reported as `similar`; a drop and an unrelated add sharing no rows is not
-  reported at all. `pgit renames <a> <b>`.
+  reported at all. `grove renames <a> <b>`.
   Two things worth recording. The first draft joined on `root_hash = root_hash`, which made the
   `'similar'` arm of its own CASE unreachable — it could only ever detect a rename with no edits,
   while the column claimed otherwise. Dead code that lies in a report is worse than a missing feature.
@@ -542,17 +542,17 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   now names both tables and the match percentage instead of blaming a shape change. Following a rename
   through a merge means mapping the old name to the new one across the diff, conflict and journal
   paths; that is a project, not an afternoon, and is deliberately not attempted.
-- **octopus merges** — `pgit merge a b c` and `pgit.merge_octopus(text[])`. 19 pgTAP assertions,
+- **octopus merges** — `grove merge a b c` and `grove.merge_octopus(text[])`. 19 pgTAP assertions,
   4 CLI checks, 5 remote checks. This closes the last verb in the inventory that applies here.
   The schema change was the point of it: `parent2_sha` is **gone**, replaced by
-  `pgit.commit_parent (commit_sha, ord, parent_sha)` with `ord >= 2`, plus a `pgit.parent_edge` view
-  that unions the first parent with the rest and a `pgit.parents_of(sha)` accessor. Eight call sites
+  `grove.commit_parent (commit_sha, ord, parent_sha)` with `ord >= 2`, plus a `grove.parent_edge` view
+  that unions the first parent with the rest and a `grove.parents_of(sha)` accessor. Eight call sites
   moved onto the view — `ancestors`, `rev` (`^N` now reaches any parent, not just the second),
   `fsck`, `commits_to_send`, `bundle`, `unbundle`, `prune`, `merge_finish` — and the two tests that
   read the old column. The bundle format carries a `parents` array; the wire format changed and there
   is no reader for the old one, per the no-back-compat rule.
   **The reason this stayed cheap is git's own choice: octopus refuses to resolve conflicts at all.**
-  Once that is accepted there is no sequential three-way state machine to build. `pgit.octopus_plan`
+  Once that is accepted there is no sequential three-way state machine to build. `grove.octopus_plan`
   diffs every head against one common base, groups by `(table, key)`, and counts distinct resulting
   images: one image means every head that touched the row agrees, so apply it; two or more means
   refuse and name the row. Two heads making the *identical* edit is therefore not a conflict, which
@@ -582,7 +582,7 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   Every delta is now checked against its target at construction and falls back to a whole-node insert
   if it would not reconstruct, so correctness never rests on the offset arithmetic.
 
-- **run pgit against a real application database, not a fixture** — `bench/realworld_intoge.sh`,
+- **run grove against a real application database, not a fixture** — `bench/realworld_intoge.sh`,
   19 checks against a restored 63-table e-commerce schema: 21 custom enum types, `jsonb`, `numeric`,
   `date`, `timestamptz`, real foreign keys, Georgian and Russian text. It tracks every table with a
   primary key, commits a baseline, then runs workflows the application would actually perform — a
@@ -602,15 +602,15 @@ Newest last. One line per completed item: what was built, assertion count, anyth
      `writable_columns` and excludes generated columns; identity keys are handled too — they are
      omitted from the `SET` list, since the key is already matched in the `WHERE`, and inserted with
      `OVERRIDING SYSTEM VALUE`. `test/replay_06_unwritable_columns.sql`, 10 assertions.
-  3. **`blame` ignored branch topology.** It scanned `pgit.changes` globally, so a row edited or
+  3. **`blame` ignored branch topology.** It scanned `grove.changes` globally, so a row edited or
      deleted on a branch you are not on was attributed on yours — a row deleted on an unmerged branch
      blamed to all-null values. Now restricted to commits reachable from HEAD plus uncommitted rows.
      `test/blame_02_branch_scope.sql`, 7 assertions.
   Two things about the harness itself. Its first run reported four passes that were **vacuous** —
-  `pgit.track(r.relname)` failed because `relname` is `name` and there is no implicit cast to `text`,
+  `grove.track(r.relname)` failed because `relname` is `name` and there is no implicit cast to `text`,
   the error was swallowed by a `>/dev/null`, and every later assertion compared zero against zero. It
   now refuses to run if tracking produced no tables. And two "failures" were the harness being wrong,
-  not pgit: Postgres words a RESTRICT violation as `violates RESTRICT setting of foreign key
+  not grove: Postgres words a RESTRICT violation as `violates RESTRICT setting of foreign key
   constraint`, not `violates foreign key`, and `blame.actor` is who changed the row, not who authored
   the commit.
 
@@ -618,7 +618,7 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   (12.7M rows, 1.9 GB) alongside a small table that changes nightly, which is the shape of every real
   application: many tables, one of them big, most untouched per commit.
   `write_tree_incremental` guards with `array_length(changed, 1) IS NULL` — *nothing in this table
-  changed* — and fell through to a full `pgit.write_tree(target)`. **The cheapest possible case took
+  changed* — and fell through to a full `grove.write_tree(target)`. **The cheapest possible case took
   the most expensive path.** An unchanged table now returns the root its parent commit recorded.
   Measured at 100k rows: a commit touching only the small table costs **44 ms** with the fix against
   **1,525 ms** for one rebuild of the untouched table alone — 35× the whole commit, and the ratio
@@ -652,7 +652,7 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   unqualified name resolves to the column, not the alias. Nothing failed at write time — the commit
   blew up later with `cannot call populate_composite on a scalar`, pointing at a query that looked
   fine. A column named `cols` broke it a third way, colliding with the trigger's own plpgsql local.
-  Aliases are now `pgit_nr`/`pgit_or` and locals are prefixed.
+  Aliases are now `grove_nr`/`grove_or` and locals are prefixed.
   **This is the fifth and sixth time an unprefixed identifier has cost real debugging time**, after
   the four parameter/local shadowing incidents already recorded. The rule is not "remember to check" —
   it is *prefix every local and every alias mechanically*, including in trigger bodies, where the
@@ -688,7 +688,7 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   `write_tree_incremental` short circuits a level 1 root to a full rebuild. Every fuzz run since
   the incremental path was written had been exercising the *other* path. Fuzz tables are now 6000
   rows (root level 2), and with the bug reintroduced the fuzzer fails on operation 6.
-- **six bugs found by using it like a user** — driving pgit through ordinary flows (track an
+- **six bugs found by using it like a user** — driving grove through ordinary flows (track an
   existing table, branch, merge, resolve, revert, clone) turned up what the suite never asked.
   1. `blame` read only the journal, so every row that existed **before** `track()` was permanently
      unblameable and returned zero rows with no error - the normal onboarding path. It now falls
@@ -704,7 +704,7 @@ Newest last. One line per completed item: what was built, assertion count, anyth
      dangling change silently folded into whatever the user committed next - it happened to me
      mid-session, landing a revert inside an unrelated commit about a different table. `revert` now
      commits, returns the sha, and names what it reverted.
-  5. Every commit had a blank author: `actor()` was `current_setting('pgit.actor')`, documented
+  5. Every commit had a blank author: `actor()` was `current_setting('grove.actor')`, documented
      nowhere. It falls back to `current_user`, which also makes `log(who := ...)` useful for the
      first time.
   6. `clone_from` recreated tables with columns in **alphabetical** order. A positional
@@ -718,11 +718,11 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   I expected to find a data bug. `repack` packs a node by setting `entries`, `hashes` **and** `keys`
   to NULL and storing a delta, but `splice_touched_chunks` reconstructed only `entries` and read
   `hashes`/`keys` straight off the row. Splice a packed leaf chunk and every field is NULL, so
-  `pgit.hash(NULL)` is NULL and the commit dies on the `nodes.hash` NOT NULL constraint. Repack keeps
+  `grove.hash(NULL)` is NULL and the commit dies on the `nodes.hash` NOT NULL constraint. Repack keeps
   the **newest** version of each chunk whole (`ORDER BY n.seq DESC`), so the victim is any branch
   that is not the most recent writer of a chunk: branch, commit a few times on main, run the nightly
   `repack()`, commit on the branch - crash. Reproduced at the default `chunk_target` of 64.
-  `nodes_at_level` had the same bug, reading `n.keys[1]` raw. Both use `pgit.node_raw()` now, which
+  `nodes_at_level` had the same bug, reading `n.keys[1]` raw. Both use `grove.node_raw()` now, which
   already reconstructed all three. Guarded by `gc_02_commit_after_repack.sql`, proven red first.
 - **the fuzzer needed deeper trees, not bigger ones** — raising fuzz tables to 6000 rows cost 6.5x
   per operation and pushed the CI campaign towards an hour. A `chunk_target` of 8 with 400 rows gives
@@ -733,34 +733,34 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   `tconst BETWEEN 'tt00050000' AND 'tt00050099'`, and when the key widened to 12 digits that range
   stopped matching any row. It had been timing a no-op commit. Now 14ms of real work.
 - **observability** — every write verb emits one wide event rather than scattered lines:
-  `pgit.events` holds verb, ok, actor, branch, duration_ms, txid and a jsonb detail carrying the
+  `grove.events` holds verb, ok, actor, branch, duration_ms, txid and a jsonb detail carrying the
   sha, row counts and conflict counts. `log_server` also RAISEs it as a single JSON line for Loki,
-  with `log_error_verbosity` scoped to `pgit.emit` so Postgres does not staple CONTEXT to every
-  event. `pgit.metrics()` is the numeric side for scraping, including commit latency p50/p95 taken
+  with `log_error_verbosity` scoped to `grove.emit` so Postgres does not staple CONTEXT to every
+  event. `grove.metrics()` is the numeric side for scraping, including commit latency p50/p95 taken
   from the events themselves. `repack` rotates the table on `log_retain_days`. Events are
   transactional, so a rolled back operation leaves no trace - which also means failures need
   `log_server`, and the runbook says so. 12 assertions, perf gate unchanged, suite 661 green.
-  One trap on the way: scoping `SET log_error_verbosity = 'terse'` to `pgit.emit` to stop Postgres
+  One trap on the way: scoping `SET log_error_verbosity = 'terse'` to `grove.emit` to stop Postgres
   stapling CONTEXT onto every event is a **superuser only** GUC, so it made `commit` fail for
   exactly the unprivileged role a real application runs as. `privileges_test.sh` caught it. Terse
-  logging is a server setting for the operator, not something pgit can arrange for itself.
+  logging is a server setting for the operator, not something grove can arrange for itself.
 - **`remote` was half a feature, and the half that was missing was not written down** — `remote_add`
   stores a name and a URL, and **nothing anywhere reads the URL**. Proven rather than inferred:
   `remote_add('origin', 'this-is-not-a-url-at-all ://// nonsense')` is accepted, and
   `fetch('never-registered', bundle)` succeeded and created `remotes/never-registered/main` for a
   remote that had never been added. The ref side is genuinely right - fetch touches only
   `remotes/<name>/*`, receive enforces fast forward, both verify every node hashes to its content -
-  but there is no transport, and there cannot be one while pgit stays extension free, because that
+  but there is no transport, and there cannot be one while grove stays extension free, because that
   needs `dblink` or `postgres_fdw`. The README's `remote add origin <url>` implied otherwise.
   `fetch` now refuses an unknown remote and says how to add it, `LIMITATIONS.md` states plainly that
-  pgit never dials anything and shows the bundle-by-hand recipe, and the README calls the URL a
+  grove never dials anything and shows the bundle-by-hand recipe, and the README calls the URL a
   label. The existing remote suite had been fetching without ever adding a remote, which is how the
   gap survived 28 green checks; it registers one now. REMOTE 29.
-- **hunting with the instrument turned on** — running ordinary workflows and reading `pgit.events`
+- **hunting with the instrument turned on** — running ordinary workflows and reading `grove.events`
   rather than the tables found what the tables could not show.
   1. **A rebase left no trace at all.** It rewrote history - old tip abandoned, new commit created -
      and emitted nothing, not even a `commit` event, because `rebase` and `cherry_pick` build commit
-     rows directly instead of calling `pgit.commit`. Measured across a normal workflow: **5 commits
+     rows directly instead of calling `grove.commit`. Measured across a normal workflow: **5 commits
      created, 4 commit events**. `cherry_pick`, `merge_octopus`, `reset`, `restore`, `branch`, `tag`,
      `track`, `untrack`, `delete_branch` and `stash` were all invisible too. `reset` can drop commits
      and `restore` writes rows; both were silent. All instrumented now, and
@@ -790,14 +790,14 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   a file that died before running its assertions reported **`PGTAP RED (0 of 463 failed)`**: red with
   nothing failed and the reason already scrolled off. That is exactly how I lost the earlier one.
   The summary now counts all three and names every file that broke. Second defect: `run.sh` hardcoded
-  the database `pgit_pgtap` and dropped it on exit, so two runs at once silently destroyed each
+  the database `grove_pgtap` and dropped it on exit, so two runs at once silently destroyed each
   other's database mid-suite and produced garbage - which is what I had actually done to myself. It
-  uses `pgit_pgtap_$$` now, and two concurrent runs both report GREEN.
+  uses `grove_pgtap_$$` now, and two concurrent runs both report GREEN.
 - **the rest of the audit gaps closed** — `revert` was recorded only as the commit it produced, and
   `merge_abort`, `rebase_abort`, `resolve_conflict`, `tag_delete`, `note_add` and `bisect_start`
   emitted nothing at all. `merge_abort` discarding resolved conflict work and `resolve_conflict`
   choosing a side are the two an audit asks about most, and both were silent. All emit now, aborts
-  with `ok = false` so throwing work away lands in `pgit_events_failed`. 6 assertions in
+  with `ok = false` so throwing work away lands in `grove_events_failed`. 6 assertions in
   `obs_03_destructive_verbs.sql`.
 - **the perf worry was the machine, not the code** — gate medians drifted 847 → 897 → 943ms across
   the session and the ranges stopped overlapping, which reads exactly like a regression. A/B on the
@@ -831,19 +831,19 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   wrong. It was never about the version. Three of the last five runs on master failed and one passed,
   purely on which random seeds each drew. All three seeds pass with the fix and all three are pinned.
 - **dropping a tracked table stopped all versioning, silently** — a migration that drops a tracked
-  table leaves its oid in `pgit.tracked`, and from then on **every** `pgit.commit()` fails with
-  `pgit: table 3592960 has no primary key`. The oid because the name is gone, and the wrong diagnosis
+  table leaves its oid in `grove.tracked`, and from then on **every** `grove.commit()` fails with
+  `grove: table 3592960 has no primary key`. The oid because the name is gone, and the wrong diagnosis
   because the real problem is that the table does not exist. `fsck` reported **0 problems** and
   `needs_attention()` was empty, so nothing anywhere said versioning had stopped. For a project whose
   schema is owned by drizzle migrations, dropping a table is routine.
-  `pgit.tracked` now records `name_at_track` so the table can still be named after it is gone,
-  `pgit.missing_tracked()` finds them, `pgit.untrack_missing()` clears them, `fsck` reports
+  `grove.tracked` now records `name_at_track` so the table can still be named after it is gone,
+  `grove.missing_tracked()` finds them, `grove.untrack_missing()` clears them, `fsck` reports
   "tracked table no longer exists", `needs_attention` surfaces it, and the commit error says which
   table and what to run. The dropped table's recorded history is kept, so its old rows are still
   readable through `diff` and `restore`. 8 assertions in `ddl_03_dropped_tracked_table.sql`.
   Two self-inflicted errors on the way, both caught by the suite rather than by me. Naming the new
-  column `tbl_name` collided with the **parameter** of that name in `pgit.blame` and
-  `pgit.row_matches`, making `WHERE tbl::text = tbl_name` ambiguous and breaking four unrelated test
+  column `tbl_name` collided with the **parameter** of that name in `grove.blame` and
+  `grove.row_matches`, making `WHERE tbl::text = tbl_name` ambiguous and breaking four unrelated test
   files. And `missing_tracked()` returning a column called `tbl_name` collided with the same column
   inside its own body. Adding a column to a shared metadata table is not a local change.
 - **the chunk_target=4 divergence does not reach the default** — 3000 operations at `chunk_target=64`
@@ -864,7 +864,7 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   received. The bundle carries `refs, nodes, trees, commits, schemas` and **no settings**, so a source
   chunking at 8 cloned into a database defaulting to 64 produces trees that can never agree. Nothing
   warned; only the invariant query catches it, and only if you run it.
-  `pgit.canon_settings()` now travels in every bundle, `unbundle` adopts `chunk_target` when the
+  `grove.canon_settings()` now travels in every bundle, `unbundle` adopts `chunk_target` when the
   target database is empty (which is what cloning means) and refuses otherwise, naming both values.
   `canon_version`, `hash_algo` and `format_version` always refuse, because no reconciliation of those
   is meaningful. Verified both directions: clone into empty adopts 8 and the tree matches; receive
@@ -872,19 +872,19 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   Worth noting how long this hid. `remote_test.sh` has covered clone since the start and passes,
   because it never varies `chunk_target`. The bug needed a *property* test over generated states, not
   another example.
-- **the fuzzer could not run twice at once** — `fuzz_test.sh` hardcoded the database `pgit_fuzz`, so
+- **the fuzzer could not run twice at once** — `fuzz_test.sh` hardcoded the database `grove_fuzz`, so
   two runs raced on `CREATE DATABASE` and both produced nonsense
   (`duplicate key value violates unique constraint "pg_database_datname_index"`). I did this to myself
   by running `all.sh` while a hunt batch was going, and briefly read the result as a real failure.
-  Same defect and same fix as `run.sh` earlier tonight: `pgit_fuzz_$$` plus a trap that drops it.
+  Same defect and same fix as `run.sh` earlier tonight: `grove_fuzz_$$` plus a trap that drops it.
   Two concurrent runs are now both green and leave nothing behind.
 - **a round-trip failure that was my own test, and the product was right** — the new round-trip hunt
   started failing at `chunk_target=16` with the clone holding no trees at all, six times in twelve
   runs, while `clone_from` reported no error. The cause was `argument list too long: psql`: at that
   target the fuzzed bundle reaches 2 MB and the test passed it as a shell argument, so psql never
   ran. My error check missed it because the message says "too long", not "error".
-  Checked whether real users hit the same wall, because `README` advertises `pgit clone pack.json`.
-  They do not: `bin/pgit` pipes `\set b \`cat file\`` into psql, which never touches argv and has no
+  Checked whether real users hit the same wall, because `README` advertises `grove clone pack.json`.
+  They do not: `bin/grove` pipes `\set b \`cat file\`` into psql, which never touches argv and has no
   ARG_MAX limit. The test now does the same and 27 consecutive round-trips at chunk 16 are green.
   Two lessons kept. A test that passes a large payload differently from the shipping code is testing
   the wrong thing. And grepping only a summary line loses the seed, which is the same failure mode as
@@ -897,7 +897,7 @@ Newest last. One line per completed item: what was built, assertion count, anyth
 - **the fuzzer now merges, and it took two attempts to make that mean anything** — 250 operations
   had never once exercised a three way merge. Adding a merge op that picks an existing branch was
   almost worthless: it ran 3 times in 250 operations and every one was a clean merge, because the
-  fuzzer's ADD and DROP COLUMN traffic leaves branches with divergent shapes and pgit correctly
+  fuzzer's ADD and DROP COLUMN traffic leaves branches with divergent shapes and grove correctly
   refuses to replay across a schema change. 31 of 38 refusals in that run were exactly that.
   The op now *constructs* the conflict instead of hoping for one: branch, edit a text column on the
   branch, come back, edit the same rows differently, commit both sides, merge, then either
@@ -911,7 +911,7 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   finishing the first of three configurations. Killed it. Hunting value comes from many varied runs,
   not one enormous one, and a batch that never reports is indistinguishable from a hung one.
 - **octopus is covered now, and getting there was instructive twice over** — the first octopus op
-  logged nothing at all, which looked like it was never selected. It was running: pgit was
+  logged nothing at all, which looked like it was never selected. It was running: grove was
   **correctly refusing** it, with `octopus refuses this merge, 2 of the 3 heads changed
   fz_b(id=323) differently`. My supposedly disjoint moduli 17 and 19 collide at 323, and with 800
   rows that id exists. The refusal was right; my arithmetic was wrong, and the generic exception
@@ -920,14 +920,14 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   separately from other refusals so the two outcomes stay distinguishable. 250 operations now produce
   **10 octopus merges, 10 resolved conflicts, 10 aborted merges and 4 clean merges**, with 24
   multi-parent commits and a maximum of 3 parents, fsck clean.
-  The second lesson is about the harness rather than pgit: a catch-all `EXCEPTION WHEN others` that
+  The second lesson is about the harness rather than grove: a catch-all `EXCEPTION WHEN others` that
   logs every failure the same way turns a correct refusal and a real bug into the same line. Every
   op that can legitimately be refused should say so in its own words.
 - **coverage recorded** — merge campaign clean at chunk 8/32/64, 4 rounds each over 1200 row tables,
   roughly 3600 operations including constructed conflicts. Fuzz surface now includes: insert, update,
   delete, add/drop column, branch, checkout, prune, repack, three way merge with resolution and
   abort, and octopus. Not yet in the fuzzer: rebase, cherry-pick, revert, stash, bisect, tag, notes.
-- **what concurrent writers actually do to attribution** — the hazard I flagged while wiring pgit into
+- **what concurrent writers actually do to attribution** — the hazard I flagged while wiring grove into
   a real application turned out to be half as bad as I assumed, and the half that is real was
   undocumented. Alice writes 10 rows and does not commit; Bob edits 3 and commits. **Bob's commit
   claims all 13 rows** and is authored `bob`, because `commit` records every journal row that is not
@@ -996,8 +996,8 @@ Newest last. One line per completed item: what was built, assertion count, anyth
 - **blame has a differential oracle now, and it was proven to have teeth** — blame is the feature two
   of tonight's bugs were in, and it still only had example tests. `blame_03_oracle.sql` builds twelve
   commits that write rotating columns over overlapping row sets, records the last writer of every
-  (row, column) pair **in a side table computed by the test rather than by pgit**, and then compares
-  every pair against `pgit.blame`.
+  (row, column) pair **in a side table computed by the test rather than by grove**, and then compares
+  every pair against `grove.blame`.
   It passes, and more importantly it fails when it should: inverting blame's `ORDER BY a.id DESC` to
   `ASC`, which makes it report the *first* writer of a column instead of the last, turns assertion 3
   red. An oracle nobody has broken on purpose is a guess about coverage, and two of tonight's false
@@ -1028,7 +1028,7 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   worst of the three, because it turns a guarantee into a suggestion.
   Correct already: reordered nodes and duplicated nodes both clone fine, which is the right answer
   and worth pinning so a future check does not break it. Dangling refs and missing commits were
-  refused, but by a raw foreign key violation naming `refs_sha_fkey` rather than by pgit, which is a
+  refused, but by a raw foreign key violation naming `refs_sha_fkey` rather than by grove, which is a
   poor thing to hand someone holding an untrusted file.
   `unbundle` now requires a settings block, requires every ref to name a commit the bundle carries,
   and requires trees and schemas to pair up per (commit, table). Six assertions, four proven red

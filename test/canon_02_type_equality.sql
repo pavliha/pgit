@@ -7,7 +7,7 @@ INSERT INTO num_a VALUES (1, 1.0), (2, 250), (3, 0.5);
 INSERT INTO num_b VALUES (1, 1.0000), (2, 250.00), (3, 0.50);
 
 SELECT is(
-  pgit.tree_root('num_a'), pgit.tree_root('num_b'),
+  grove.tree_root('num_a'), grove.tree_root('num_b'),
   'AC-CANON-02: numeric 1.0 = 1.0000 hashes identically'
 );
 
@@ -17,7 +17,7 @@ INSERT INTO flt_a VALUES (1, 0.0), (2, 'NaN'), (3, 1.5);
 INSERT INTO flt_b VALUES (1, -0.0), (2, 'NaN'), (3, 1.5);
 
 SELECT is(
-  pgit.tree_root('flt_a'), pgit.tree_root('flt_b'),
+  grove.tree_root('flt_a'), grove.tree_root('flt_b'),
   'AC-CANON-02: float 0.0 = -0.0 and NaN = NaN hash identically'
 );
 
@@ -27,7 +27,7 @@ INSERT INTO nan_a VALUES (1, 'NaN');
 INSERT INTO nan_b VALUES (1, 'NaN');
 
 SELECT is(
-  pgit.tree_root('nan_a'), pgit.tree_root('nan_b'),
+  grove.tree_root('nan_a'), grove.tree_root('nan_b'),
   'AC-CANON-02: numeric NaN is stable'
 );
 
@@ -37,15 +37,15 @@ INSERT INTO ts_a VALUES (1, '2026-01-01 00:00:00+00');
 INSERT INTO ts_b VALUES (1, '2026-01-01 03:00:00+03');
 
 SELECT is(
-  pgit.tree_root('ts_a'), pgit.tree_root('ts_b'),
+  grove.tree_root('ts_a'), grove.tree_root('ts_b'),
   'AC-CANON-02: the same instant written in two offsets hashes identically'
 );
 
-CREATE TEMP TABLE tz_snap AS SELECT pgit.tree_root('ts_a') AS root;
+CREATE TEMP TABLE tz_snap AS SELECT grove.tree_root('ts_a') AS root;
 SET LOCAL TimeZone = 'Pacific/Kiritimati';
 
 SELECT is(
-  pgit.tree_root('ts_a'), (SELECT root FROM tz_snap),
+  grove.tree_root('ts_a'), (SELECT root FROM tz_snap),
   'AC-CANON-02: session TimeZone does not change the hash'
 );
 
@@ -57,7 +57,7 @@ INSERT INTO uni_a VALUES (1, U&'caf\00E9');
 INSERT INTO uni_b VALUES (1, U&'cafe\0301');
 
 SELECT is(
-  pgit.tree_root('uni_a'), pgit.tree_root('uni_b'),
+  grove.tree_root('uni_a'), grove.tree_root('uni_b'),
   'AC-CANON-02: NFC and NFD forms of the same string hash identically'
 );
 
@@ -68,7 +68,7 @@ INSERT INTO enum_a VALUES (1, 'paid');
 INSERT INTO enum_b VALUES (1, 'paid');
 
 SELECT is(
-  pgit.tree_root('enum_a'), pgit.tree_root('enum_b'),
+  grove.tree_root('enum_a'), grove.tree_root('enum_b'),
   'AC-CANON-02: enums hash by label, not by oid or ordinal'
 );
 
@@ -79,20 +79,20 @@ INSERT INTO dom_a VALUES (1, 9.90);
 INSERT INTO dom_b VALUES (1, 9.9);
 
 SELECT is(
-  pgit.tree_root('dom_a'), pgit.tree_root('dom_b'),
+  grove.tree_root('dom_a'), grove.tree_root('dom_b'),
   'AC-CANON-02: a domain normalises as its base type'
 );
 
 SELECT is(
   (SELECT count(*) FROM (VALUES ('abc'), (''), ('ქართული'), (E'e\u0301'), (E'\u00e9'),
                                 ('日本語'), ('mixed ascii and ქართული'), (NULL)) v(x)
-   WHERE pgit.canon_text(x) IS DISTINCT FROM normalize(x, NFC)),
+   WHERE grove.canon_text(x) IS DISTINCT FROM normalize(x, NFC)),
   0::bigint,
   'AC-CANON-02: the ascii fast path agrees with normalize on every form, NFD and NULL included'
 );
 
 SELECT isnt(
-  (SELECT pgit.canon_text(E'e\u0301')), E'e\u0301',
+  (SELECT grove.canon_text(E'e\u0301')), E'e\u0301',
   'AC-CANON-02: and it really does normalise a decomposed string, so the check is not vacuous'
 );
 

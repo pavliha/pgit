@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-ADMIN="${PGIT_ADMIN_DSN:-postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/postgres}"
+ADMIN="${GROVE_ADMIN_DSN:-postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/postgres}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-if [ -z "${PGIT_DSN:-}" ]; then
-  DB="pgit_pgtap_$$"
-  DSN="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/$DB"
+if [ -z "${GROVE_DSN:-}" ]; then
+  DB="grove_pgtap_$$"
+  DSN="postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/$DB"
   psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS $DB" -c "CREATE DATABASE $DB" >/dev/null
   psql "$DSN" -X -q -v ON_ERROR_STOP=1 -f "$DIR/../sql/install.sql" >/dev/null
   psql "$DSN" -X -q -c "CREATE EXTENSION IF NOT EXISTS pgtap" >/dev/null
   OWNED=1
 else
-  DSN="$PGIT_DSN"
+  DSN="$GROVE_DSN"
   OWNED=0
 fi
 TOTAL_OK=0
