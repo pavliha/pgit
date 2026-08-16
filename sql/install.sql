@@ -2991,6 +2991,7 @@ CREATE OR REPLACE FUNCTION grove.resolve_all(mid bigint, kind text) RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
   n int;
+  started timestamptz := clock_timestamp();
 BEGIN
   IF kind NOT IN ('ours', 'theirs', 'base') THEN
     RAISE EXCEPTION 'grove: resolve_all takes ours, theirs or base, not %', kind;
@@ -3003,6 +3004,10 @@ BEGIN
   WHERE merge_id = mid AND NOT resolved;
 
   GET DIAGNOSTICS n = ROW_COUNT;
+
+  PERFORM grove.emit('resolve_all', started, jsonb_build_object(
+    'merge_id', mid, 'kind', kind, 'resolved', n));
+
   RETURN n;
 END $$;
 
@@ -3450,10 +3455,16 @@ CREATE TABLE IF NOT EXISTS grove.remotes (
 );
 
 CREATE OR REPLACE FUNCTION grove.remote_add(remote_name text, remote_url text) RETURNS void
-LANGUAGE sql AS $$
+LANGUAGE plpgsql AS $$
+DECLARE
+  started timestamptz := clock_timestamp();
+BEGIN
   INSERT INTO grove.remotes (name, url) VALUES (remote_name, remote_url)
-  ON CONFLICT (name) DO UPDATE SET url = EXCLUDED.url
-$$;
+  ON CONFLICT (name) DO UPDATE SET url = EXCLUDED.url;
+
+  PERFORM grove.emit('remote_add', started, jsonb_build_object(
+    'remote', remote_name, 'url', remote_url));
+END $$;
 
 CREATE OR REPLACE FUNCTION grove.reachable_nodes(roots bytea[]) RETURNS TABLE (h bytea)
 LANGUAGE sql STABLE AS $$
@@ -4138,12 +4149,16 @@ CREATE OR REPLACE FUNCTION grove.bisect_reset() RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
   b record;
+  started timestamptz := clock_timestamp();
 BEGIN
   SELECT * INTO b FROM grove.bisect WHERE id = 1;
 
   IF FOUND AND b.orig_sha IS NOT NULL AND grove.resolve(b.orig_ref) IS DISTINCT FROM b.orig_sha THEN
     PERFORM grove.reset(encode(b.orig_sha, 'hex'), 'hard');
   END IF;
+
+  PERFORM grove.emit('bisect_reset', started, jsonb_build_object(
+    'was_searching', FOUND, 'back_to', grove.short_sha(b.orig_sha)));
 
   DELETE FROM grove.bisect;
 END $$;
@@ -4356,7 +4371,17 @@ LANGUAGE sql STABLE AS $$
 $$;
 
 CREATE OR REPLACE FUNCTION grove.note_delete(spec text) RETURNS void
-LANGUAGE sql AS $$ DELETE FROM grove.notes WHERE commit_sha = grove.rev(spec) $$;
+LANGUAGE plpgsql AS $$
+DECLARE
+  started timestamptz := clock_timestamp();
+  target  bytea := grove.rev(spec);
+BEGIN
+  PERFORM grove.emit('note_delete', started, jsonb_build_object(
+    'commit', grove.short_sha(target),
+    'had_note', EXISTS (SELECT 1 FROM grove.notes WHERE commit_sha = target)));
+
+  DELETE FROM grove.notes WHERE commit_sha = target;
+END $$;
 
 CREATE TABLE IF NOT EXISTS grove.rerere (
   signature       bytea PRIMARY KEY,
@@ -4708,7 +4733,7 @@ LANGUAGE sql IMMUTABLE AS $$
                'advance_ref','apply_row','apply_diff','materialise','replay_begin',
                'replay_end','record_conflicts','record_schemas','record_trees','resolve_all',
                'resolve_conflict','virtual_merge',
-               'rerere_learn','rerere_apply','rerere_forget','write_tree',
+               'rerere_learn','rerere_apply','write_tree',
                'write_tree_incremental','snapshot_trees','ensure_scratch','ensure_key_index',
                'build_up','build_one_level','locate_touched_chunks','splice_touched_chunks','emit',
                'rebuild_touched_ranges','assemble_above_leaves','journal_stmt','journal_truncate']
@@ -4725,6 +4750,7 @@ LANGUAGE plpgsql AS $$
 DECLARE
   fn    record;
   n     int := 0;
+  started timestamptz := clock_timestamp();
   admin text[] := grove.admin_only_verbs();
   wr    text[] := grove.write_verbs();
 BEGIN
@@ -4757,6 +4783,9 @@ BEGIN
   DELETE FROM grove.access a WHERE a.role_name = grant_level.role_name;
   INSERT INTO grove.access (role_name, level)
   VALUES (grant_level.role_name, grant_level.level);
+
+  PERFORM grove.emit('grant_level', started, jsonb_build_object(
+    'role', grant_level.role_name, 'level', grant_level.level, 'functions', n));
 
   RETURN n;
 END $$;
@@ -4872,10 +4901,15 @@ CREATE OR REPLACE FUNCTION grove.log_rotate() RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
   n int;
+  started timestamptz := clock_timestamp();
 BEGIN
   DELETE FROM grove.events
   WHERE at < now() - (grove.setting('log_retain_days') || ' days')::interval;
   GET DIAGNOSTICS n = ROW_COUNT;
+
+  PERFORM grove.emit('log_rotate', started, jsonb_build_object(
+    'discarded', n, 'retain_days', grove.setting('log_retain_days')));
+
   RETURN n;
 END $$;
 

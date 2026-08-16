@@ -1456,6 +1456,22 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   cleanup actually matters, which is the case a superuser never exercises.
   No bug. The existing stash test asserted the visible round trip but nothing about the journal, so it
   now covers both, plus a row that was only inserted, which the old test never stashed.
+- **six verbs changed something and left no trace.** Asked the cross-cutting question of the audit log:
+  which paths call `grove.emit` and which forget. Most silent functions are internal machinery and
+  rightly say nothing, but six user-facing ones said nothing either, and the pattern is sibling pairs
+  where one talks and the other does not. `note_add` emits and `note_delete` did not.
+  `resolve_conflict` emits and `resolve_all` did not, so resolving one conflict was recorded and
+  resolving every conflict in a merge at once was not. `bisect_start` emits and `bisect_reset` did not.
+  The two that matter most are not pairs. `grant_level` decides which role may call what and recorded
+  nothing, so a change of access left the audit log looking untouched. `log_rotate` deletes rows from
+  the audit log itself and recorded nothing, which is the one deletion that most needs a receipt. All
+  six emit now.
+  The sweep also turned up `rerere_forget` sitting in `write_verbs()` with no such function behind it,
+  a name for something that does not exist. Removed rather than implemented, since inventing a verb is
+  not a defect fix.
+  The test asserts the whole surface from `pg_proc` rather than checking a few verbs by hand: every
+  name in the list exists, and every one of them calls emit. It also asserts the list is longer than
+  thirty names, so it cannot quietly shrink to something trivially true.
 
 ## Reference
 
