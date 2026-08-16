@@ -966,6 +966,18 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   The test also asserts that both sides of every comparison name a real commit, because an oracle
   that compares two nulls passes for the wrong reason. Two of tonight's false findings came from
   exactly that class of mistake, so it is cheaper to assert non-vacuity than to trust it.
+- **three advertised verbs had zero assertions; `renames` now has eight** — counting assertions per
+  verb found `stash_push`, `diff_stat` and `table_renames` at **zero**, all three in the README.
+  `table_renames` was the likeliest to be wrong, being a content similarity heuristic, so it went
+  first. It is correct on every case probed: an exact rename reports `identical` at 1.0; two tables
+  renamed in one commit are paired to their own successors rather than cross matched; dropping a
+  table and adding an unrelated one reports **no** rename; a rename that also changed a quarter of
+  the rows reports `similar` at exactly **0.75**; and the threshold argument includes or excludes
+  that pair on either side of it.
+  No bug. The value here is that an advertised feature stopped resting on nothing, and the false
+  positive case - claiming a rename that did not happen - is the one that would have been actively
+  misleading, so it is now pinned.
+  Still at zero: `stash_push` and `diff_stat`.
 
 ## Reference
 
