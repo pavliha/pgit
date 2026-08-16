@@ -993,6 +993,18 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   15 minute rule I had just written down. Each replay op costs a branch, two checkouts and two
   commits, so 400 ops is the wrong number now; the surface changed and the batch size did not follow.
   Killed it. Chunk 8 had already come back green over 400 ops and three rounds.
+- **blame has a differential oracle now, and it was proven to have teeth** — blame is the feature two
+  of tonight's bugs were in, and it still only had example tests. `blame_03_oracle.sql` builds twelve
+  commits that write rotating columns over overlapping row sets, records the last writer of every
+  (row, column) pair **in a side table computed by the test rather than by pgit**, and then compares
+  every pair against `pgit.blame`.
+  It passes, and more importantly it fails when it should: inverting blame's `ORDER BY a.id DESC` to
+  `ASC`, which makes it report the *first* writer of a column instead of the last, turns assertion 3
+  red. An oracle nobody has broken on purpose is a guess about coverage, and two of tonight's false
+  findings came from exactly that class of mistake.
+  It also asserts the comparison spans more than three distinct commits, so it cannot pass by
+  comparing one value against itself, and that a column nobody ever updated is credited to the commit
+  that first recorded the row.
 
 ## Reference
 
