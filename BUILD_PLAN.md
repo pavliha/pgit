@@ -1347,6 +1347,16 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   `oid` and returned blank both before and after, which reads exactly like "nothing changed".
   `upgrade_test.sh` is a new suite because pgTAP cannot reinstall inside a transaction. Four of its ten
   assertions fail without the fix.
+- **repeated prune and clone cycles hold up, and now something checks that.** Following the question the
+  upgrade bug raised, what does the suite never do that a user does, the answer after "start from an
+  existing database" is "start from a repository that has already been through this once". Every clone
+  test clones a fresh origin exactly once. So: prune the origin, clone it, commit in the clone, prune
+  that, clone onward, commit again. Nothing breaks. The second hop's table is byte-identical to its
+  source by md5, rebuilds the same root, carries a boundary of its own, commits, and passes fsck.
+  No bug, so it is pinned in remote_test.sh. It matters because it is the only test that exercises the
+  shallow boundary being created, carried across a bundle, and then created again on top of one that
+  arrived from somewhere else, which is exactly the state the prune fix earlier in this campaign
+  introduced.
 
 ## Reference
 

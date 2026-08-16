@@ -312,4 +312,46 @@ is "remote: and the clone has every row" \
 is "remote: and the clone carries the boundary too, so it can be cloned onward" \
    "$(psql "$PC" -X -q -At -c 'SELECT count(*) FROM grove.shallow')" "1"
 
-suite_end REMOTE 53
+for d in grove_cycle_a grove_cycle_b grove_cycle_c; do
+  psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS $d WITH (FORCE)" -c "CREATE DATABASE $d" >/dev/null 2>&1
+  psql "postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/$d" -X -q -v ON_ERROR_STOP=1 \
+       -f "$DIR/sql/install.sql" >/dev/null 2>&1
+done
+CA="postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/grove_cycle_a"
+CB="postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/grove_cycle_b"
+CC="postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/grove_cycle_c"
+psql "$CA" -X -q -c "$DDL" -c "SELECT grove.track('t')" >/dev/null 2>&1
+psql "$CA" -X -q -At >/dev/null 2>&1 <<'SQL'
+INSERT INTO t SELECT g, 'row-'||g, 0 FROM generate_series(1,200) g;
+SELECT grove.commit('old one','alice', now() - interval '20 days');
+UPDATE t SET hits = 1 WHERE id = 1;
+SELECT grove.commit('old two','alice', now() - interval '15 days');
+UPDATE t SET hits = 2 WHERE id = 2;
+SELECT grove.commit('recent','alice', now());
+SELECT grove.prune(now() - interval '10 days');
+SQL
+psql "$CA" -X -q -At -c "SELECT grove.bundle(ARRAY['main'])" > /tmp/grove_cycle1.json 2>&1
+runb "$CB" /tmp/grove_cycle1.json "SELECT grove.clone_from(:'b'::jsonb, 'main');" >/dev/null 2>&1
+psql "$CB" -X -q -At >/dev/null 2>&1 <<'SQL'
+UPDATE t SET hits = 3 WHERE id = 3;
+SELECT grove.commit('added in the clone','bob');
+SELECT grove.prune(now() - interval '1 day');
+SQL
+psql "$CB" -X -q -At -c "SELECT grove.bundle(ARRAY['main'])" > /tmp/grove_cycle2.json 2>&1
+
+is "remote: a clone of a pruned repository can be pruned again and cloned onward" \
+   "$(runb "$CC" /tmp/grove_cycle2.json "SELECT grove.clone_from(:'b'::jsonb, 'main');" | grep -ci error)" "0"
+is "remote: and the second hop holds exactly the rows its source held" \
+   "$(psql "$CC" -X -q -At -c "SELECT md5(string_agg(id||':'||hits, ',' ORDER BY id)) FROM t")" \
+   "$(psql "$CB" -X -q -At -c "SELECT md5(string_agg(id||':'||hits, ',' ORDER BY id)) FROM t")"
+is "remote: and rebuilds the same tree" \
+   "$(psql "$CC" -X -q -At -c "SELECT encode(grove.write_tree('t'),'hex')")" \
+   "$(psql "$CB" -X -q -At -c "SELECT encode(grove.write_tree('t'),'hex')")"
+is "remote: and carries a boundary of its own, so it can be cloned again" \
+   "$(psql "$CC" -X -q -At -c 'SELECT count(*) FROM grove.shallow')" "1"
+is "remote: and can be committed to, twice-pruned history and all" \
+   "$(psql "$CC" -X -q -At -c "UPDATE t SET hits = 4 WHERE id = 4" -c "SELECT grove.commit('third hop','carol') IS NOT NULL" 2>&1 | tail -1)" "t"
+is "remote: and is still clean afterwards" \
+   "$(psql "$CC" -X -q -At -c 'SELECT count(*) FROM grove.fsck()')" "0"
+
+suite_end REMOTE 59
