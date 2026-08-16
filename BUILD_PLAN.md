@@ -894,6 +894,22 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   Running: ops 900 at rows 12000 across chunk 8/32/64. Not yet covered anywhere: merges under fuzz.
   The fuzzer branches and checks out but never merges, so three way resolution and octopus have only
   example tests behind them, which is exactly the gap that hid the bundle settings bug.
+- **the fuzzer now merges, and it took two attempts to make that mean anything** — 250 operations
+  had never once exercised a three way merge. Adding a merge op that picks an existing branch was
+  almost worthless: it ran 3 times in 250 operations and every one was a clean merge, because the
+  fuzzer's ADD and DROP COLUMN traffic leaves branches with divergent shapes and pgit correctly
+  refuses to replay across a schema change. 31 of 38 refusals in that run were exactly that.
+  The op now *constructs* the conflict instead of hoping for one: branch, edit a text column on the
+  branch, come back, edit the same rows differently, commit both sides, merge, then either
+  `resolve_all` plus `merge_finish` or `merge_abort`, chosen at random. That yields **10 resolved and
+  10 aborted conflicts per 250 operations** instead of zero, and the tree invariant is checked after
+  each one. This is the same lesson as the prune op earlier: an operation that executes but cannot
+  reach the interesting state is worse than no operation, because it reads as coverage.
+  Still not covered: octopus. Its attempts are refused for the same schema-shape reason and logged
+  indistinguishably from other refusals, so it needs the same deliberate construction.
+- **a batch that was too big to be useful** — ops 900 over 12000 row tables ran for 1h12m without
+  finishing the first of three configurations. Killed it. Hunting value comes from many varied runs,
+  not one enormous one, and a batch that never reports is indistinguishable from a hung one.
 
 ## Reference
 

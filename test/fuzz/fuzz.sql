@@ -24,6 +24,8 @@ DECLARE
   cnt     int;
   bad     int;
   extra   int := 0;
+  mid     bigint;
+  home    text;
   branches text[] := ARRAY['main'];
 BEGIN
   PERFORM setseed(seedv);
@@ -42,7 +44,7 @@ BEGIN
 
   FOR i IN 1..ops LOOP
     tb   := tbls[1 + floor(random() * array_length(tbls,1))::int];
-    pick := 1 + floor(random() * 11)::int;
+    pick := 1 + floor(random() * 13)::int;
 
     BEGIN
       IF pick <= 3 THEN
@@ -93,6 +95,46 @@ BEGIN
           PERFORM pgit.prune((SELECT c.at FROM pgit.commits c ORDER BY c.at DESC OFFSET 1 LIMIT 1));
           INSERT INTO fuzz_log VALUES (i, 'change then prune', tb || '.' || col);
         END IF;
+
+      ELSIF pick = 12 THEN
+        SELECT a.attname INTO col FROM pg_attribute a
+        WHERE a.attrelid = tb::regclass AND a.attnum > 0 AND NOT a.attisdropped
+          AND a.attname <> 'id' AND a.atttypid = 'text'::regtype
+        ORDER BY a.attnum LIMIT 1;
+
+        IF col IS NOT NULL THEN
+          home := pgit.head();
+          br   := 'm' || i;
+          PERFORM pgit.branch(br);
+          PERFORM pgit.checkout(br);
+          EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 11 = 0', tb, col, 'theirs-' || i);
+          PERFORM pgit.commit('theirs ' || i, pgit.head(), now(), true);
+          PERFORM pgit.checkout(home);
+          EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 11 = 0', tb, col, 'ours-' || i);
+          PERFORM pgit.commit('ours ' || i, pgit.head(), now(), true);
+          branches := branches || br;
+
+          cnt := pgit.merge(br, 'fuzz merge ' || i);
+          IF cnt > 0 THEN
+            SELECT max(m.id) INTO mid FROM pgit.merges m;
+            IF random() < 0.5 THEN
+              PERFORM pgit.resolve_all(mid, CASE WHEN random() < 0.5 THEN 'ours' ELSE 'theirs' END);
+              PERFORM pgit.merge_finish(mid);
+              INSERT INTO fuzz_log VALUES (i, 'merge resolved', br || ' (' || cnt || ' conflicts)');
+            ELSE
+              PERFORM pgit.merge_abort(mid);
+              INSERT INTO fuzz_log VALUES (i, 'merge aborted', br || ' (' || cnt || ' conflicts)');
+            END IF;
+          ELSE
+            INSERT INTO fuzz_log VALUES (i, 'merge clean', br);
+          END IF;
+        END IF;
+
+      ELSIF pick = 13 AND array_length(branches,1) > 2 THEN
+        PERFORM pgit.merge_octopus(
+          ARRAY(SELECT b FROM unnest(branches) b WHERE b <> pgit.head() LIMIT 2),
+          'fuzz octopus ' || i);
+        INSERT INTO fuzz_log VALUES (i, 'octopus', '');
 
       ELSE
         IF array_length(branches,1) > 1 AND random() < 0.5 THEN
