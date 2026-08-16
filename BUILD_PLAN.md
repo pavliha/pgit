@@ -1253,6 +1253,21 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   `grove.trees` instead of a text name, which changes the bundle format.
   Worth keeping in mind: the codebase told me my first fix was wrong within one test run. Reading the
   existing tests for a feature before guarding against it would have been quicker.
+- **untracking a table scheduled its data for deletion.** `untrack` means stop versioning this table.
+  What it actually meant was: the next commit drops the table from the history, `diff_stat` reads that
+  as all 100 rows deleted, and the next `checkout` applies that deletion to the live table. A table
+  grove had been explicitly told to leave alone was emptied by switching branches, with fsck clean
+  throughout. Found by asking what happens to recorded history when the live state changes, the same
+  question that produced the key drift and rename findings.
+  The cause is in the table selection, not in the diff: five loops across `revert`, `checkout`, `merge`
+  and the replay path all iterate `grove.trees` for the relevant commits and write to whatever they
+  find, without asking whether the table is still tracked. `grove.replay_tables` is now the one place
+  that answers "which tables may this replay write to", and all five use it.
+  The rule it encodes is worth stating plainly: grove writes only to tables it is tracking. The test
+  pins both directions, an untracked table is neither emptied nor restored.
+  Non-vacuity mattered here: the test asserts the older commit still records the table and that the
+  diff still reads it as 100 deletions, so the passes afterwards mean the replay declined to act
+  rather than having nothing to act on.
 
 ## Reference
 

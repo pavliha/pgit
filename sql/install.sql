@@ -1273,6 +1273,13 @@ LANGUAGE sql STABLE AS $$
       AND a.attidentity = 'a')
 $$;
 
+CREATE OR REPLACE FUNCTION grove.replay_tables(shas bytea[]) RETURNS TABLE (tbl text)
+LANGUAGE sql STABLE AS $$
+  SELECT DISTINCT t.tbl FROM grove.trees t
+  WHERE t.commit_sha = ANY (shas)
+    AND EXISTS (SELECT 1 FROM grove.tracked tr WHERE tr.tbl::text = t.tbl)
+$$;
+
 DROP FUNCTION IF EXISTS grove.apply_diff(regclass, bytea, bytea);
 
 CREATE OR REPLACE FUNCTION grove.apply_tree_diff(target regclass, a bytea, b bytea) RETURNS int
@@ -1370,7 +1377,7 @@ BEGIN
     RAISE EXCEPTION 'grove: unknown commit %', encode(target_sha, 'hex');
   END IF;
 
-  FOR r IN SELECT DISTINCT t.tbl FROM grove.trees t WHERE t.commit_sha = target_sha LOOP
+  FOR r IN SELECT x.tbl FROM grove.replay_tables(ARRAY[target_sha]) x LOOP
     SELECT count(*) INTO conflicts
     FROM grove.diff(parent, target_sha, r.tbl) d
     WHERE grove.live_hash(r.tbl::regclass, d.k) IS DISTINCT FROM
@@ -1387,7 +1394,7 @@ BEGIN
   guard := grove.replay_begin();
   SET CONSTRAINTS ALL DEFERRED;
 
-  FOR r IN SELECT DISTINCT t.tbl FROM grove.trees t WHERE t.commit_sha = target_sha LOOP
+  FOR r IN SELECT x.tbl FROM grove.replay_tables(ARRAY[target_sha]) x LOOP
     applied := applied + grove.apply_diff(r.tbl::regclass, target_sha, parent, r.tbl);
   END LOOP;
 
@@ -1512,7 +1519,7 @@ BEGIN
   guard := grove.replay_begin();
   SET CONSTRAINTS ALL DEFERRED;
 
-  FOR r IN SELECT DISTINCT t.tbl FROM grove.trees t WHERE t.commit_sha IN (cur, tgt) LOOP
+  FOR r IN SELECT x.tbl FROM grove.replay_tables(ARRAY[cur, tgt]) x LOOP
     applied := applied + grove.apply_diff(r.tbl::regclass, cur, tgt, r.tbl);
   END LOOP;
 
@@ -1899,7 +1906,7 @@ BEGIN
 
   IF base = ours THEN
     SET CONSTRAINTS ALL DEFERRED;
-    FOR r IN SELECT DISTINCT x.tbl FROM grove.trees x WHERE x.commit_sha IN (ours, theirs) LOOP
+    FOR r IN SELECT y.tbl FROM grove.replay_tables(ARRAY[ours, theirs]) y LOOP
       PERFORM grove.apply_diff(r.tbl::regclass, ours, theirs, r.tbl);
     END LOOP;
     SET CONSTRAINTS ALL IMMEDIATE;
@@ -2035,7 +2042,7 @@ DECLARE
   applied int := 0;
 BEGIN
   SET CONSTRAINTS ALL DEFERRED;
-  FOR r IN SELECT DISTINCT x.tbl FROM grove.trees x WHERE x.commit_sha IN (from_sha, to_sha) LOOP
+  FOR r IN SELECT y.tbl FROM grove.replay_tables(ARRAY[from_sha, to_sha]) y LOOP
     applied := applied + grove.apply_diff(r.tbl::regclass, from_sha, to_sha, r.tbl);
   END LOOP;
   SET CONSTRAINTS ALL IMMEDIATE;
