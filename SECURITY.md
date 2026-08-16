@@ -62,6 +62,12 @@ fingerprint from its columns, and re-hashes every stored row image. A repository
 SQL, or by a bundle accepted before these checks existed, reports the damage rather than reporting
 clean.
 
+**Nothing may arrive that the history does not need.** A bundle carries exactly the nodes reachable
+from the trees it sends, so anything else is padding. It used to be stored anyway, which let a
+sender grow the receiver's node store without limit with data nothing could ever read. Unreachable
+nodes are refused now. This check runs after the others, so a bundle that is broken in a more
+specific way is still reported that way.
+
 Treat a bundle like any other untrusted file: it decides what tables get created in the database you
 unbundle it into.
 

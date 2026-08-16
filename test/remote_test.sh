@@ -121,6 +121,14 @@ w('refdangling', lambda c: c['refs'].update({k: 'ab'*32 for k in c['refs']}))
 w('notrees',     lambda c: c.__setitem__('trees', []))
 w('noschemas',   lambda c: c.__setitem__('schemas', []))
 w('fpforged',    lambda c: [s.__setitem__('fp', 'ab' * 32) for s in c['schemas']])
+def pad(c):
+    import hashlib
+    leaf = next(n for n in c['nodes'] if n['level'] == 0 and len(n['entries']) > 1)
+    for drop in range(1, min(4, len(leaf['entries']))):
+        ents = leaf['entries'][:-drop]
+        h = hashlib.sha256(b''.join(bytes.fromhex(e['h']) for e in sorted(ents, key=lambda e: e['k'])))
+        c['nodes'].append({'hash': h.hexdigest(), 'level': 0, 'entries': ents})
+w('padded',      pad)
 w('pkswap',      lambda c: [s.__setitem__('pk', ['name']) for s in c['schemas']])
 w('pkbogus',     lambda c: [s.__setitem__('pk', ['nonexistent_col']) for s in c['schemas']])
 PY3
@@ -155,6 +163,8 @@ leaf['entries'][0]['v'] = {k: ('ATTACKER' if isinstance(v, str) else v)
 json.dump(b, open('/tmp/grove_mal_datatamper.json', 'w'))
 PY4
 
+is "remote: valid nodes that no tree references are refused, a bundle cannot pad the store" \
+   "$(mal padded | grep -c 'none of its trees reference')" "1"
 is "remote: a forged schema fingerprint is refused, it must match the shape stored beside it" \
    "$(mal fpforged | grep -c 'does not match its own fingerprint')" "1"
 is "remote: a bundle that repoints a table's primary key is refused, the rows stop hashing to the tree" \
@@ -291,4 +301,4 @@ is "remote: and the clone has every row" \
 is "remote: and the clone carries the boundary too, so it can be cloned onward" \
    "$(psql "$PC" -X -q -At -c 'SELECT count(*) FROM grove.shallow')" "1"
 
-suite_end REMOTE 51
+suite_end REMOTE 52

@@ -1154,6 +1154,19 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   `select` and `grove entry`. The lesson is about test data, not about SQL: run new code against the
   real dump early, because a synthetic schema agrees with whatever assumptions the code was written
   under.
+- **a bundle could pad the receiver's store with data nothing can reach.** The resource-exhaustion lead
+  turned out to be a dead end in its original form: unbundle is linear in bundle size, 0.8s, 1.5s and
+  2.9s for 1370, 2630 and 5326 nodes, so there is no superlinear blowup to exploit. The interesting
+  version was next door. `unbundle` stored every node a bundle carried whether or not anything
+  referenced it, so appending valid nodes lifted from an unrelated repository turned a 28 KB bundle
+  into 2.1 MB, and the receiver stored 69 nodes it could never use, with fsck reporting clean.
+  `grove.bundle` sends exactly `reachable_nodes(roots)` minus what the receiver already has, so
+  refusing unreachable nodes cannot produce a false positive by construction.
+  Placement mattered more than the check. Put before the structural checks it fired first on two
+  existing malformed-bundle cases and gave a worse diagnosis than the one they assert: a bundle with
+  no trees is better described as missing its trees than as carrying unreachable nodes, and a
+  repointed tree root is better described by the commit sha not covering it. Padding is the weakest
+  signal, so it runs last. A refusal that names the wrong cause is only half a refusal.
 
 ## Reference
 

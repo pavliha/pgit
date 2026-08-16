@@ -3676,6 +3676,20 @@ BEGIN
       USING HINT = 'it was truncated or altered in transit; ask for it again rather than storing it';
   END IF;
 
+  WITH reach AS (
+    SELECT r.h FROM grove.reachable_nodes(
+      (SELECT COALESCE(array_agg(DISTINCT decode(y ->> 'root', 'hex')), '{}'::bytea[])
+       FROM jsonb_array_elements(b -> 'trees') y)) r)
+  SELECT count(*) INTO missing
+  FROM jsonb_array_elements(b -> 'nodes') x
+  WHERE NOT EXISTS (SELECT 1 FROM reach WHERE reach.h = decode(x ->> 'hash', 'hex'));
+
+  IF missing > 0 THEN
+    RAISE EXCEPTION 'grove: this bundle carries % node(s) that none of its trees reference', missing
+      USING HINT = 'a bundle sends only what its history needs, so the rest is padding; '
+                   'refusing it rather than storing data nothing can reach';
+  END IF;
+
   RETURN n;
 END $$;
 
