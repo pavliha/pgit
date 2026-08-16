@@ -1282,6 +1282,22 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   succeeds, a row edited by hand since stops it with nothing applied on the way, and a commit from
   before an added column is refused so the column is not blanked by replaying old images. The first
   assertion exists to keep the other two from passing vacuously.
+- **built a coverage oracle over the guards themselves, then had to fix the oracle twice.** revert's
+  load-bearing check turned out to be untested, so the obvious question is which others are. Extracted
+  every `RAISE EXCEPTION` message from sql/install.sql and matched their literal fragments against
+  everything under test/. First run claimed 64 of 72 untested, which was nonsense, my matcher took the
+  longest fragment and missed the phrases the tests actually assert on. Validated the second version
+  against six messages I knew were asserted before trusting a single negative: 16 of 72 have no
+  assertion anywhere.
+  Most are argument validation. The load-bearing ones are in the merge finish path, so I probed those:
+  finishing with conflicts outstanding is refused, a branch that moved under the merge is refused, an
+  unknown merge id is refused, and the merge completes once the branch is back. All correct, none
+  tested. `merge_10_finish_guards.sql` pins them.
+  The test itself passed standalone and failed inside the suite, which is the part worth writing down.
+  `grove.merge` returns the *conflict count*, not the merge id, and in a fresh database both were 1.
+  Running the suite in order advances the merge sequence and the coincidence breaks. A test that passes
+  because two unrelated numbers happen to be equal is exactly the failure the non-vacuity habit is for,
+  and it took the suite's own ordering to expose it.
 
 ## Reference
 
