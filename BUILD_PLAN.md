@@ -978,6 +978,21 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   positive case - claiming a rename that did not happen - is the one that would have been actively
   misleading, so it is now pinned.
   Still at zero: `stash_push` and `diff_stat`.
+- **the last two advertised verbs with no assertions now have sixteen** — `diff_stat` and
+  `stash_push` were both in the README and both tested by nothing. Both are correct.
+  The diff stat family is internally consistent, which is the property worth pinning: ten updates,
+  one insert and one delete on one table gives `diff_stat` 10 updated / 1 inserted / 1 deleted,
+  `diff_numstat` **11 added and 11 removed** because an update counts both ways as it does for a line
+  in git, and `diff_shortstat` totals 14 across two tables, which is 11 plus the 3 elsewhere. A
+  pathspec narrows it to one table. Nine assertions.
+  Stash round trips: push returns a slot and leaves the tree clean with the row back to its committed
+  value, the list shows exactly one entry, pop restores the uncommitted work and empties the list, and
+  popping an empty stash is refused rather than silently doing nothing. Seven assertions.
+  No bugs. Every verb the README advertises now has at least one assertion behind it.
+- **calibration corrected** — the replay campaign hit 38 minutes with 15 on a single round, past the
+  15 minute rule I had just written down. Each replay op costs a branch, two checkouts and two
+  commits, so 400 ops is the wrong number now; the surface changed and the batch size did not follow.
+  Killed it. Chunk 8 had already come back green over 400 ops and three rounds.
 
 ## Reference
 
