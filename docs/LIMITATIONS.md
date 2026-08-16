@@ -139,6 +139,18 @@ any trigger of its own. It can check out tables that have none. grove says which
 pause rather than leaving PostgreSQL's bare "must be owner of table" to be interpreted. Give the role
 ownership, or run checkouts as the owner.
 
+## log walks first parents, git's does not
+
+`grove.log()` follows `parent_sha` and never the extra parents a merge records, so commits that came
+in through a merge are not listed. `git log` shows them by default; `git log --first-parent` is the
+equivalent of what grove does. Asking grove for the history of a row that arrived in a merge shows
+the merge, not the commit on the branch it came from.
+
+Nothing is lost. Those commits are reachable through `grove.ancestors`, and `blame` names the commit
+that actually made the change rather than the merge that carried it. The walk stays first-parent
+because `HEAD~N`, `rev` and `bisect` all count depth along it, and a walk that forked at every merge
+would make those mean something else.
+
 ## One database holds one branch at a time
 
 A checkout materialises a branch into your tables, exactly like git's working tree. Two branches

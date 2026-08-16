@@ -1507,6 +1507,19 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   My first probe used one database role throughout, so actor was `postgres` on every row and the bug
   was invisible in the column that mattered. It took a second role to see it, which is the fifth time
   this campaign a fixture has been too clean to show the defect.
+- **log walks first parents and never said so.** Followed the blame defect to its neighbour, since
+  `grove.log` reads the same journal. Its pathspec filter is fine, but the walk itself only follows
+  `parent_sha` and never the extra parents in `grove.commit_parent`, so commits that arrived through
+  a merge are not listed at all. Asking for the history of a row that came over in a merge shows the
+  merge and not the commit that changed it.
+  That is defensible and it is what `git log --first-parent` does, but git's default is the opposite,
+  and grove's own front page says git for your data. It was written down nowhere: the phrase "first
+  parent" does not appear in the source or the docs.
+  Not changed, documented and pinned. `HEAD~N`, `rev` and `bisect` all count depth along the
+  first-parent walk, so forking it at every merge would quietly change what those mean, and that is a
+  decision about the interface rather than a defect to patch at two in the morning. The test asserts
+  the merged commit is absent from log, present in `ancestors`, and correctly named by `blame`, so the
+  three stay consistent with each other.
 
 ## Reference
 
