@@ -3458,13 +3458,10 @@ END $$;
 DROP FUNCTION IF EXISTS grove.verify_images(bytea, jsonb);
 DROP FUNCTION IF EXISTS grove.verify_images(jsonb, jsonb);
 
-CREATE OR REPLACE FUNCTION grove.verify_images(images jsonb, cols jsonb) RETURNS int
-LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION grove.image_defs(cols jsonb) RETURNS text
+LANGUAGE plpgsql STABLE AS $$
 DECLARE
-  expr    text;
-  defs    text;
   unknown text;
-  bad     int;
 BEGIN
   SELECT string_agg(c ->> 'type', ', ') INTO unknown
   FROM jsonb_array_elements(cols) c WHERE to_regtype(c ->> 'type') IS NULL;
@@ -3474,22 +3471,60 @@ BEGIN
       USING HINT = 'install the type first, or clone into a database that has it';
   END IF;
 
+  RETURN (SELECT string_agg(format('%I %s', c ->> 'name', c ->> 'type'), ', '
+                            ORDER BY (c ->> 'name') COLLATE "C")
+          FROM jsonb_array_elements(cols) c);
+END $$;
+
+CREATE OR REPLACE FUNCTION grove.image_canon_expr(cols jsonb, only_cols text[] DEFAULT NULL)
+RETURNS text
+LANGUAGE sql STABLE AS $$
   SELECT string_agg(grove.canon_field_expr(c ->> 'name', to_regtype(c ->> 'type')::oid), ' || '
-                    ORDER BY (c ->> 'name') COLLATE "C"),
-         string_agg(format('%I %s', c ->> 'name', c ->> 'type'), ', '
                     ORDER BY (c ->> 'name') COLLATE "C")
-  INTO expr, defs
-  FROM jsonb_array_elements(cols) c;
+  FROM jsonb_array_elements(cols) c
+  WHERE only_cols IS NULL OR (c ->> 'name') = ANY (only_cols)
+$$;
 
-  IF expr IS NULL THEN RETURN 0; END IF;
-
-  IF images IS NULL OR jsonb_array_length(images) = 0 THEN RETURN 0; END IF;
+CREATE OR REPLACE FUNCTION grove.verify_images(images jsonb, cols jsonb) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  expr text := grove.image_canon_expr(cols);
+  defs text := grove.image_defs(cols);
+  bad  int;
+BEGIN
+  IF expr IS NULL OR images IS NULL OR jsonb_array_length(images) = 0 THEN RETURN 0; END IF;
 
   EXECUTE format(
     'SELECT count(*) FROM jsonb_array_elements($1) AS "grove imgs"("grove img"),'
     ' LATERAL jsonb_to_record("grove imgs"."grove img" -> ''v'') AS "grove row"(%s)'
     ' WHERE grove.hash(%s) IS DISTINCT FROM'
     ' decode("grove imgs"."grove img" ->> ''h'', ''hex'')', defs, expr)
+  INTO bad USING images;
+
+  RETURN bad;
+END $$;
+
+DROP FUNCTION IF EXISTS grove.verify_keys(jsonb, jsonb, text[]);
+
+CREATE OR REPLACE FUNCTION grove.verify_keys(images jsonb, cols jsonb, pk text[]) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  expr text;
+  defs text;
+  bad  int;
+BEGIN
+  IF pk IS NULL OR array_length(pk, 1) IS NULL
+     OR images IS NULL OR jsonb_array_length(images) = 0 THEN RETURN 0; END IF;
+
+  expr := grove.image_canon_expr(cols, pk);
+  defs := grove.image_defs(cols);
+  IF expr IS NULL THEN RETURN 0; END IF;
+
+  EXECUTE format(
+    'SELECT count(*) FROM jsonb_array_elements($1) AS "grove imgs"("grove img"),'
+    ' LATERAL jsonb_to_record("grove imgs"."grove img" -> ''v'') AS "grove row"(%s)'
+    ' WHERE encode(convert_to(%s, ''UTF8''), ''hex'') IS DISTINCT FROM'
+    ' ("grove imgs"."grove img" ->> ''k'')', defs, expr)
   INTO bad USING images;
 
   RETURN bad;
@@ -3508,6 +3543,7 @@ DECLARE
   k      text;
   tv     record;
   bad    int;
+  payload jsonb;
   shapes text;
   fresh  boolean := NOT EXISTS (SELECT 1 FROM grove.nodes);
 BEGIN
@@ -3640,19 +3676,31 @@ BEGIN
 
   FOR tv IN
     SELECT DISTINCT ON (t ->> 'tbl', t ->> 'root')
-           t ->> 'tbl' AS tbl, decode(t ->> 'root', 'hex') AS root, s -> 'cols' AS cols
+           t ->> 'tbl' AS tbl, decode(t ->> 'root', 'hex') AS root, s -> 'cols' AS cols,
+           CASE WHEN s -> 'pk' IS NULL OR s -> 'pk' = 'null'::jsonb THEN NULL
+                ELSE ARRAY(SELECT jsonb_array_elements_text(s -> 'pk')) END AS pk
     FROM jsonb_array_elements(b -> 'trees') t
     JOIN jsonb_array_elements(b -> 'schemas') s
       ON s ->> 'commit' = t ->> 'commit' AND s ->> 'tbl' = t ->> 'tbl'
   LOOP
-    bad := grove.verify_images(
-             (SELECT jsonb_agg(jsonb_build_object('h', l.rh, 'v', l.v))
-              FROM grove.leaves(tv.root) l), tv.cols);
+    SELECT jsonb_agg(jsonb_build_object('k', l.k, 'h', l.rh, 'v', l.v)) INTO payload
+    FROM grove.leaves(tv.root) l;
+
+    bad := grove.verify_images(payload, tv.cols);
 
     IF bad > 0 THEN
       RAISE EXCEPTION 'grove: % row image(s) of % do not hash to the values recorded beside them', bad, tv.tbl
         USING HINT = 'the data was altered in transit; the tree records what each row should be '
                      'and the rows it carries do not match it, so nothing here is trustworthy';
+    END IF;
+
+    bad := grove.verify_keys(payload, tv.cols, tv.pk);
+
+    IF bad > 0 THEN
+      RAISE EXCEPTION 'grove: % row(s) of % are filed under a key that is not their own primary key',
+        bad, tv.tbl
+        USING HINT = 'the key is what every later lookup and diff descends by, and it is not covered '
+                     'by the node hash, so a wrong one corrupts the next commit silently';
     END IF;
   END LOOP;
 
@@ -4425,17 +4473,23 @@ LANGUAGE sql STABLE AS $$
   WHERE NOT EXISTS (SELECT 1 FROM grove.commits c WHERE c.sha = t.commit_sha)
 
   UNION ALL
-  SELECT 'row images do not hash to their rows', z.tbl
-  FROM (SELECT t.tbl AS tbl, s.columns AS cols,
+  SELECT p.problem, z.tbl
+  FROM (SELECT t.tbl AS tbl, s.columns AS cols, s.pk_cols AS pk,
                array_agg(DISTINCT t.root_hash) AS roots
         FROM grove.trees t
         JOIN grove.schemas s ON s.commit_sha = t.commit_sha AND s.tbl = t.tbl
-        GROUP BY t.tbl, s.columns) z
-  WHERE grove.verify_images(
-          (SELECT jsonb_agg(jsonb_build_object('h', i.ch, 'v', i.v))
-           FROM (SELECT DISTINCT r.h FROM grove.reachable_nodes(z.roots) r) rn
-           CROSS JOIN LATERAL grove.node_items(rn.h) i
-           WHERE grove.node_level(rn.h) = 0), z.cols) > 0
+        GROUP BY t.tbl, s.columns, s.pk_cols) z
+  CROSS JOIN LATERAL (
+    SELECT jsonb_agg(jsonb_build_object('k', i.k, 'h', i.ch, 'v', i.v)) AS images
+    FROM (SELECT DISTINCT r.h FROM grove.reachable_nodes(z.roots) r) rn
+    CROSS JOIN LATERAL grove.node_items(rn.h) i
+    WHERE grove.node_level(rn.h) = 0) g
+  CROSS JOIN LATERAL (
+    SELECT 'row images do not hash to their rows' AS problem
+    WHERE grove.verify_images(g.images, z.cols) > 0
+    UNION ALL
+    SELECT 'rows are filed under a key that is not their own'
+    WHERE grove.verify_keys(g.images, z.cols, z.pk) > 0) p
 
   UNION ALL
   SELECT 'child node missing', encode(n.hash, 'hex') || ' -> ' || i.ch

@@ -1,5 +1,5 @@
 BEGIN;
-SELECT plan(10);
+SELECT plan(12);
 
 CREATE TABLE t (id int PRIMARY KEY, name text, price int);
 SELECT grove.track('t');
@@ -53,6 +53,23 @@ SELECT is((SELECT count(*) FROM grove.fsck()
            WHERE problem = 'tree recorded for a commit that is not in the store'), 1::bigint,
   'fsck oracle: a tree left behind by a commit that is gone is caught');
 ROLLBACK TO s5;
+
+SAVEPOINT s6;
+UPDATE grove.nodes n
+SET keys = n.keys[1:1]
+        || ARRAY[encode(convert_to(
+             regexp_replace(convert_from(decode(n.keys[2], 'hex'), 'UTF8'), '\|$', '}'),
+             'UTF8'), 'hex')]
+        || n.keys[3:]
+WHERE n.hash = (SELECT hash FROM grove.nodes
+                WHERE level = 0 AND entries IS NOT NULL AND array_length(keys, 1) > 2 LIMIT 1);
+SELECT cmp_ok((SELECT count(*) FROM grove.nodes n CROSS JOIN LATERAL unnest(n.keys) k
+               WHERE convert_from(decode(k, 'hex'), 'UTF8') LIKE '%}'), '>', 0::bigint,
+  'fsck oracle: the mis-filed key really is in the store');
+SELECT cmp_ok((SELECT count(*) FROM grove.fsck()
+               WHERE problem = 'rows are filed under a key that is not their own'), '>', 0::bigint,
+  'fsck oracle: a row filed under the wrong key is caught, no hash covers the key');
+ROLLBACK TO s6;
 
 SELECT is((SELECT count(*) FROM grove.fsck()), 0::bigint,
   'fsck oracle: clean again once every corruption is rolled back');

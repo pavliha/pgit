@@ -44,6 +44,13 @@ guard: 300 rows were restored into a four-column table, the extra column was bla
 HEAD claimed the commit, and `fsck` reported nothing. `unbundle` now recomputes each fingerprint from
 the columns stored beside it.
 
+**Every row must be filed under its own key.** A node's hash covers the row hashes ordered by key, not
+the keys themselves, so a key could be changed without changing any hash as long as the order held.
+The row still carried correct data and every check passed, but the tree's index pointed at it under a
+name that was not its primary key: `blame` returned nothing for that row, and the *next* commit built
+a tree that no longer matched the table, with `fsck` reporting clean throughout. The key is now
+re-derived from the row image on the way in, and by `fsck` for data at rest.
+
 **The rows must hash to the tree.** This is the subtle one. A node's hash covers the *row hashes*,
 not the cached row *images* beside them, so an attacker who edits an image and leaves its hash alone
 produces a bundle where every node still hashes correctly and every structural check passes.

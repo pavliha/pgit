@@ -121,6 +121,15 @@ w('refdangling', lambda c: c['refs'].update({k: 'ab'*32 for k in c['refs']}))
 w('notrees',     lambda c: c.__setitem__('trees', []))
 w('noschemas',   lambda c: c.__setitem__('schemas', []))
 w('fpforged',    lambda c: [s.__setitem__('fp', 'ab' * 32) for s in c['schemas']])
+def rekey(c):
+    for n in c['nodes']:
+        if n['level'] == 0 and len(n['entries']) > 2:
+            e = n['entries'][1]
+            raw = bytes.fromhex(e['k']).decode()
+            if raw.endswith('|'):
+                e['k'] = (raw[:-1] + '}').encode().hex()
+                return
+w('rekeyed',     rekey)
 def pad(c):
     import hashlib
     leaf = next(n for n in c['nodes'] if n['level'] == 0 and len(n['entries']) > 1)
@@ -163,12 +172,14 @@ leaf['entries'][0]['v'] = {k: ('ATTACKER' if isinstance(v, str) else v)
 json.dump(b, open('/tmp/grove_mal_datatamper.json', 'w'))
 PY4
 
+is "remote: a row filed under a key that is not its own primary key is refused" \
+   "$(mal rekeyed | grep -c 'not their own primary key')" "1"
 is "remote: valid nodes that no tree references are refused, a bundle cannot pad the store" \
    "$(mal padded | grep -c 'none of its trees reference')" "1"
 is "remote: a forged schema fingerprint is refused, it must match the shape stored beside it" \
    "$(mal fpforged | grep -c 'does not match its own fingerprint')" "1"
-is "remote: a bundle that repoints a table's primary key is refused, the rows stop hashing to the tree" \
-   "$(mal pkswap | grep -c 'do not hash to the tree it carries')" "1"
+is "remote: a bundle that repoints a table's primary key is refused before anything is materialised" \
+   "$(mal pkswap | grep -c 'not their own primary key')" "1"
 is "remote: a primary key naming a column the table does not have is refused" \
    "$(mal pkbogus | grep -c 'named in key does not exist')" "1"
 is "remote: a bundle whose row images were altered is refused, even though every node still hashes" \
@@ -301,4 +312,4 @@ is "remote: and the clone has every row" \
 is "remote: and the clone carries the boundary too, so it can be cloned onward" \
    "$(psql "$PC" -X -q -At -c 'SELECT count(*) FROM grove.shallow')" "1"
 
-suite_end REMOTE 52
+suite_end REMOTE 53

@@ -1167,6 +1167,21 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   no trees is better described as missing its trees than as carrying unreachable nodes, and a
   repointed tree root is better described by the commit sha not covering it. Padding is the weakest
   signal, so it runs last. A refusal that names the wrong cause is only half a refusal.
+- **a row could be filed under a key that was not its own.** The node hash covers the row hashes ordered
+  by key. It does not cover the keys. So changing a key while preserving sort order left every hash
+  intact, and nothing else re-derived the key from the row beside it. Verified by differential, an
+  honest fetch against a re-keyed one: `blame` on the affected row returned 2 rows in the control and
+  0 in the tampered repository, and the *next* commit produced a tree that no longer matched the live
+  table, while fsck reported clean at every step. Silent corruption arriving one commit later than
+  the tampering, which is the worst shape a bug can have.
+  The key is a derived value like the fingerprint was: it is the canonical primary key of the row
+  image sitting next to it. `grove.verify_keys` re-derives it, in `unbundle` and in `fsck`.
+  The first attempt at this probe was vacuous, I guessed the key format was a plain integer and
+  changed nothing, then read the resulting successful clone as evidence of a hole. The keys are
+  hex-encoded canonical primary key text. Always print the thing before mutating it.
+  A side effect worth having: a bundle that repoints a table's primary key is now refused at unbundle
+  with the precise reason, rather than after materialising with the vaguer complaint that the rows do
+  not hash to the tree.
 
 ## Reference
 
