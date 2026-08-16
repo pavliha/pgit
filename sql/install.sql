@@ -3472,6 +3472,46 @@ BEGIN
   RETURN result;
 END $$;
 
+DROP FUNCTION IF EXISTS grove.verify_images(bytea, jsonb);
+
+CREATE OR REPLACE FUNCTION grove.verify_images(root bytea, cols jsonb) RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  expr    text;
+  defs    text;
+  unknown text;
+  bad     int;
+  payload jsonb;
+BEGIN
+  SELECT string_agg(c ->> 'type', ', ') INTO unknown
+  FROM jsonb_array_elements(cols) c WHERE to_regtype(c ->> 'type') IS NULL;
+
+  IF unknown IS NOT NULL THEN
+    RAISE EXCEPTION 'grove: this bundle describes column type(s) this database does not have (%)', unknown
+      USING HINT = 'install the type first, or clone into a database that has it';
+  END IF;
+
+  SELECT string_agg(grove.canon_field_expr(c ->> 'name', to_regtype(c ->> 'type')::oid), ' || '
+                    ORDER BY (c ->> 'name') COLLATE "C"),
+         string_agg(format('%I %s', c ->> 'name', c ->> 'type'), ', '
+                    ORDER BY (c ->> 'name') COLLATE "C")
+  INTO expr, defs
+  FROM jsonb_array_elements(cols) c;
+
+  IF expr IS NULL THEN RETURN 0; END IF;
+
+  SELECT jsonb_agg(jsonb_build_object('h', l.rh, 'v', l.v)) INTO payload FROM grove.leaves(root) l;
+  IF payload IS NULL THEN RETURN 0; END IF;
+
+  EXECUTE format(
+    'SELECT count(*) FROM jsonb_array_elements($1) e,'
+    ' LATERAL jsonb_to_record(e.value -> ''v'') AS "grove row"(%s)'
+    ' WHERE grove.hash(%s) IS DISTINCT FROM decode(e.value ->> ''h'', ''hex'')', defs, expr)
+  INTO bad USING payload;
+
+  RETURN bad;
+END $$;
+
 CREATE OR REPLACE FUNCTION grove.unbundle(b jsonb) RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -3485,6 +3525,8 @@ DECLARE
   summary text;
   extra   bytea[];
   k      text;
+  tv     record;
+  bad    int;
   fresh  boolean := NOT EXISTS (SELECT 1 FROM grove.nodes);
 BEGIN
   IF theirs IS NULL THEN
@@ -3597,6 +3639,22 @@ BEGIN
       missing
       USING HINT = 'a table needs both to be restorable; the bundle was altered in transit';
   END IF;
+
+  FOR tv IN
+    SELECT DISTINCT ON (t ->> 'tbl', t ->> 'root')
+           t ->> 'tbl' AS tbl, decode(t ->> 'root', 'hex') AS root, s -> 'cols' AS cols
+    FROM jsonb_array_elements(b -> 'trees') t
+    JOIN jsonb_array_elements(b -> 'schemas') s
+      ON s ->> 'commit' = t ->> 'commit' AND s ->> 'tbl' = t ->> 'tbl'
+  LOOP
+    bad := grove.verify_images(tv.root, tv.cols);
+
+    IF bad > 0 THEN
+      RAISE EXCEPTION 'grove: % row image(s) of % do not hash to the values recorded beside them', bad, tv.tbl
+        USING HINT = 'the data was altered in transit; the tree records what each row should be '
+                     'and the rows it carries do not match it, so nothing here is trustworthy';
+    END IF;
+  END LOOP;
 
   FOR e IN SELECT * FROM jsonb_array_elements(b -> 'commits') LOOP
     h := decode(e ->> 'sha', 'hex');

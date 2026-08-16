@@ -38,19 +38,15 @@ cannot be repointed at a different root.
 
 **The rows must hash to the tree.** This is the subtle one. A node's hash covers the *row hashes*,
 not the cached row *images* beside them, so an attacker who edits an image and leaves its hash alone
-produces a bundle where every node still hashes correctly. `clone_from` therefore rebuilds each
-materialised table and refuses if it does not reproduce the root the bundle claims.
+produces a bundle where every node still hashes correctly and every structural check passes.
+`unbundle` therefore recomputes each row's hash from the image the bundle carries, using the column
+shape that bundle records for that commit, and refuses if any row does not match. Because every
+entry point runs through `unbundle`, this covers `clone_from`, `fetch` and `receive` alike, and it
+refuses before a single node is stored.
 
-That last check runs on `clone_from`, which materialises. `receive` and `fetch` do not materialise,
-so a bundle taken through them is verified for structure and completeness but its row images are not
-proved against the tree until you check the branch out. If you receive from somewhere you do not
-trust, run the invariant afterwards:
-
-```sql
-SELECT t.tbl FROM grove.trees t
-WHERE t.commit_sha = grove.resolve(grove.head())
-  AND grove.write_tree(t.tbl::regclass) IS DISTINCT FROM t.root_hash;
-```
+`clone_from` additionally rebuilds each materialised table and compares it to the root the bundle
+claims. That is no longer the check that catches a tampered image; it is there to catch the
+materialisation itself going wrong.
 
 Treat a bundle like any other untrusted file: it decides what tables get created in the database you
 unbundle it into.

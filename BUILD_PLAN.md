@@ -1077,6 +1077,26 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   canonical row form changes and the rebuilt tree stops matching.
   Three bugs in this class now share one shape. A hash existed, it covered the right thing, and
   nothing checked the content against it on the way in.
+- **the row-image fix only covered one of the three doors.** The previous fix put the rebuild-and-compare
+  in `clone_from`, because clone is where images become rows. But `fetch` and `receive` reach the same
+  store without materialising anything, and SECURITY.md documented that gap as a limitation with a
+  manual query as the workaround. A documented hole is still a hole. Fetching a bundle whose row 7 read
+  `HACKED / 999999` into a repo with existing history, then checking the branch out, put those values in
+  the table and `fsck` reported 0 problems.
+  The fix belongs at the funnel, not at one exit: `unbundle` now recomputes every row's hash from the
+  image the bundle carries, using the column shape recorded for that commit, and refuses before storing
+  anything. `grove.verify_images(root, cols)` walks the tree with `grove.leaves` and hashes the images
+  in one dynamic query per tree rather than one per row.
+  Two details that would have been quiet bugs: the column ordering has to be `COLLATE "C"` to match
+  `ORDER BY attname` on Postgres's `name` type, or a table with a `user_id`/`userid` pair would be
+  refused for no reason; and a column type the receiving database does not have is now an explicit
+  refusal rather than a skipped check, so a bundle cannot opt out of verification by naming a type
+  nobody has.
+  The `clone_from` rebuild stays, demoted: it no longer catches tampering, it catches materialisation
+  going wrong.
+  Worth naming the pattern, because it is now four for four: every one of these bugs was a hash that
+  covered the right thing with nothing checking the content against it, and this one adds a second
+  lesson, that fixing such a check at one call site leaves the others open.
 
 ## Reference
 

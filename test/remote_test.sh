@@ -145,6 +145,7 @@ is "remote: a bundle whose schemas are missing is refused rather than cloning no
 python3 - <<'PY4'
 import json
 b = json.load(open('/tmp/grove_b1.json'))
+json.dump(b, open('/tmp/grove_mal_honest.json', 'w'))
 leaf = next(n for n in b['nodes'] if n.get('level') == 0 and n.get('entries'))
 leaf['entries'][0]['v'] = {k: ('ATTACKER' if isinstance(v, str) else v)
                            for k, v in leaf['entries'][0]['v'].items()}
@@ -152,7 +153,27 @@ json.dump(b, open('/tmp/grove_mal_datatamper.json', 'w'))
 PY4
 
 is "remote: a bundle whose row images were altered is refused, even though every node still hashes" \
-   "$(mal datatamper | grep -c 'do not hash to the tree it carries')" "1"
+   "$(mal datatamper | grep -c 'do not hash to the values recorded beside them')" "1"
+
+malf() {
+  psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS grove_mal WITH (FORCE)" -c "CREATE DATABASE grove_mal" >/dev/null 2>&1
+  M="postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/grove_mal"
+  psql "$M" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null 2>&1
+  psql "$M" -X -q -c "$DDL" -c "SELECT grove.track('t')" >/dev/null 2>&1
+  psql "$M" -X -q -At >/dev/null 2>&1 <<'SQL'
+INSERT INTO t VALUES (999999, 'local', 1);
+SELECT grove.commit('local work', 'carol');
+SELECT grove.remote_add('origin', 'somewhere');
+SQL
+  runb "$M" "/tmp/grove_mal_$1.json" "SELECT grove.$2;" 2>&1
+}
+
+is "remote: fetching altered row images into a repo that already has history is refused" \
+   "$(malf datatamper "fetch('origin', :'b'::jsonb)" | grep -c 'do not hash to the values recorded beside them')" "1"
+is "remote: receiving altered row images is refused, the push path checks images too" \
+   "$(malf datatamper "receive(:'b'::jsonb)" | grep -c 'do not hash to the values recorded beside them')" "1"
+is "remote: fetching an honest bundle into a repo with history still works" \
+   "$(malf honest "fetch('origin', :'b'::jsonb)" | grep -ci error)" "0"
 
 python3 - <<'PY5'
 import json, copy
@@ -233,4 +254,4 @@ is "octopus: both branches' rows survived the transfer" \
 for d in grove_origin grove_clone grove_bad grove_short grove_mal grove_virgin grove_oct; do psql "$ADMIN" -X -q -c "DROP DATABASE $d" >/dev/null; done
 rm -f /tmp/grove_b*.json
 
-suite_end REMOTE 40
+suite_end REMOTE 43
