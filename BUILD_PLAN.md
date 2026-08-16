@@ -1530,6 +1530,16 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   Nothing added. `blame_01_after_prune.sql` and the prune assertions in `extras_01_all.sql` already
   cover all three clauses, and writing a fourth test over the same ground would be noise. Recording
   the check itself so the next pass does not repeat it.
+- **the front page badge said 679 tests while the suite ran 968.** Reading the README as a list of
+  claims, the very first one is a badge, and it was 289 checks out of date. Trivial next to the blame
+  defect, but it is the same failure: a number written down once and never compared against the thing
+  it describes, in the most visible place in the project.
+  Bumping it would only start the drift again, so `all.sh` reads the badge out of README.md and fails
+  if it disagrees with the total it just counted. The count now maintains itself, or rather it
+  complains until someone maintains it, which is the part that was missing.
+  Scoped to runs that include the realworld suite, since without a dump the total is legitimately
+  lower and a warning there would be noise people learn to ignore. Checked both directions and the
+  skip case rather than running the whole suite twice to watch a string comparison work.
 
 ## Reference
 

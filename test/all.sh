@@ -58,6 +58,11 @@ fi
 echo
 echo "─────────────────────────────────────────────"
 for s in "${SKIPPED[@]:-}"; do [ -n "$s" ] && echo "skipped: $s"; done
+BADGE=$(grep -oE 'tests-[0-9]+%20green' "$ROOT/README.md" | grep -oE '[0-9]+' | head -1)
+if [ -n "${DUMP:-}" ] && [ -n "$BADGE" ] && [ "$BADGE" != "$TOTAL" ]; then
+  FAILED_SUITES+=("readme-badge (says $BADGE, suite runs $TOTAL)")
+fi
+
 if [ ${#FAILED_SUITES[@]} -eq 0 ]; then
   echo "ALL GREEN — $TOTAL checks"
   exit 0
