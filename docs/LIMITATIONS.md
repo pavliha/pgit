@@ -105,6 +105,26 @@ A checkout materialises a branch into your tables, exactly like git's working tr
 cannot be readable at once from the same database. If you need that, you need two databases and a
 bundle between them.
 
+## A commit claims every pending change, whoever made it
+
+`pgit.commit()` records every journal row that has not been committed yet, not only the rows the
+caller wrote. Two people writing to the same database before either commits get one commit
+containing both their changes, authored by whoever ran `commit`.
+
+That follows from the model rather than being a defect: one database holds one branch, which is a
+shared working tree, and `git commit -a` in a shared checkout behaves the same way.
+
+What survives is the part that matters for an audit. The journal captures the actor on each row as
+it is written, so `blame` still credits the right person even when the commit around it does not:
+
+```sql
+SELECT col, actor, exact FROM pgit.blame('products', '42');
+```
+
+If you need commits that contain only one actor's work, serialise them. Take an advisory lock across
+the write and the commit, or run the commit inside the same transaction as the writes, where MVCC
+hides other sessions' pending rows from it.
+
 ## Pruning costs attribution, not data
 
 `prune` deletes commits and the journal rows that explain them. The rows in your tables are

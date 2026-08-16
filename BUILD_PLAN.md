@@ -927,6 +927,21 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   roughly 3600 operations including constructed conflicts. Fuzz surface now includes: insert, update,
   delete, add/drop column, branch, checkout, prune, repack, three way merge with resolution and
   abort, and octopus. Not yet in the fuzzer: rebase, cherry-pick, revert, stash, bisect, tag, notes.
+- **what concurrent writers actually do to attribution** — the hazard I flagged while wiring pgit into
+  a real application turned out to be half as bad as I assumed, and the half that is real was
+  undocumented. Alice writes 10 rows and does not commit; Bob edits 3 and commits. **Bob's commit
+  claims all 13 rows** and is authored `bob`, because `commit` records every journal row that is not
+  yet committed rather than only the caller's.
+  But `blame` on one of Alice's rows still says **alice, exact = true**. The journal captures the
+  actor per row at write time, so row level attribution survives a commit that mixes authors. That is
+  the part an audit depends on, and it holds.
+  This is the shared working tree model rather than a defect - `git commit -a` in a shared checkout
+  behaves identically - so it is now written down in `LIMITATIONS.md` with the two ways to get
+  single-author commits: an advisory lock across write and commit, or committing inside the same
+  transaction as the writes, where MVCC hides other sessions' pending rows. 5 assertions in
+  `obs_04_concurrent_attribution.sql` pin the behaviour so it cannot drift silently.
+  It also settles that the advisory lock in the into-ge wrapper is buying the right thing, and
+  buying less than I claimed: without it blame is still correct, only the commit grouping is mixed.
 
 ## Reference
 
