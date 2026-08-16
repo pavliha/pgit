@@ -734,6 +734,16 @@ LANGUAGE sql STABLE AS $$
   )
 $$;
 
+CREATE OR REPLACE FUNCTION grove.octopus_commit_sha(
+  all_heads bytea[], msg text, ts timestamptz, summary text) RETURNS bytea
+LANGUAGE sql STABLE AS $$
+  SELECT grove.hash(
+    (SELECT string_agg(encode(x.sha, 'hex'), E'\n' ORDER BY x.ord)
+     FROM unnest(all_heads) WITH ORDINALITY x(sha, ord)) || E'\n' ||
+    msg || E'\n' ||
+    to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') || E'\n' || summary)
+$$;
+
 CREATE OR REPLACE FUNCTION grove.advance_ref(ref_name text, expected bytea, next_sha bytea)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -1489,6 +1499,34 @@ CREATE TABLE IF NOT EXISTS grove.commit_parent (
 );
 
 CREATE INDEX IF NOT EXISTS grove_commit_parent_parent_idx ON grove.commit_parent (parent_sha);
+
+CREATE TABLE IF NOT EXISTS grove.shallow (
+  commit_sha       bytea   PRIMARY KEY REFERENCES grove.commits(sha) ON DELETE CASCADE,
+  original_parents bytea[] NOT NULL
+);
+
+DROP FUNCTION IF EXISTS grove.recomputed_commit_sha(bytea);
+
+CREATE OR REPLACE FUNCTION grove.recomputed_commit_sha(target bytea) RETURNS bytea
+LANGUAGE sql STABLE AS $$
+  SELECT CASE
+    WHEN COALESCE(array_length(pl.parents, 1), 1) < 2
+    THEN grove.commit_sha(pl.parents[1], c.author, c.message, c.at, x.summary)
+    ELSE grove.octopus_commit_sha(pl.parents, c.message, c.at, x.summary)
+  END
+  FROM grove.commits c
+  CROSS JOIN LATERAL (
+    SELECT COALESCE(
+      (SELECT h.original_parents FROM grove.shallow h WHERE h.commit_sha = target),
+      ARRAY[c.parent_sha] || COALESCE(
+        (SELECT array_agg(p.parent_sha ORDER BY p.ord)
+         FROM grove.commit_parent p WHERE p.commit_sha = target), '{}'::bytea[])
+    ) AS parents) pl
+  CROSS JOIN LATERAL (
+    SELECT COALESCE(string_agg(t.tbl || ':' || encode(t.root_hash, 'hex'), E'\n' ORDER BY t.tbl), '')
+    AS summary FROM grove.trees t WHERE t.commit_sha = target) x
+  WHERE c.sha = target
+$$;
 
 DO $$
 BEGIN
@@ -3299,66 +3337,6 @@ BEGIN
   END LOOP;
 END $$;
 
-CREATE OR REPLACE FUNCTION grove.fsck()
-RETURNS TABLE (problem text, detail text)
-LANGUAGE sql STABLE AS $$
-  SELECT 'node hash mismatch', encode(n.hash, 'hex')
-  FROM grove.nodes n
-  WHERE n.hash <> grove.hash(COALESCE((SELECT c.hashes FROM grove.node_cols(n.hash) c), ''::bytea))
-
-  UNION ALL
-  SELECT 'node vectors disagree', encode(n.hash, 'hex')
-  FROM grove.nodes n
-  WHERE n.entries IS NOT NULL
-    AND COALESCE(array_length(n.keys, 1), 0) * grove.hash_len() <> COALESCE(octet_length(n.hashes), 0)
-
-  UNION ALL
-  SELECT 'node has no key vector', encode(n.hash, 'hex')
-  FROM grove.nodes n WHERE n.entries IS NOT NULL AND n.keys IS NULL
-
-  UNION ALL
-  SELECT 'tracked table no longer exists', m.gone_table
-  FROM grove.missing_tracked() m
-
-  UNION ALL
-  SELECT 'delta base missing', encode(n.hash, 'hex')
-  FROM grove.nodes n
-  WHERE n.base_hash IS NOT NULL
-    AND NOT EXISTS (SELECT 1 FROM grove.nodes b WHERE b.hash = n.base_hash)
-
-  UNION ALL
-  SELECT 'node unresolvable', encode(n.hash, 'hex')
-  FROM grove.nodes n WHERE grove.entries_of(n.hash) IS NULL
-
-  UNION ALL
-  SELECT 'ref points at a missing commit', r.name
-  FROM grove.refs r
-  WHERE NOT EXISTS (SELECT 1 FROM grove.commits c WHERE c.sha = r.sha)
-
-  UNION ALL
-  SELECT 'commit parent missing', encode(e.child, 'hex') || ' ^' || e.ord
-  FROM grove.parent_edge e
-  WHERE NOT EXISTS (SELECT 1 FROM grove.commits p WHERE p.sha = e.parent)
-
-  UNION ALL
-  SELECT 'merge commit has a gap in its parents', encode(p.commit_sha, 'hex')
-  FROM grove.commit_parent p
-  WHERE NOT EXISTS (SELECT 1 FROM grove.commit_parent q
-                    WHERE q.commit_sha = p.commit_sha AND q.ord = p.ord - 1)
-    AND p.ord > 2
-
-  UNION ALL
-  SELECT 'tree root missing from the node store', t.commit_sha::text || ' ' || t.tbl
-  FROM grove.trees t
-  WHERE t.root_hash <> grove.hash(''::bytea)
-    AND NOT EXISTS (SELECT 1 FROM grove.nodes n WHERE n.hash = t.root_hash)
-
-  UNION ALL
-  SELECT 'child node missing', encode(n.hash, 'hex') || ' -> ' || i.ch
-  FROM grove.nodes n CROSS JOIN LATERAL grove.node_items(n.hash) i
-  WHERE n.level > 0
-    AND NOT EXISTS (SELECT 1 FROM grove.nodes c WHERE c.hash = decode(i.ch, 'hex'))
-$$;
 
 CREATE TABLE IF NOT EXISTS grove.remotes (
   name text PRIMARY KEY,
@@ -3428,7 +3406,7 @@ BEGIN
     RETURN jsonb_build_object('refs', (
       SELECT COALESCE(jsonb_object_agg(r.name, encode(r.sha, 'hex')), '{}'::jsonb)
       FROM grove.refs r WHERE r.name = ANY (ref_names)),
-      'commits', '[]'::jsonb, 'trees', '[]'::jsonb,
+      'commits', '[]'::jsonb, 'trees', '[]'::jsonb, 'shallow', '[]'::jsonb,
       'schemas', '[]'::jsonb, 'nodes', '[]'::jsonb,
       'settings', grove.canon_settings());
   END IF;
@@ -3454,6 +3432,11 @@ BEGIN
                 'commit', encode(t.commit_sha, 'hex'), 'tbl', t.tbl,
                 'root', encode(t.root_hash, 'hex'))), '[]'::jsonb)
               FROM grove.trees t WHERE t.commit_sha = ANY (send)),
+    'shallow', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                  'sha', encode(h.commit_sha, 'hex'),
+                  'parents', (SELECT COALESCE(jsonb_agg(encode(u, 'hex')), '[]'::jsonb)
+                              FROM unnest(h.original_parents) u))), '[]'::jsonb)
+                FROM grove.shallow h WHERE h.commit_sha = ANY (send)),
     'schemas', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
                   'commit', encode(x.commit_sha, 'hex'), 'tbl', x.tbl,
                   'fp', encode(x.fingerprint, 'hex'), 'cols', x.columns,
@@ -3473,15 +3456,15 @@ BEGIN
 END $$;
 
 DROP FUNCTION IF EXISTS grove.verify_images(bytea, jsonb);
+DROP FUNCTION IF EXISTS grove.verify_images(jsonb, jsonb);
 
-CREATE OR REPLACE FUNCTION grove.verify_images(root bytea, cols jsonb) RETURNS int
+CREATE OR REPLACE FUNCTION grove.verify_images(images jsonb, cols jsonb) RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
   expr    text;
   defs    text;
   unknown text;
   bad     int;
-  payload jsonb;
 BEGIN
   SELECT string_agg(c ->> 'type', ', ') INTO unknown
   FROM jsonb_array_elements(cols) c WHERE to_regtype(c ->> 'type') IS NULL;
@@ -3500,14 +3483,14 @@ BEGIN
 
   IF expr IS NULL THEN RETURN 0; END IF;
 
-  SELECT jsonb_agg(jsonb_build_object('h', l.rh, 'v', l.v)) INTO payload FROM grove.leaves(root) l;
-  IF payload IS NULL THEN RETURN 0; END IF;
+  IF images IS NULL OR jsonb_array_length(images) = 0 THEN RETURN 0; END IF;
 
   EXECUTE format(
-    'SELECT count(*) FROM jsonb_array_elements($1) e,'
-    ' LATERAL jsonb_to_record(e.value -> ''v'') AS "grove row"(%s)'
-    ' WHERE grove.hash(%s) IS DISTINCT FROM decode(e.value ->> ''h'', ''hex'')', defs, expr)
-  INTO bad USING payload;
+    'SELECT count(*) FROM jsonb_array_elements($1) AS "grove imgs"("grove img"),'
+    ' LATERAL jsonb_to_record("grove imgs"."grove img" -> ''v'') AS "grove row"(%s)'
+    ' WHERE grove.hash(%s) IS DISTINCT FROM'
+    ' decode("grove imgs"."grove img" ->> ''h'', ''hex'')', defs, expr)
+  INTO bad USING images;
 
   RETURN bad;
 END $$;
@@ -3522,8 +3505,6 @@ DECLARE
   theirs jsonb := b -> 'settings';
   mine   jsonb := grove.canon_settings();
   missing int;
-  summary text;
-  extra   bytea[];
   k      text;
   tv     record;
   bad    int;
@@ -3588,6 +3569,12 @@ BEGIN
   CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(x -> 'parents', '[]'::jsonb))
        WITH ORDINALITY p(val, ord)
   ON CONFLICT DO NOTHING;
+
+  INSERT INTO grove.shallow (commit_sha, original_parents)
+  SELECT decode(x ->> 'sha', 'hex'),
+         ARRAY(SELECT decode(u, 'hex') FROM jsonb_array_elements_text(x -> 'parents') u)
+  FROM jsonb_array_elements(COALESCE(b -> 'shallow', '[]'::jsonb)) x
+  ON CONFLICT (commit_sha) DO NOTHING;
 
   INSERT INTO grove.trees (commit_sha, tbl, root_hash)
   SELECT decode(x ->> 'commit', 'hex'), x ->> 'tbl', decode(x ->> 'root', 'hex')
@@ -3658,7 +3645,9 @@ BEGIN
     JOIN jsonb_array_elements(b -> 'schemas') s
       ON s ->> 'commit' = t ->> 'commit' AND s ->> 'tbl' = t ->> 'tbl'
   LOOP
-    bad := grove.verify_images(tv.root, tv.cols);
+    bad := grove.verify_images(
+             (SELECT jsonb_agg(jsonb_build_object('h', l.rh, 'v', l.v))
+              FROM grove.leaves(tv.root) l), tv.cols);
 
     IF bad > 0 THEN
       RAISE EXCEPTION 'grove: % row image(s) of % do not hash to the values recorded beside them', bad, tv.tbl
@@ -3667,30 +3656,16 @@ BEGIN
     END IF;
   END LOOP;
 
-  FOR e IN SELECT * FROM jsonb_array_elements(b -> 'commits') LOOP
-    h := decode(e ->> 'sha', 'hex');
+  SELECT string_agg(left(encode(c.sha, 'hex'), 12), ', ') INTO shapes
+  FROM grove.commits c
+  WHERE c.sha = ANY (ARRAY(SELECT decode(x ->> 'sha', 'hex')
+                           FROM jsonb_array_elements(b -> 'commits') x))
+    AND grove.recomputed_commit_sha(c.sha) IS DISTINCT FROM c.sha;
 
-    SELECT COALESCE(string_agg(t.tbl || ':' || encode(t.root_hash, 'hex'), E'\n' ORDER BY t.tbl), '')
-    INTO summary FROM grove.trees t WHERE t.commit_sha = h;
-
-    SELECT array_agg(p.parent_sha ORDER BY p.ord) INTO extra
-    FROM grove.commit_parent p WHERE p.commit_sha = h;
-
-    IF extra IS NULL THEN
-      calc := grove.commit_sha(decode(e ->> 'parent', 'hex'), e ->> 'author',
-                               e ->> 'message', (e ->> 'at')::timestamptz, summary);
-    ELSE
-      calc := grove.octopus_commit_sha(
-                ARRAY[decode(e ->> 'parent', 'hex')] || extra,
-                e ->> 'message', (e ->> 'at')::timestamptz, summary);
-    END IF;
-
-    IF calc <> h THEN
-      RAISE EXCEPTION 'grove: commit % does not hash to its own author, message, time and trees',
-        left(e ->> 'sha', 12)
-        USING HINT = 'the history in this bundle was rewritten in transit; refusing all of it';
-    END IF;
-  END LOOP;
+  IF shapes IS NOT NULL THEN
+    RAISE EXCEPTION 'grove: commit(s) % do not hash to their own author, message, time and trees', shapes
+      USING HINT = 'the history in this bundle was rewritten in transit; refusing all of it';
+  END IF;
 
   SELECT count(*) INTO missing
   FROM jsonb_each_text(COALESCE(b -> 'refs', '{}'::jsonb)) r
@@ -4050,14 +4025,23 @@ BEGIN
     SELECT l.sha INTO cutoff FROM grove.log(r.sha) l
     WHERE l.at >= before_at ORDER BY l.depth DESC LIMIT 1;
 
-    IF cutoff IS NOT NULL THEN
-      UPDATE grove.commits SET parent_sha = NULL WHERE sha = cutoff;
-      DELETE FROM grove.commit_parent WHERE commit_sha = cutoff;
-    ELSE
+    IF cutoff IS NULL THEN
       INSERT INTO grove_alive VALUES (r.sha) ON CONFLICT DO NOTHING;
-      UPDATE grove.commits SET parent_sha = NULL WHERE sha = r.sha;
-      DELETE FROM grove.commit_parent WHERE commit_sha = r.sha;
+      cutoff := r.sha;
     END IF;
+
+    INSERT INTO grove.shallow (commit_sha, original_parents)
+    SELECT cutoff, ARRAY[c.parent_sha] || COALESCE(
+             (SELECT array_agg(q.parent_sha ORDER BY q.ord)
+              FROM grove.commit_parent q WHERE q.commit_sha = cutoff), '{}'::bytea[])
+    FROM grove.commits c
+    WHERE c.sha = cutoff
+      AND (c.parent_sha IS NOT NULL
+           OR EXISTS (SELECT 1 FROM grove.commit_parent q WHERE q.commit_sha = cutoff))
+    ON CONFLICT (commit_sha) DO NOTHING;
+
+    UPDATE grove.commits SET parent_sha = NULL WHERE sha = cutoff;
+    DELETE FROM grove.commit_parent WHERE commit_sha = cutoff;
   END LOOP;
 
   DELETE FROM grove.reflog   WHERE new_sha NOT IN (SELECT sha FROM grove_alive);
@@ -4356,14 +4340,94 @@ BEGIN
     bad.sides, array_length(all_heads, 1), bad.tbl, key;
 END $$;
 
-CREATE OR REPLACE FUNCTION grove.octopus_commit_sha(
-  all_heads bytea[], msg text, ts timestamptz, summary text) RETURNS bytea
+
+CREATE OR REPLACE FUNCTION grove.fsck()
+RETURNS TABLE (problem text, detail text)
 LANGUAGE sql STABLE AS $$
-  SELECT grove.hash(
-    (SELECT string_agg(encode(x.sha, 'hex'), E'\n' ORDER BY x.ord)
-     FROM unnest(all_heads) WITH ORDINALITY x(sha, ord)) || E'\n' ||
-    msg || E'\n' ||
-    to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') || E'\n' || summary)
+  SELECT 'node hash mismatch', encode(n.hash, 'hex')
+  FROM grove.nodes n
+  WHERE n.hash <> grove.hash(COALESCE((SELECT c.hashes FROM grove.node_cols(n.hash) c), ''::bytea))
+
+  UNION ALL
+  SELECT 'node vectors disagree', encode(n.hash, 'hex')
+  FROM grove.nodes n
+  WHERE n.entries IS NOT NULL
+    AND COALESCE(array_length(n.keys, 1), 0) * grove.hash_len() <> COALESCE(octet_length(n.hashes), 0)
+
+  UNION ALL
+  SELECT 'node has no key vector', encode(n.hash, 'hex')
+  FROM grove.nodes n WHERE n.entries IS NOT NULL AND n.keys IS NULL
+
+  UNION ALL
+  SELECT 'tracked table no longer exists', m.gone_table
+  FROM grove.missing_tracked() m
+
+  UNION ALL
+  SELECT 'delta base missing', encode(n.hash, 'hex')
+  FROM grove.nodes n
+  WHERE n.base_hash IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM grove.nodes b WHERE b.hash = n.base_hash)
+
+  UNION ALL
+  SELECT 'node unresolvable', encode(n.hash, 'hex')
+  FROM grove.nodes n WHERE grove.entries_of(n.hash) IS NULL
+
+  UNION ALL
+  SELECT 'ref points at a missing commit', r.name
+  FROM grove.refs r
+  WHERE NOT EXISTS (SELECT 1 FROM grove.commits c WHERE c.sha = r.sha)
+
+  UNION ALL
+  SELECT 'commit parent missing', encode(e.child, 'hex') || ' ^' || e.ord
+  FROM grove.parent_edge e
+  WHERE NOT EXISTS (SELECT 1 FROM grove.commits p WHERE p.sha = e.parent)
+
+  UNION ALL
+  SELECT 'merge commit has a gap in its parents', encode(p.commit_sha, 'hex')
+  FROM grove.commit_parent p
+  WHERE NOT EXISTS (SELECT 1 FROM grove.commit_parent q
+                    WHERE q.commit_sha = p.commit_sha AND q.ord = p.ord - 1)
+    AND p.ord > 2
+
+  UNION ALL
+  SELECT 'tree root missing from the node store', t.commit_sha::text || ' ' || t.tbl
+  FROM grove.trees t
+  WHERE t.root_hash <> grove.hash(''::bytea)
+    AND NOT EXISTS (SELECT 1 FROM grove.nodes n WHERE n.hash = t.root_hash)
+
+  UNION ALL
+  SELECT 'commit does not hash to its own content', encode(c.sha, 'hex')
+  FROM grove.commits c
+  WHERE grove.recomputed_commit_sha(c.sha) IS DISTINCT FROM c.sha
+
+  UNION ALL
+  SELECT 'recorded shape does not match its fingerprint', encode(s.commit_sha, 'hex') || ' ' || s.tbl
+  FROM grove.schemas s
+  WHERE s.fingerprint IS DISTINCT FROM grove.hash(s.columns::text)
+
+  UNION ALL
+  SELECT 'tree recorded for a commit that is not in the store', encode(t.commit_sha, 'hex') || ' ' || t.tbl
+  FROM grove.trees t
+  WHERE NOT EXISTS (SELECT 1 FROM grove.commits c WHERE c.sha = t.commit_sha)
+
+  UNION ALL
+  SELECT 'row images do not hash to their rows', z.tbl
+  FROM (SELECT t.tbl AS tbl, s.columns AS cols,
+               array_agg(DISTINCT t.root_hash) AS roots
+        FROM grove.trees t
+        JOIN grove.schemas s ON s.commit_sha = t.commit_sha AND s.tbl = t.tbl
+        GROUP BY t.tbl, s.columns) z
+  WHERE grove.verify_images(
+          (SELECT jsonb_agg(jsonb_build_object('h', i.ch, 'v', i.v))
+           FROM (SELECT DISTINCT r.h FROM grove.reachable_nodes(z.roots) r) rn
+           CROSS JOIN LATERAL grove.node_items(rn.h) i
+           WHERE grove.node_level(rn.h) = 0), z.cols) > 0
+
+  UNION ALL
+  SELECT 'child node missing', encode(n.hash, 'hex') || ' -> ' || i.ch
+  FROM grove.nodes n CROSS JOIN LATERAL grove.node_items(n.hash) i
+  WHERE n.level > 0
+    AND NOT EXISTS (SELECT 1 FROM grove.nodes c WHERE c.hash = decode(i.ch, 'hex'))
 $$;
 
 CREATE OR REPLACE FUNCTION grove.merge_octopus(branch_names text[], msg text DEFAULT NULL)

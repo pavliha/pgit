@@ -198,9 +198,9 @@ json.dump(d, open('/tmp/grove_mal_rootswap.json', 'w'))
 PY5
 
 is "remote: rewriting a commit's author and message is refused, the sha no longer covers them" \
-   "$(mal forged | grep -c 'does not hash to its own author')" "1"
+   "$(mal forged | grep -c 'do not hash to their own author')" "1"
 is "remote: repointing a commit's tree root is refused, because the commit sha covers the roots" \
-   "$(mal rootswap | grep -c 'does not hash to its own author')" "1"
+   "$(mal rootswap | grep -c 'do not hash to their own author')" "1"
 
 psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS grove_virgin" -c "CREATE DATABASE grove_virgin" >/dev/null 2>&1
 V="postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/grove_virgin"
@@ -263,4 +263,32 @@ is "octopus: both branches' rows survived the transfer" \
 for d in grove_origin grove_clone grove_bad grove_short grove_mal grove_virgin grove_oct; do psql "$ADMIN" -X -q -c "DROP DATABASE $d" >/dev/null; done
 rm -f /tmp/grove_b*.json
 
-suite_end REMOTE 46
+psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS grove_pruned WITH (FORCE)" -c "CREATE DATABASE grove_pruned" >/dev/null 2>&1
+psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS grove_pruned_clone WITH (FORCE)" -c "CREATE DATABASE grove_pruned_clone" >/dev/null 2>&1
+P="postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/grove_pruned"
+PC="postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/grove_pruned_clone"
+psql "$P" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null 2>&1
+psql "$PC" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null 2>&1
+psql "$P" -X -q -c "$DDL" -c "SELECT grove.track('t')" >/dev/null 2>&1
+psql "$P" -X -q -At >/dev/null 2>&1 <<'SQL'
+INSERT INTO t SELECT g, 'row-'||g, 0 FROM generate_series(1,300) g;
+SELECT grove.commit('old one','alice', now() - interval '10 days');
+UPDATE t SET hits = 1 WHERE id = 1;
+SELECT grove.commit('old two','alice', now() - interval '9 days');
+UPDATE t SET hits = 2 WHERE id = 2;
+SELECT grove.commit('recent','alice', now());
+SELECT grove.prune(now() - interval '5 days');
+SQL
+is "remote: pruning records the parent link it severs" \
+   "$(psql "$P" -X -q -At -c 'SELECT count(*) FROM grove.shallow')" "1"
+is "remote: a pruned repository still passes fsck" \
+   "$(psql "$P" -X -q -At -c 'SELECT count(*) FROM grove.fsck()')" "0"
+psql "$P" -X -q -At -c "SELECT grove.bundle(ARRAY['main'])" > /tmp/grove_pruned.json 2>&1
+is "remote: a pruned repository can still be cloned, its commits verify against the recorded boundary" \
+   "$(runb "$PC" /tmp/grove_pruned.json "SELECT grove.clone_from(:'b'::jsonb, 'main');" | grep -ci error)" "0"
+is "remote: and the clone has every row" \
+   "$(psql "$PC" -X -q -At -c 'SELECT count(*) FROM t')" "300"
+is "remote: and the clone carries the boundary too, so it can be cloned onward" \
+   "$(psql "$PC" -X -q -At -c 'SELECT count(*) FROM grove.shallow')" "1"
+
+suite_end REMOTE 51

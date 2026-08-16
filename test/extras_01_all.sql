@@ -1,5 +1,5 @@
 BEGIN;
-SELECT plan(23);
+SELECT plan(25);
 
 CREATE TABLE t (id int PRIMARY KEY, name text, hits int);
 SELECT grove.track('t');
@@ -72,6 +72,11 @@ SELECT ok((SELECT count(*) FROM grove.commits) < (SELECT commits FROM before_pru
   'prune: the history is shorter');
 SELECT is((SELECT count(*) FROM grove.fsck()), 0::bigint,
   'prune: fsck is clean afterwards, so nothing reachable was collected');
+SELECT cmp_ok((SELECT count(*) FROM grove.shallow), '>', 0::bigint,
+  'prune: the parent link it severs is recorded, not silently forgotten');
+SELECT is((SELECT count(*) FROM grove.commits c
+           WHERE grove.recomputed_commit_sha(c.sha) IS DISTINCT FROM c.sha), 0::bigint,
+  'prune: every surviving commit still hashes to its own content afterwards');
 SELECT is(grove.write_tree('t'),
   (SELECT root_hash FROM grove.trees WHERE commit_sha = grove.resolve('main') AND tbl='t'),
   'prune: the surviving tip still describes the live table exactly');

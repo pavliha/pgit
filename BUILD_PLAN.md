@@ -1113,6 +1113,47 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   This is the fifth bug of one shape and the second sub-shape: not only "a hash nothing checks", but
   "a derived value nothing re-derives". Anything stored next to the thing it is computed from is a
   place to look.
+- **fsck audited the shape of the store and never re-derived anything from content.** Built a differential
+  oracle: corrupt a healthy repository one way at a time by direct SQL, confirm the corruption really
+  landed, then ask fsck. Six corruptions were invisible, and the first run of the oracle was itself
+  vacuous, two probes had been silently rejected by foreign keys and I was reading zeros as "fsck
+  missed it" when the corruption never applied. Worth remembering: an oracle needs its own
+  non-vacuity check.
+  Invisible: an edited row image, a rewritten commit author and message, a backdated commit, a forged
+  schema fingerprint, a tree left behind by a commit that is gone, and rewritten `pk_cols`. fsck now
+  recomputes every commit sha, re-derives every fingerprint from its own columns, re-hashes every
+  stored row image, and reports trees whose commit is not in the store. `pk_cols` is left alone: there
+  is nothing local to re-derive it from, since a primary key may legitimately have changed.
+- **prune quietly made every pruned repository unclonable.** This one only surfaced because the new fsck
+  check failed an existing test. `prune` severs history by setting `parent_sha = NULL` on the cutoff
+  commit and deleting its extra parent rows, while keeping its sha, so that commit provably stopped
+  hashing to its own content. Nothing noticed until today. Then the commit-sha verification added
+  earlier in this campaign turned it into a hard failure: a pruned repository could not be cloned or
+  pushed at all, and the error blamed the transport ("rewritten in transit") for damage done locally.
+  Fixed the cause rather than the symptom. `grove.shallow` records the parent list prune severs, the
+  bundle carries it, and `grove.recomputed_commit_sha` uses it, so a truncated history still verifies
+  against what it was. This is how git's shallow clones work: the graft boundary is recorded, not
+  forgotten.
+  The verification and fsck now share that one function, which is the actual lesson. There were three
+  copies of "what does a commit hash to" (commit, unbundle, fsck) and the drift between them is what
+  the whole class of bugs is made of.
+  A note on cost: the first version of the image check walked every tree of every commit, which is
+  quadratic in history, and it pushed the suite past ten minutes. It now verifies each distinct leaf
+  node once via `grove.reachable_nodes`, which is proportional to the store rather than to history
+  times the store. 41 commits over 3000 rows: 183 ms.
+- **a column called `value` broke unbundle and fsck on the real schema.** Caught by the realworld suite,
+  not by design. The dynamic query built to verify row images put `jsonb_array_elements`'s own `value`
+  column in the same scope as the row's columns, so any tracked table with a `value` column produced
+  `column reference "value" is ambiguous` and failed outright. Nothing adversarial, just an ordinary
+  column name. Every synthetic test in the suite used `id`, `name` and `price`.
+  Qualifying my own reference was not enough, because the ambiguity comes from the row side, where the
+  canonical expression names columns unqualified. The fix reuses `"grove img"`, a name `grove.track`
+  already refuses to let a tracked table use alongside `"grove row"`, so there is no third reserved
+  word and the existing guard covers it.
+  `security_02_hostile_bundle_columns.sql` now tracks a table with columns named `value`, `h`, `v`,
+  `select` and `grove entry`. The lesson is about test data, not about SQL: run new code against the
+  real dump early, because a synthetic schema agrees with whatever assumptions the code was written
+  under.
 
 ## Reference
 

@@ -103,7 +103,7 @@ grove stash / stash pop / stash list
 grove bisect start <good> <bad>  # then: bisect good | bisect bad
 grove tag v1.0 HEAD~2            grove notes add HEAD -m "..."
 
-grove fsck                       # verify every hash, ref, chain and tree
+grove fsck                       # re-derive every hash, sha, shape and row image
 grove gc                         # pack node versions as deltas, and rotate the event log
 grove prune --before 2026-01-01  # truncate history, then collect unreachable nodes
 

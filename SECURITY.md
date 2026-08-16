@@ -56,6 +56,12 @@ refuses before a single node is stored.
 claims. That is no longer the check that catches a tampered image; it is there to catch the
 materialisation itself going wrong.
 
+`grove.fsck()` asks the same three questions of data already at rest, since a repository can be
+corrupted by something other than a bundle: it recomputes every commit sha, re-derives every schema
+fingerprint from its columns, and re-hashes every stored row image. A repository poisoned by direct
+SQL, or by a bundle accepted before these checks existed, reports the damage rather than reporting
+clean.
+
 Treat a bundle like any other untrusted file: it decides what tables get created in the database you
 unbundle it into.
 
