@@ -1212,6 +1212,19 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   rather than reimplementing.
   The test asserts non-vacuity explicitly, that a full rebuild really does move the root after the
   retune, otherwise "not dirty" would prove nothing.
+- **two settings described the code without controlling it.** `hash_algo` and `canon_version` are seeded
+  once and read in exactly one place, `canon_settings`, which puts them in every bundle. Nothing else
+  reads them: `grove.hash` is sha256 outright and the canonical expressions have no version switch.
+  So setting `hash_algo` to sha512 changed nothing at all, same root, same 32 byte digest, while every
+  bundle then claimed sha512 and honest repositories refused a byte-identical history over a
+  difference that did not exist. The failure mode runs the other way too: two repositories both
+  mislabelled interoperate happily while believing they agree on something they never checked.
+  Writing a value the build does not implement is refused now, so the label cannot drift from the
+  behaviour. When a second algorithm or canonical form is actually implemented, the allowed set grows
+  with it, which is the point: the guard is a reminder that the setting is a promise.
+  Same family as the rest, seen from the other side. Every earlier one was a value derived from
+  something nobody re-derived it from. This is a value that describes something nobody compares it
+  against.
 
 ## Reference
 

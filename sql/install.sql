@@ -18,6 +18,32 @@ INSERT INTO grove.meta (key, value) VALUES
   ('log_retain_days', '30')
 ON CONFLICT (key) DO NOTHING;
 
+CREATE OR REPLACE FUNCTION grove.meta_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.key = 'hash_algo' AND NEW.value <> 'sha256' THEN
+    RAISE EXCEPTION 'grove: hash_algo % is not implemented, this build hashes with sha256', NEW.value
+      USING HINT = 'the setting travels in every bundle but does not choose the algorithm, so a value '
+                   'the code does not honour makes honest repositories refuse each other over a '
+                   'difference that is not there';
+  END IF;
+
+  IF NEW.key = 'canon_version' AND NEW.value <> '1' THEN
+    RAISE EXCEPTION 'grove: canon_version % is not implemented, this build writes canonical form 1',
+      NEW.value
+      USING HINT = 'the setting travels in every bundle but does not choose the canonical form, so a '
+                   'value the code does not honour makes honest repositories refuse each other over a '
+                   'difference that is not there';
+  END IF;
+
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS grove_meta_guard ON grove.meta;
+
+CREATE TRIGGER grove_meta_guard BEFORE INSERT OR UPDATE ON grove.meta
+FOR EACH ROW EXECUTE FUNCTION grove.meta_guard();
+
 CREATE OR REPLACE FUNCTION grove.setting(k text) RETURNS text
 LANGUAGE sql STABLE PARALLEL SAFE AS $$
   SELECT value FROM grove.meta WHERE key = k
