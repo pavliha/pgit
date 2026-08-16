@@ -4640,16 +4640,13 @@ BEGIN
   RETURN 0;
 END $$;
 
-REVOKE ALL ON SCHEMA grove FROM PUBLIC;
-REVOKE ALL ON ALL TABLES IN SCHEMA grove FROM PUBLIC;
-REVOKE ALL ON ALL FUNCTIONS IN SCHEMA grove FROM PUBLIC;
-REVOKE ALL ON ALL SEQUENCES IN SCHEMA grove FROM PUBLIC;
 
 CREATE OR REPLACE FUNCTION grove.admin_only_verbs() RETURNS text[]
 LANGUAGE sql IMMUTABLE AS $$
   SELECT ARRAY['track','untrack','prune','gc_nodes','repack','unpack','reset',
                'delete_branch','unbundle','clone_from','receive','create_from_schema',
-               'remote_add','grant_read','grant_write','grant_admin','log_rotate','untrack_missing']
+               'remote_add','grant_read','grant_write','grant_admin','grant_level',
+               'fetch','log_rotate','untrack_missing']
 $$;
 
 CREATE OR REPLACE FUNCTION grove.write_verbs() RETURNS text[]
@@ -4660,6 +4657,7 @@ LANGUAGE sql IMMUTABLE AS $$
                'bisect_start','bisect_good','bisect_bad','bisect_next','bisect_reset',
                'advance_ref','apply_row','apply_diff','materialise','replay_begin',
                'replay_end','record_conflicts','record_schemas','record_trees','resolve_all',
+               'resolve_conflict','virtual_merge',
                'rerere_learn','rerere_apply','rerere_forget','write_tree',
                'write_tree_incremental','snapshot_trees','ensure_scratch','ensure_key_index',
                'build_up','build_one_level','locate_touched_chunks','splice_touched_chunks','emit',
@@ -4820,3 +4818,8 @@ BEGIN
   GET DIAGNOSTICS n = ROW_COUNT;
   RETURN n;
 END $$;
+
+REVOKE ALL ON SCHEMA grove FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA grove FROM PUBLIC;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA grove FROM PUBLIC;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA grove FROM PUBLIC;

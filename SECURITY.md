@@ -78,6 +78,21 @@ specific way is still reported that way.
 Treat a bundle like any other untrusted file: it decides what tables get created in the database you
 unbundle it into.
 
+## Access levels
+
+`grant_read`, `grant_write` and `grant_admin` decide what a role may call from two lists,
+`grove.write_verbs()` and `grove.admin_only_verbs()`. Both are written by hand, and both had drifted:
+`resolve_conflict` was missing beside `resolve_all`, `fetch` beside `receive`, and `grant_level`
+beside the three wrappers that call it. A test now derives the set of functions that write from
+`pg_proc` and fails if any of them is absent from both lists, so the lists cannot quietly fall behind
+the code again.
+
+The blanket `REVOKE ... FROM PUBLIC` used to run before the last ten functions in the file were
+created, so those kept PostgreSQL's default public execute grant. A read role could call
+`grant_level` and `log_rotate`, both admin-only. It ran out of road at the table grants, which are the
+real boundary and were never wrong, but the intent of the lists was defeated for exactly those
+functions. The revoke runs after every definition now.
+
 ## Running the development container
 
 `docker-compose.yml` is for development. It binds Postgres to `127.0.0.1` with a throwaway password.

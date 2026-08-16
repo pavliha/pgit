@@ -1311,6 +1311,24 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   test does assert it, but `grove: no merge % in progress` splits into fragments too short for the
   matcher's fourteen-character window. Worth writing down so the next person does not chase it. The
   honest count is 72 of 72.
+- **the access lists had drifted, and the revoke that enforces them ran too early.** Two findings from
+  one probe, both the hand-maintained-list shape. `grant_level` grants a role execute on every grove
+  function except those named in `write_verbs()` or `admin_only_verbs()`. Derived the set of functions
+  that actually write from `pg_proc.prosrc` and compared: `resolve_conflict` was missing beside
+  `resolve_all`, `fetch` beside `receive`, `grant_level` beside the three wrappers that call it, and
+  `virtual_merge` beside the other internals. Every omission has a sibling already listed, which is
+  what makes it oversight rather than design.
+  Then the sharper one. `REVOKE ALL ON ALL FUNCTIONS FROM PUBLIC` sits at line 4643 and ten functions
+  are defined after it, so those kept PostgreSQL's default public execute grant no matter what the
+  lists say. A read role had execute on `grant_level` and `log_rotate`, both admin-only, confirmed
+  with `has_function_privilege`. The revoke now runs after every definition.
+  Honest severity: not a privilege escalation. There are no SECURITY DEFINER functions, table grants
+  are the real boundary, and I verified a read role gained no insert, update or delete anywhere and
+  that `log_rotate` died on the events table. What was broken was defence in depth and the intent the
+  lists express.
+  The test derives the writer set rather than listing names, so the lists cannot drift again, and it
+  asserts a read role can still execute the reading functions so the zero it checks for means
+  something.
 
 ## Reference
 
