@@ -1520,6 +1520,16 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   decision about the interface rather than a defect to patch at two in the morning. The test asserts
   the merged commit is absent from log, present in `ancestors`, and correctly named by `blame`, so the
   three stay consistent with each other.
+- **the pruning promise is accurate, checked clause by clause.** LIMITATIONS.md says prune costs
+  attribution and not data: the rows are untouched, every surviving tree still rebuilds exactly, and
+  blame does not guess but returns `exact = false` for what it can no longer prove. All three hold.
+  Rows identical by md5 across the prune, the surviving tree rebuilds to the recorded root, fsck
+  clean, and blame comes back exact for the column whose journal row survived and inexact for the two
+  whose evidence was pruned, naming the commit the value was present at rather than inventing an
+  author. That is the documented wording exactly.
+  Nothing added. `blame_01_after_prune.sql` and the prune assertions in `extras_01_all.sql` already
+  cover all three clauses, and writing a fourth test over the same ground would be noise. Recording
+  the check itself so the next pass does not repeat it.
 
 ## Reference
 
