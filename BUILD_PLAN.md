@@ -1182,6 +1182,21 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   A side effect worth having: a bundle that repoints a table's primary key is now refused at unbundle
   with the precise reason, rather than after materialising with the vaguer complaint that the rows do
   not hash to the tree.
+- **the primary key had two sources of truth, and they drifted.** `grove.schema_columns` records names and
+  types, so a table's shape fingerprint does not cover its primary key. Change the key without
+  touching the columns and the shape guard sees nothing. Meanwhile the tree's keys come from
+  `pk_canon_expr`, which reads the live index, while `grove.tracked.pk_cols` is captured once at track
+  time and never refreshed, and the journal triggers use that stale copy.
+  Result: after `ALTER TABLE t DROP CONSTRAINT t_pkey; ADD PRIMARY KEY (b)`, a commit succeeded, the
+  tree was keyed by `b`, the recorded shape claimed the key was `a`, and the journal was still keying
+  by `a`. The repository could no longer be bundled at all, refused by the key check added in the
+  previous commit. Same shape as the prune bug: an ordinary local operation quietly produces a
+  repository that cannot be cloned.
+  Committing now refuses while the two disagree and says to re-track. Re-tracking adopts the new key,
+  the commit goes through, fsck is clean and the repository clones again with every row. fsck reports
+  the drift by name rather than only its downstream symptom.
+  What I predicted was data loss from duplicate keys, and that was wrong: the tree keyed by the live
+  key, so no rows collided. The bug was one layer over, in what the commit recorded about itself.
 
 ## Reference
 

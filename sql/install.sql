@@ -773,6 +773,14 @@ LANGUAGE sql AS $$
 $$;
 
 DROP FUNCTION IF EXISTS grove.commit(text, text, timestamptz);
+CREATE OR REPLACE FUNCTION grove.drifted_keys() RETURNS TABLE (tbl text)
+LANGUAGE sql STABLE AS $$
+  SELECT x.tbl::text
+  FROM grove.tracked x
+  WHERE EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = x.tbl)
+    AND grove.pk_columns(x.tbl) IS DISTINCT FROM x.pk_cols
+$$;
+
 CREATE OR REPLACE FUNCTION grove.commit(msg text, who text DEFAULT NULL, ts timestamptz DEFAULT now(),
                                        allow_empty boolean DEFAULT false)
 RETURNS bytea LANGUAGE plpgsql AS $$
@@ -785,7 +793,16 @@ DECLARE
   new_sha bytea;
   started timestamptz := clock_timestamp();
   rows_in int;
+  drifted text;
 BEGIN
+  SELECT string_agg(d.tbl, ', ') INTO drifted FROM grove.drifted_keys() d;
+
+  IF drifted IS NOT NULL THEN
+    RAISE EXCEPTION 'grove: the primary key of % changed since it was tracked', drifted
+      USING HINT = 'every row is identified by its primary key, so the journal and the tree would '
+                   'disagree about what each row is; run grove.track on it again to adopt the new key';
+  END IF;
+
   roots   := grove.snapshot_trees(parent);
   summary := grove.roots_summary(roots);
 
@@ -4423,6 +4440,10 @@ LANGUAGE sql STABLE AS $$
   UNION ALL
   SELECT 'tracked table no longer exists', m.gone_table
   FROM grove.missing_tracked() m
+
+  UNION ALL
+  SELECT 'primary key changed since the table was tracked', d.tbl
+  FROM grove.drifted_keys() d
 
   UNION ALL
   SELECT 'delta base missing', encode(n.hash, 'hex')
