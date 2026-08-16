@@ -1566,6 +1566,18 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   hundredth key, rewrites 54 of the 59 chunks. Without that contrast, "exactly one chunk changed"
   could be a test of a constant rather than a test of locality, and it would keep passing if chunking
   broke in a way that made every edit rewrite everything or nothing.
+- **the journalling cost claim is honest.** README says journalling costs about 10x the write it
+  records, a 10,000-row UPDATE going from 26-30 ms to 146-183 ms. Measured here over three runs
+  against an identical untracked table: 17.1 ms bare, 146.5 ms tracked, a ratio of 8.6x. The tracked
+  figure lands exactly at the bottom of the stated range and the ratio is lower only because this
+  machine's bare write is faster than the one the README was written on. The claim stands.
+  No test added, deliberately. A timing assertion inside `all.sh` would be flaky on other people's
+  hardware, and performance already has a proper home: `bench/gate.sh` takes medians over at least
+  three runs, refuses to judge fewer, and holds four explicit ceilings. That is the right shape for
+  this, and it is not stale.
+  Two numeric claims remain unverified, the 163 ms long-range diff and the git comparison table at
+  50k, 500k and 2M rows. Both need the large fixtures in `bench/`, which is minutes of build time
+  rather than a probe, so they are noted as unchecked rather than waved through.
 
 ## Reference
 
