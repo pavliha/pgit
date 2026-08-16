@@ -942,6 +942,20 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   `obs_04_concurrent_attribution.sql` pin the behaviour so it cannot drift silently.
   It also settles that the advisory lock in the into-ge wrapper is buying the right thing, and
   buying less than I claimed: without it blame is still correct, only the commit grouping is mixed.
+- **the replay verbs are in the fuzzer** — rebase, cherry-pick and revert rewrite history and had only
+  example tests behind them. Each now constructs its own scenario rather than waiting for random
+  divergence to produce one: revert makes a change, commits it and reverts that commit; cherry-pick
+  branches, commits there, returns and picks it; rebase diverges both sides then rebases, aborting if
+  it stops on conflicts. Each logs its own refusals rather than sharing the catch-all bucket, which is
+  the fix for the mistake that hid octopus.
+  300 operations exercise all four paths - cherry-pick 3, revert 1, rebase 1, revert refused 2 - with
+  the tree invariant checked after every one. The refusals are my own empty-commit guard correctly
+  rejecting the revert of a commit that changed nothing, which is right and is now visible as
+  `revert refused` rather than a generic failure.
+  Octopus campaign came back clean at chunk 8, 32 and 64, three rounds each over 1000 row tables.
+  Fuzz surface now: insert, update, delete, add/drop column, branch, checkout, prune, repack, merge
+  with resolve and abort, octopus, revert, cherry-pick, rebase. Still absent: stash, bisect, tag,
+  notes, and restore.
 
 ## Reference
 

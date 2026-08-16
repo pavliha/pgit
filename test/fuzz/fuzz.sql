@@ -45,7 +45,7 @@ BEGIN
 
   FOR i IN 1..ops LOOP
     tb   := tbls[1 + floor(random() * array_length(tbls,1))::int];
-    pick := 1 + floor(random() * 13)::int;
+    pick := 1 + floor(random() * 16)::int;
 
     BEGIN
       IF pick <= 3 THEN
@@ -160,6 +160,74 @@ BEGIN
             INSERT INTO fuzz_log VALUES (i, 'octopus merged', br || ',' || br2);
           EXCEPTION WHEN others THEN
             INSERT INTO fuzz_log VALUES (i, 'octopus refused', SQLERRM);
+          END;
+        END IF;
+
+      ELSIF pick = 14 THEN
+        SELECT a.attname INTO col FROM pg_attribute a
+        WHERE a.attrelid = tb::regclass AND a.attnum > 0 AND NOT a.attisdropped
+          AND a.attname <> 'id' AND a.atttypid = 'text'::regtype
+        ORDER BY a.attnum LIMIT 1;
+        IF col IS NOT NULL THEN
+          EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 23 = 0', tb, col, 'to-revert-' || i);
+          PERFORM pgit.commit('to revert ' || i, pgit.head(), now(), true);
+          BEGIN
+            PERFORM pgit.revert(pgit.resolve(pgit.head()));
+            INSERT INTO fuzz_log VALUES (i, 'revert', tb);
+          EXCEPTION WHEN others THEN
+            INSERT INTO fuzz_log VALUES (i, 'revert refused', SQLERRM);
+          END;
+        END IF;
+
+      ELSIF pick = 15 THEN
+        SELECT a.attname INTO col FROM pg_attribute a
+        WHERE a.attrelid = tb::regclass AND a.attnum > 0 AND NOT a.attisdropped
+          AND a.attname <> 'id' AND a.atttypid = 'text'::regtype
+        ORDER BY a.attnum LIMIT 1;
+        IF col IS NOT NULL THEN
+          home := pgit.head();
+          br   := 'cp' || i;
+          PERFORM pgit.branch(br);
+          PERFORM pgit.checkout(br);
+          EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 29 = 0', tb, col, 'picked-' || i);
+          PERFORM pgit.commit('pick source ' || i, pgit.head(), now(), true);
+          PERFORM pgit.checkout(home);
+          branches := branches || br;
+          BEGIN
+            cnt := pgit.cherry_pick(pgit.resolve(br), 'fuzz pick ' || i);
+            INSERT INTO fuzz_log VALUES (i, 'cherry_pick', br || ' -> ' || cnt);
+          EXCEPTION WHEN others THEN
+            INSERT INTO fuzz_log VALUES (i, 'cherry_pick refused', SQLERRM);
+          END;
+        END IF;
+
+      ELSIF pick = 16 THEN
+        SELECT a.attname INTO col FROM pg_attribute a
+        WHERE a.attrelid = tb::regclass AND a.attnum > 0 AND NOT a.attisdropped
+          AND a.attname <> 'id' AND a.atttypid = 'text'::regtype
+        ORDER BY a.attnum LIMIT 1;
+        IF col IS NOT NULL THEN
+          home := pgit.head();
+          br   := 'rb' || i;
+          PERFORM pgit.branch(br);
+          PERFORM pgit.checkout(br);
+          EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 31 = 0', tb, col, 'rebase-side-' || i);
+          PERFORM pgit.commit('rebase side ' || i, pgit.head(), now(), true);
+          PERFORM pgit.checkout(home);
+          EXECUTE format('UPDATE %I SET %I = %L WHERE id %% 37 = 0', tb, col, 'rebase-home-' || i);
+          PERFORM pgit.commit('rebase home ' || i, pgit.head(), now(), true);
+          PERFORM pgit.checkout(br);
+          branches := branches || br;
+          BEGIN
+            cnt := pgit.rebase(home);
+            IF cnt > 0 THEN
+              PERFORM pgit.rebase_abort();
+              INSERT INTO fuzz_log VALUES (i, 'rebase aborted', home || ' (' || cnt || ' conflicts)');
+            ELSE
+              INSERT INTO fuzz_log VALUES (i, 'rebase', home);
+            END IF;
+          EXCEPTION WHEN others THEN
+            INSERT INTO fuzz_log VALUES (i, 'rebase refused', SQLERRM);
           END;
         END IF;
 
