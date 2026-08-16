@@ -1402,6 +1402,17 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   the same session, so both renderings agreed. The rewrite records from a session with `search_path =
   pg_catalog` and asserts from the default one, and the second assertion pins the divergence itself so
   the case cannot quietly stop being a case.
+- **changes made while a table is untracked are not lost, and now something proves it.** Tracking,
+  untracking, changing the table, then tracking it again is a gap where grove is deliberately not
+  watching, so the question is whether the change survives it. It does. The journal never sees it,
+  correctly, because `untrack` drops the triggers, and re-tracking does not invent rows for what it
+  missed. But `is_dirty` still reports the table as changed, because it asks the tree rather than the
+  journal, so the drift can be committed instead of vanishing. The commit records the new value, the
+  tree matches a full rebuild, fsck is clean, and a branch from before the untrack still restores.
+  Worth pinning because it depends on a decision made earlier in this campaign: `is_dirty` was
+  rewritten to share `nothing_to_commit`, which compares trees. A journal-based `is_dirty`, which was
+  the tempting simplification at the time and which I rejected for a different reason, would have
+  reported this table clean and quietly lost the change at the next checkout.
 
 ## Reference
 
