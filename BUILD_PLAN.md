@@ -1225,6 +1225,17 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   Same family as the rest, seen from the other side. Every earlier one was a value derived from
   something nobody re-derived it from. This is a value that describes something nobody compares it
   against.
+- **the strategy knobs are sound, and now there is an oracle saying so.** Asked whether any user-settable
+  value can produce a *wrong* tree rather than just a slow one. `max_incremental_keys`,
+  `splice_max_changes_per_chunk` and `rebuild_when_hit_fraction` choose how the incremental build gets
+  there; only `chunk_target` should change where it arrives. 80 combinations over 3000 rows with
+  updates, deletes and inserts pending: every one reached the same root as a full rebuild. Negative
+  and out-of-range values too, they only pick a path. Values the code cannot honour raise instead:
+  `max_tree_depth = 0` gives "tree depth exceeded at level 1", a non-numeric value fails the cast.
+  No bug, so the result is now `settings_03_strategy_knobs_agree.sql`, a 27-combination matrix with an
+  explicit non-vacuity assertion that the pending edits really moved the tree. This is the invariant
+  most likely to be broken by a future optimisation of the incremental path, and until now the suite
+  checked two combinations of it.
 
 ## Reference
 
