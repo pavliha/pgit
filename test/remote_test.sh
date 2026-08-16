@@ -120,6 +120,9 @@ w('nosettings',  lambda c: c.pop('settings', None))
 w('refdangling', lambda c: c['refs'].update({k: 'ab'*32 for k in c['refs']}))
 w('notrees',     lambda c: c.__setitem__('trees', []))
 w('noschemas',   lambda c: c.__setitem__('schemas', []))
+w('fpforged',    lambda c: [s.__setitem__('fp', 'ab' * 32) for s in c['schemas']])
+w('pkswap',      lambda c: [s.__setitem__('pk', ['name']) for s in c['schemas']])
+w('pkbogus',     lambda c: [s.__setitem__('pk', ['nonexistent_col']) for s in c['schemas']])
 PY3
 
 mal() {
@@ -152,6 +155,12 @@ leaf['entries'][0]['v'] = {k: ('ATTACKER' if isinstance(v, str) else v)
 json.dump(b, open('/tmp/grove_mal_datatamper.json', 'w'))
 PY4
 
+is "remote: a forged schema fingerprint is refused, it must match the shape stored beside it" \
+   "$(mal fpforged | grep -c 'does not match its own fingerprint')" "1"
+is "remote: a bundle that repoints a table's primary key is refused, the rows stop hashing to the tree" \
+   "$(mal pkswap | grep -c 'do not hash to the tree it carries')" "1"
+is "remote: a primary key naming a column the table does not have is refused" \
+   "$(mal pkbogus | grep -c 'named in key does not exist')" "1"
 is "remote: a bundle whose row images were altered is refused, even though every node still hashes" \
    "$(mal datatamper | grep -c 'do not hash to the values recorded beside them')" "1"
 
@@ -254,4 +263,4 @@ is "octopus: both branches' rows survived the transfer" \
 for d in grove_origin grove_clone grove_bad grove_short grove_mal grove_virgin grove_oct; do psql "$ADMIN" -X -q -c "DROP DATABASE $d" >/dev/null; done
 rm -f /tmp/grove_b*.json
 
-suite_end REMOTE 43
+suite_end REMOTE 46

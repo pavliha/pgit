@@ -3527,6 +3527,7 @@ DECLARE
   k      text;
   tv     record;
   bad    int;
+  shapes text;
   fresh  boolean := NOT EXISTS (SELECT 1 FROM grove.nodes);
 BEGIN
   IF theirs IS NULL THEN
@@ -3638,6 +3639,16 @@ BEGIN
     RAISE EXCEPTION 'grove: this bundle is inconsistent, % table(s) have a tree without a shape or a shape without a tree',
       missing
       USING HINT = 'a table needs both to be restorable; the bundle was altered in transit';
+  END IF;
+
+  SELECT string_agg(x ->> 'tbl', ', ') INTO shapes
+  FROM jsonb_array_elements(b -> 'schemas') x
+  WHERE decode(x ->> 'fp', 'hex') IS DISTINCT FROM grove.hash((x -> 'cols')::text);
+
+  IF shapes IS NOT NULL THEN
+    RAISE EXCEPTION 'grove: the recorded shape of % does not match its own fingerprint', shapes
+      USING HINT = 'the fingerprint is what checkout compares the live table against, so a forged one '
+                   'would let rows be restored into a table of the wrong shape';
   END IF;
 
   FOR tv IN
@@ -4154,8 +4165,8 @@ BEGIN
 
   IF forged IS NOT NULL THEN
     RAISE EXCEPTION 'grove: the rows in this bundle do not hash to the tree it carries (%)', forged
-      USING HINT = 'a row image was altered in transit; the tree records what the data should be '
-                   'and the data does not match it, so nothing here is trustworthy';
+      USING HINT = 'the restored table does not reproduce the root the bundle claims, so either the '
+                   'shape it described is wrong or materialising it went wrong';
   END IF;
 
   PERFORM grove.emit('clone_from', started, jsonb_build_object(

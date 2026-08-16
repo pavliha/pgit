@@ -36,6 +36,14 @@ timestamp and the roots of its trees. Nothing verified that on receipt, so a bun
 author and any message under a genuine sha. It is checked now, which also means a commit's tree
 cannot be repointed at a different root.
 
+**The recorded shape must match its own fingerprint.** `checkout` refuses when a table's live shape
+differs from the shape it had in the target commit, and it decides that by comparing fingerprints.
+The fingerprint is `hash(columns)`, so nothing stopped a bundle from carrying an honest column list
+next to a fingerprint copied from the receiving database's table. That combination passed the shape
+guard: 300 rows were restored into a four-column table, the extra column was blanked on every row,
+HEAD claimed the commit, and `fsck` reported nothing. `unbundle` now recomputes each fingerprint from
+the columns stored beside it.
+
 **The rows must hash to the tree.** This is the subtle one. A node's hash covers the *row hashes*,
 not the cached row *images* beside them, so an attacker who edits an image and leaves its hash alone
 produces a bundle where every node still hashes correctly and every structural check passes.

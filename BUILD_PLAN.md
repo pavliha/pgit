@@ -1097,6 +1097,22 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   Worth naming the pattern, because it is now four for four: every one of these bugs was a hash that
   covered the right thing with nothing checking the content against it, and this one adds a second
   lesson, that fixing such a check at one call site leaves the others open.
+- **a forged schema fingerprint walked past the shape guard.** `checkout` refuses to restore rows into a
+  table whose shape has changed, and it decides that by comparing `grove.schemas.fingerprint` against
+  the live table's. The fingerprint is `hash(columns)` and nothing checked it against the columns
+  stored right beside it. A bundle carrying an honest column list next to a fingerprint copied from
+  the victim's own table sailed through: 300 rows restored into a four-column table, the local
+  `secret` column blanked on every row, HEAD pointing at the commit, `write_tree` disagreeing with
+  the recorded root, and `fsck` reporting 0 problems. `unbundle` now recomputes every fingerprint
+  from its own columns.
+  Probed in the same pass and already safe: `pk_cols` repointed at a different real column is caught,
+  because the tree's keys come from the primary key and the restored table stops reproducing the
+  root; and a `pk_cols` naming a column that does not exist dies in `CREATE TABLE`. The first of
+  those is caught by the `clone_from` rebuild demoted in the previous commit, which is a good
+  argument for having kept it, so it now has a test of its own.
+  This is the fifth bug of one shape and the second sub-shape: not only "a hash nothing checks", but
+  "a derived value nothing re-derives". Anything stored next to the thing it is computed from is a
+  place to look.
 
 ## Reference
 
