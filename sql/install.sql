@@ -4664,6 +4664,12 @@ LANGUAGE sql IMMUTABLE AS $$
                'rebuild_touched_ranges','assemble_above_leaves','journal_stmt','journal_truncate']
 $$;
 
+CREATE TABLE IF NOT EXISTS grove.access (
+  role_name text PRIMARY KEY,
+  level     text NOT NULL,
+  granted_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE OR REPLACE FUNCTION grove.grant_level(role_name text, level text) RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -4697,6 +4703,10 @@ BEGIN
     EXECUTE format('GRANT EXECUTE ON FUNCTION grove.%I(%s) TO %I', fn.proname, fn.args, role_name);
     n := n + 1;
   END LOOP;
+
+  DELETE FROM grove.access a WHERE a.role_name = grant_level.role_name;
+  INSERT INTO grove.access (role_name, level)
+  VALUES (grant_level.role_name, grant_level.level);
 
   RETURN n;
 END $$;
@@ -4823,3 +4833,13 @@ REVOKE ALL ON SCHEMA grove FROM PUBLIC;
 REVOKE ALL ON ALL TABLES IN SCHEMA grove FROM PUBLIC;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA grove FROM PUBLIC;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA grove FROM PUBLIC;
+
+DO $$
+DECLARE
+  a record;
+BEGIN
+  FOR a IN SELECT x.role_name, x.level FROM grove.access x
+           WHERE EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname = x.role_name) LOOP
+    PERFORM grove.grant_level(a.role_name, a.level);
+  END LOOP;
+END $$;

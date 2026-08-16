@@ -1329,6 +1329,24 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   The test derives the writer set rather than listing names, so the lists cannot drift again, and it
   asserts a read role can still execute the reading functions so the zero it checks for means
   something.
+- **upgrading broke every role that already had access.** Every suite installs into a fresh database, so
+  nothing ever ran `install.sql` twice over the same one, even though reinstalling is the documented
+  way to upgrade. It loses grants. Twenty-four `DROP FUNCTION IF EXISTS` statements sit in the file for
+  signatures that changed, and a dropped function takes its grants with it, while `CREATE OR REPLACE`
+  keeps them. A write role went from 170 executable functions to 161 and could no longer commit,
+  failing with "permission denied for function snapshot_trees" from line 21 of `commit`. Nine
+  functions, silently, on every upgrade.
+  The level a role was granted was recorded nowhere, so nothing could put it back. `grove.access` now
+  holds it and a block at the end of install re-applies it for roles that still exist, after the
+  revokes rather than before. Same family as the rest: a fact that lived only in the catalog, with no
+  way to re-derive it.
+  Two self-inflicted detours worth noting. The first attempt used `ON CONFLICT (role_name)`, which
+  cannot be qualified, so it collided with the parameter of the same name and broke `grant_level`
+  outright, and my probe reported zero rather than an error. Delete then insert avoids it. The second
+  is that my first measurement of the whole problem was vacuous: the privilege query had an ambiguous
+  `oid` and returned blank both before and after, which reads exactly like "nothing changed".
+  `upgrade_test.sh` is a new suite because pgTAP cannot reinstall inside a transaction. Four of its ten
+  assertions fail without the fix.
 
 ## Reference
 
