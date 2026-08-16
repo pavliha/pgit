@@ -1357,6 +1357,16 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   shallow boundary being created, carried across a bundle, and then created again on top of one that
   arrived from somewhere else, which is exactly the state the prune fix earlier in this campaign
   introduced.
+- **a grove database survives pg_dump and pg_restore, and now something says so.** The strongest remaining
+  guess under "what does the suite never do" was a dump and restore, because `grove.tracked.tbl` is a
+  `regclass` and oids change on restore. It holds: pg_dump writes regclass values by name, so they
+  resolve to the new oids, and the journal triggers are dumped with the tables they sit on.
+  Checked the whole way through rather than stopping at "it restored": eight triggers present, a change
+  made afterwards lands in the journal, it commits, the table matches the tree that commit recorded, a
+  branch made before the dump checks out and puts the old value back, fsck is clean, and the restored
+  database can still be cloned from. Thirteen assertions in a new `dump_restore_test.sh`.
+  No bug. Worth having anyway: backup, restore and moving to another server is a thing users do and
+  nothing exercised it, which is exactly the category the upgrade defect came from.
 
 ## Reference
 

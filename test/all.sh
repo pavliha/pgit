@@ -46,6 +46,7 @@ run_suite "crash-fuzz   " "$DIR/crash_fuzz_test.sh"
 run_suite "privileges   " "$DIR/privileges_test.sh"
 run_suite "recovery     " "$DIR/recovery_test.sh"
 run_suite "upgrade      " "$DIR/upgrade_test.sh"
+run_suite "dump-restore " "$DIR/dump_restore_test.sh"
 
 if [ -n "${DUMP:-}" ]; then
   run_suite "real-schema  " "$ROOT/bench/realworld_app.sh"
