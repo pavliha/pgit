@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="#run-the-tests"><img alt="tests" src="https://img.shields.io/badge/tests-973%20green-brightgreen"></a>
+  <a href="#run-the-tests"><img alt="tests" src="https://img.shields.io/badge/tests-982%20green-brightgreen"></a>
   <a href=".github/workflows/ci.yml"><img alt="postgres" src="https://img.shields.io/badge/postgres-16%20%7C%2017%20%7C%2018-blue"></a>
   <a href="#why-this-exists"><img alt="dependencies" src="https://img.shields.io/badge/extensions%20required-none-success"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-black"></a>

@@ -1553,6 +1553,19 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   the installed database. Proved it can fail by adding a decoy function mentioning dblink and watching
   the assertion go red, since a test with no fix behind it is otherwise just an assertion that today
   looks like today.
+- **the chunking invariant holds, and now the consequence is asserted rather than the predicate.**
+  ARCHITECTURE.md says the boundary depends only on the key and not on position or history, so
+  inserting a row does not reshuffle its neighbours, and that is what makes diff cost the size of the
+  difference. `canon_05` already tests the predicate directly across insertion order and payloads.
+  Nothing tested the consequence at the tree level.
+  It holds exactly. In a 3000-row table split into 59 leaf chunks, inserting one row rewrote one chunk
+  and left the other 58 byte for byte identical. Changing one value rewrote one chunk and did not
+  change how many chunks there are, because the key never moved. Deleting disturbed at most the chunk
+  it was in and its neighbour.
+  The non-vacuity guard is the part worth keeping: a change spread across the table, 300 rows at every
+  hundredth key, rewrites 54 of the 59 chunks. Without that contrast, "exactly one chunk changed"
+  could be a test of a constant rather than a test of locality, and it would keep passing if chunking
+  broke in a way that made every edit rewrite everything or nothing.
 
 ## Reference
 
