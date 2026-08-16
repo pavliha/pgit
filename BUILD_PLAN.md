@@ -1426,6 +1426,23 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   connecting it to triggers. grove now names the trigger it could not pause and says ownership or
   superuser. Documented, and covered by a new `ownership_test.sh` that asserts the role is neither
   owner nor superuser first, so the refusals afterwards are about what they claim to be about.
+- **merging ran the table's own triggers; checking out did not.** Every replay path exists to put recorded
+  rows back, and firing application logic while doing so is exactly what `replay_begin` prevents. Four
+  paths never called it: the fast-forward branch of `merge`, `merge_finish`, `cherry_pick` and
+  `materialise`. Measured with an audit table and an AFTER trigger: a checkout added zero audit rows,
+  a merge added two. So a merge ran the application's triggers over rows it was merging in, and a
+  BEFORE trigger there could have rewritten the values so the committed tree differed from the plan.
+  The first fix was wrong and `merge_02_fk_gate.sql` said so within one run. `session_replication_role
+  = replica` disables internal triggers as well as user ones, so guarding a merge that way switches
+  off foreign key enforcement, and that suite exists to prove a merge aborts rather than dangling a
+  reference. `replay_begin` takes a flag now: the four newly guarded paths disable only non-internal
+  triggers, which leaves referential integrity intact, while the paths that were already guarded keep
+  the behaviour they had.
+  Two things worth keeping from how this went. The first probe was confounded, the trigger's effect
+  was already committed on the branch being restored, so the count proved nothing until the trigger
+  wrote somewhere unversioned instead. And the guard now nests: `materialise` can be called from
+  inside an already-guarded checkout, and an inner `replay_end` would otherwise have lifted the outer
+  one early.
 
 ## Reference
 

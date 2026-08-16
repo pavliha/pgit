@@ -1875,6 +1875,7 @@ CREATE OR REPLACE FUNCTION grove.merge(branch_name text, msg text DEFAULT NULL, 
 RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
+  guard   jsonb;
   ours    bytea := grove.resolve(grove.head());
   theirs  bytea := grove.resolve(branch_name);
   base    bytea;
@@ -1906,11 +1907,13 @@ BEGIN
   END IF;
 
   IF base = ours THEN
+    guard := grove.replay_begin(true);
     SET CONSTRAINTS ALL DEFERRED;
     FOR r IN SELECT y.tbl FROM grove.replay_tables(ARRAY[ours, theirs]) y LOOP
       PERFORM grove.apply_diff(r.tbl::regclass, ours, theirs, r.tbl);
     END LOOP;
     SET CONSTRAINTS ALL IMMEDIATE;
+    PERFORM grove.replay_end(guard);
     PERFORM grove.advance_ref(grove.head(), ours, theirs);
     DELETE FROM grove.changes WHERE commit_sha IS NULL;
     RETURN 0;
@@ -1976,6 +1979,7 @@ END $$;
 CREATE OR REPLACE FUNCTION grove.cherry_pick(target_sha bytea, msg text DEFAULT NULL) RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
+  guard   jsonb;
   ours    bytea := grove.resolve(grove.head());
   base    bytea;
   who     text;
@@ -2008,11 +2012,13 @@ BEGIN
     RETURN n;
   END IF;
 
+  guard := grove.replay_begin(true);
   SET CONSTRAINTS ALL DEFERRED;
   FOR p IN SELECT * FROM grove_plan LOOP
     PERFORM grove.apply_row(p.tbl::regclass, p.action, p.merged);
   END LOOP;
   SET CONSTRAINTS ALL IMMEDIATE;
+  PERFORM grove.replay_end(guard);
 
   roots   := grove.snapshot_trees(ours);
   summary := grove.roots_summary(roots);
@@ -2040,13 +2046,16 @@ CREATE OR REPLACE FUNCTION grove.materialise(from_sha bytea, to_sha bytea) RETUR
 LANGUAGE plpgsql AS $$
 DECLARE
   r       record;
+  guard   jsonb;
   applied int := 0;
 BEGIN
+  guard := grove.replay_begin(true);
   SET CONSTRAINTS ALL DEFERRED;
   FOR r IN SELECT y.tbl FROM grove.replay_tables(ARRAY[from_sha, to_sha]) y LOOP
     applied := applied + grove.apply_diff(r.tbl::regclass, from_sha, to_sha, r.tbl);
   END LOOP;
   SET CONSTRAINTS ALL IMMEDIATE;
+  PERFORM grove.replay_end(guard);
   DELETE FROM grove.changes WHERE commit_sha IS NULL;
   RETURN applied;
 END $$;
@@ -2857,18 +2866,25 @@ BEGIN
   RETURN n;
 END $$;
 
-CREATE OR REPLACE FUNCTION grove.replay_begin() RETURNS jsonb
+CREATE OR REPLACE FUNCTION grove.replay_begin(user_triggers_only boolean DEFAULT false)
+RETURNS jsonb
 LANGUAGE plpgsql AS $$
 DECLARE
   saved jsonb := '[]'::jsonb;
   r     record;
 BEGIN
-  BEGIN
-    PERFORM set_config('session_replication_role', 'replica', true);
-    RETURN jsonb_build_object('mode', 'session');
-  EXCEPTION WHEN insufficient_privilege THEN
-    NULL;
-  END;
+  IF NOT user_triggers_only THEN
+    IF current_setting('session_replication_role') = 'replica' THEN
+      RETURN jsonb_build_object('mode', 'nested');
+    END IF;
+
+    BEGIN
+      PERFORM set_config('session_replication_role', 'replica', true);
+      RETURN jsonb_build_object('mode', 'session');
+    EXCEPTION WHEN insufficient_privilege THEN
+      NULL;
+    END;
+  END IF;
 
   FOR r IN
     SELECT t.tbl::text AS tbl, tg.tgname, tg.tgenabled
@@ -2896,6 +2912,10 @@ LANGUAGE plpgsql AS $$
 DECLARE
   e jsonb;
 BEGIN
+  IF st ->> 'mode' = 'nested' THEN
+    RETURN;
+  END IF;
+
   IF st ->> 'mode' = 'session' THEN
     PERFORM set_config('session_replication_role', 'origin', true);
     RETURN;
@@ -3006,6 +3026,7 @@ END $$;
 CREATE OR REPLACE FUNCTION grove.merge_finish(mid bigint) RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
+  guard   jsonb;
   m       record;
   p       record;
   r       jsonb;
@@ -3031,6 +3052,7 @@ BEGIN
     RAISE EXCEPTION 'grove: % moved since the merge started, abort and retry', m.branch;
   END IF;
 
+  guard := grove.replay_begin(true);
   SET CONSTRAINTS ALL DEFERRED;
 
   FOR p IN SELECT * FROM grove.merge_plan(m.base_sha, m.ours_sha, m.theirs_sha) LOOP
@@ -3051,6 +3073,7 @@ BEGIN
   END LOOP;
 
   SET CONSTRAINTS ALL IMMEDIATE;
+  PERFORM grove.replay_end(guard);
 
   roots   := grove.snapshot_trees(m.ours_sha);
   summary := grove.roots_summary(roots);
@@ -4592,6 +4615,7 @@ RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
   ours    bytea   := grove.resolve(grove.head());
+  guard   jsonb;
   names   text[]  := grove.octopus_head_names(grove.resolve(grove.head()), branch_names);
   heads   bytea[];
   all_h   bytea[];
