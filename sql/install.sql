@@ -1656,7 +1656,7 @@ BEGIN
       SELECT a.a FROM grove.ancestors(grove.resolve(grove.head())) a
     ),
     touching AS (
-      SELECT ch.id, ch.op, ch.before, ch.after, ch.commit_sha, ch.actor, ch.at
+      SELECT ch.id, ch.op, ch.before, ch.after, ch.commit_sha, ch.actor, ch.at, ch.source
       FROM grove.changes ch
       WHERE ch.tbl = tbl_name
         AND (ch.commit_sha IS NULL OR ch.commit_sha IN (SELECT r.a FROM reachable r))
@@ -1667,15 +1667,22 @@ BEGIN
       FROM touching t, LATERAL jsonb_object_keys(COALESCE(t.after, t.before)) AS j(key)
     ),
     attributed AS (
-      SELECT cols.col, t.id, t.commit_sha, t.actor, t.at, t.after -> cols.col AS value
+      SELECT cols.col, t.id, t.commit_sha, t.actor, t.at, t.source,
+             t.after -> cols.col AS value
       FROM cols CROSS JOIN touching t
       WHERE t.op = 'INSERT'
          OR COALESCE(t.before -> cols.col, 'null'::jsonb)
             IS DISTINCT FROM COALESCE(t.after -> cols.col, 'null'::jsonb)
+    ),
+    ranked AS (
+      SELECT a.*, first_value(a.value) OVER (PARTITION BY a.col ORDER BY a.id DESC) AS live
+      FROM attributed a
     )
-    SELECT DISTINCT ON (a.col) a.col, a.commit_sha, a.actor, a.at, a.value
-    FROM attributed a
-    ORDER BY a.col, a.id DESC
+    SELECT DISTINCT ON (r.col) r.col, r.commit_sha, r.actor, r.at, r.value
+    FROM ranked r
+    ORDER BY r.col,
+             (r.source <> 'replay' AND r.value IS NOT DISTINCT FROM r.live) DESC,
+             r.id DESC
   ) x;
 
   acc := COALESCE(acc, '{}'::jsonb);
@@ -2873,6 +2880,8 @@ DECLARE
   saved jsonb := '[]'::jsonb;
   r     record;
 BEGIN
+  PERFORM set_config('grove.source', 'replay', true);
+
   IF NOT user_triggers_only THEN
     IF current_setting('session_replication_role') = 'replica' THEN
       RETURN jsonb_build_object('mode', 'nested');
@@ -2912,6 +2921,10 @@ LANGUAGE plpgsql AS $$
 DECLARE
   e jsonb;
 BEGIN
+  IF st ->> 'mode' <> 'nested' THEN
+    PERFORM set_config('grove.source', 'raw-sql', true);
+  END IF;
+
   IF st ->> 'mode' = 'nested' THEN
     RETURN;
   END IF;

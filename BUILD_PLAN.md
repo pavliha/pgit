@@ -1482,6 +1482,31 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   No bug. Recording it because "which verbs are safe to call twice" is the third cross-cutting
   question this campaign has asked of every path at once, and unlike the replay guards and the audit
   events, this one came back clean everywhere.
+- **blame credited the merger for other people's work, and called it exact.** LIMITATIONS.md makes an
+  explicit promise: the journal captures the actor on each row as it is written, so blame credits the
+  right person even when the commit around it does not. It did not hold across a merge. A row written
+  on a side branch by role `grove_sidney` came over in a merge, and blame reported actor `postgres`,
+  commit "merge side", and `exact = true`. Wrong person, wrong commit, and asserting certainty about
+  both. For a tool whose product is an audit trail that is the worst kind of wrong: confidently.
+  Neither blame test mentioned a merge, which is how it survived.
+  The cause is that a merge replays rows through the same journal triggers a human write goes through,
+  so the journal gains a fresh row naming whoever ran the merge, and blame takes the most recent. The
+  machinery to tell the two apart already existed and was never used: `grove.source()` reads a setting
+  and defaults to `raw-sql`, and nothing ever set anything else. `replay_begin` sets it to `replay`
+  for the duration and blame ignores those rows, so it finds the side branch's original write again.
+  Two things this is not. It is not a change to what the journal records, every row is still there and
+  `grove.changes` still shows the merge's own writes. And it is not blame following merge parents like
+  git does; it is blame declining to treat grove's own replay as an authorship event.
+  The first fix was too blunt and the realworld suite caught it: ignoring every replay row made blame
+  report a price the product no longer had, because that value existed only through a conflict
+  resolved to theirs. The rule that satisfies both is to prefer the newest non-replay attribution
+  whose value is the one the row actually holds, and to fall back to the replay row when no earlier
+  writer produced that value. So a change carried over unchanged credits its writer, a conflict
+  resolved to theirs credits the branch whose value survived, and a custom resolution credits the
+  merge, because there the merge really is the author. All three are asserted.
+  My first probe used one database role throughout, so actor was `postgres` on every row and the bug
+  was invisible in the column that mattered. It took a second role to see it, which is the fifth time
+  this campaign a fixture has been too clean to show the defect.
 
 ## Reference
 
