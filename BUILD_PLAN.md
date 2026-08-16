@@ -1540,6 +1540,19 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   Scoped to runs that include the realworld suite, since without a dump the total is legitimately
   lower and a warning there would be noise people learn to ignore. Checked both directions and the
   skip case rather than running the whole suite twice to watch a string comparison work.
+- **two more front-page promises, both true, neither previously checked.** LIMITATIONS.md says
+  `remote_add` records a label and nothing dials it, and the badge says no extensions are required.
+  Both hold, and provably rather than by inspection: no grove function mentions dblink, postgres_fdw,
+  `pg_read_file`, `pg_ls_dir`, the large object functions or `COPY ... PROGRAM`; no grove function has
+  an extension dependency in `pg_depend`; and `fetch` takes the bundle as a jsonb argument, so there
+  is nothing for it to dial even if it wanted to.
+  The sharpest detail is one the documentation does not mention: the `url` column is written by
+  `remote_add` and never read anywhere. Only the remote's name is, to check it exists and to name the
+  tracking refs. The URL is write-only, which is a stronger statement than "nothing dials it".
+  Pinned in a test that reads `pg_proc` and `pg_depend` rather than the source file, so it describes
+  the installed database. Proved it can fail by adding a decoy function mentioning dblink and watching
+  the assertion go red, since a test with no fix behind it is otherwise just an assertion that today
+  looks like today.
 
 ## Reference
 
