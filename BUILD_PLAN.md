@@ -1019,6 +1019,29 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   bundle is accepted and six nodes are kept.
   The general lesson: integrity of each part is not integrity of the whole, and a security claim
   phrased over parts should be tested against the whole.
+- **the malformed bundle seam, probed as a matrix** — rather than one variant at a time, seven were
+  generated from one valid bundle and each tried against a fresh clone. Three were accepted that
+  should not have been:
+  `trees` emptied cloned a table with **0 rows** and fsck clean. `schemas` emptied returned success
+  and created **no table at all**. And `settings` removed was accepted silently, which meant the
+  canonical-settings check added an hour earlier **could be defeated by deleting the field** - the
+  worst of the three, because it turns a guarantee into a suggestion.
+  Correct already: reordered nodes and duplicated nodes both clone fine, which is the right answer
+  and worth pinning so a future check does not break it. Dangling refs and missing commits were
+  refused, but by a raw foreign key violation naming `refs_sha_fkey` rather than by pgit, which is a
+  poor thing to hand someone holding an untrusted file.
+  `unbundle` now requires a settings block, requires every ref to name a commit the bundle carries,
+  and requires trees and schemas to pair up per (commit, table). Six assertions, four proven red
+  without the fix.
+  One mistake of my own on the way, caught by the matrix rather than by me: the pairing check used
+  `A EXCEPT B UNION ALL B EXCEPT A` without parentheses. `EXCEPT` and `UNION ALL` share precedence
+  and associate left, so it parsed as `((A EXCEPT B) UNION ALL B) EXCEPT A` and only caught one
+  direction - `notrees` was refused while `noschemas` still passed. Testing every variant is what
+  exposed it; testing the one I had just fixed would not have.
+  Also recorded: one roundtrip failure inside `all.sh` that did not reproduce in sixteen further
+  runs. Most likely my own file swapping, since proving tests red means copying `sql/install.sql`
+  back and forth while roundtrip installs it into fresh databases. Noted as unexplained rather than
+  dismissed.
 
 ## Reference
 

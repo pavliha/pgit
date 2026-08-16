@@ -108,6 +108,40 @@ is "remote: a bundle missing nodes is refused, not stored with dangling referenc
 is "remote: and nothing from it was kept" \
    "$(psql "$S2" -X -q -At -c 'SELECT count(*) FROM pgit.nodes')" "0"
 
+python3 - <<'PY3'
+import json, copy, random
+b = json.load(open('/tmp/pgit_b1.json'))
+random.seed(7)
+def w(name, mut):
+    c = copy.deepcopy(b); mut(c); json.dump(c, open('/tmp/pgit_mal_%s.json' % name, 'w'))
+w('reordered',   lambda c: random.shuffle(c['nodes']))
+w('dupnodes',    lambda c: c['nodes'].extend(c['nodes'][:3]))
+w('nosettings',  lambda c: c.pop('settings', None))
+w('refdangling', lambda c: c['refs'].update({k: 'ab'*32 for k in c['refs']}))
+w('notrees',     lambda c: c.__setitem__('trees', []))
+w('noschemas',   lambda c: c.__setitem__('schemas', []))
+PY3
+
+mal() {
+  psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_mal WITH (FORCE)" -c "CREATE DATABASE pgit_mal" >/dev/null 2>&1
+  M="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_mal"
+  psql "$M" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null 2>&1
+  runb "$M" "/tmp/pgit_mal_$1.json" "SELECT pgit.clone_from(:'b'::jsonb, 'main');" 2>&1
+}
+
+is "remote: reordering the nodes in a bundle changes nothing" \
+   "$(mal reordered | grep -ci error)" "0"
+is "remote: a bundle carrying duplicate nodes is still accepted" \
+   "$(mal dupnodes | grep -ci error)" "0"
+is "remote: a bundle with no settings block is refused, so the settings check cannot be deleted away" \
+   "$(mal nosettings | grep -c 'carries no settings')" "1"
+is "remote: a ref pointing at a commit the bundle omits is refused by name, not by a foreign key" \
+   "$(mal refdangling | grep -c 'pointing at commits it does not carry')" "1"
+is "remote: a bundle whose trees are missing is refused rather than cloning an empty table" \
+   "$(mal notrees | grep -c 'tree without a shape or a shape without a tree')" "1"
+is "remote: a bundle whose schemas are missing is refused rather than cloning no table at all" \
+   "$(mal noschemas | grep -c 'tree without a shape or a shape without a tree')" "1"
+
 psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS pgit_virgin" -c "CREATE DATABASE pgit_virgin" >/dev/null 2>&1
 V="postgresql://postgres:pgit@${PGIT_HOST:-localhost:5460}/pgit_virgin"
 psql "$V" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null 2>&1
@@ -166,7 +200,7 @@ is "octopus: fsck on the receiver sees no missing parent" "$(qp "SELECT count(*)
 is "octopus: both branches' rows survived the transfer" \
    "$(qp "SELECT string_agg(name,',' ORDER BY id) FROM t WHERE id IN (101,102)")" "from oct1,from oct2"
 
-for d in pgit_origin pgit_clone pgit_bad pgit_short pgit_virgin pgit_oct; do psql "$ADMIN" -X -q -c "DROP DATABASE $d" >/dev/null; done
+for d in pgit_origin pgit_clone pgit_bad pgit_short pgit_mal pgit_virgin pgit_oct; do psql "$ADMIN" -X -q -c "DROP DATABASE $d" >/dev/null; done
 rm -f /tmp/pgit_b*.json
 
-suite_end REMOTE 31
+suite_end REMOTE 37

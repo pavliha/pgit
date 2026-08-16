@@ -3485,6 +3485,11 @@ DECLARE
   k      text;
   fresh  boolean := NOT EXISTS (SELECT 1 FROM pgit.nodes);
 BEGIN
+  IF theirs IS NULL THEN
+    RAISE EXCEPTION 'pgit: this bundle carries no settings block, so its canonical form cannot be checked'
+      USING HINT = 'it was written by an incompatible pgit or altered in transit; ask for it again';
+  END IF;
+
   IF theirs IS NOT NULL THEN
     FOR k IN SELECT jsonb_object_keys(theirs) LOOP
       IF theirs ->> k IS DISTINCT FROM mine ->> k THEN
@@ -3571,6 +3576,32 @@ BEGIN
   IF missing > 0 THEN
     RAISE EXCEPTION 'pgit: this bundle is incomplete, % recorded tree(s) have no root node in it',
       missing
+      USING HINT = 'it was truncated or altered in transit; ask for it again rather than storing it';
+  END IF;
+
+  SELECT count(*) INTO missing
+  FROM (
+    (SELECT x ->> 'commit' AS c, x ->> 'tbl' AS t FROM jsonb_array_elements(b -> 'trees') x
+     EXCEPT
+     SELECT y ->> 'commit', y ->> 'tbl' FROM jsonb_array_elements(b -> 'schemas') y)
+    UNION ALL
+    (SELECT y ->> 'commit', y ->> 'tbl' FROM jsonb_array_elements(b -> 'schemas') y
+     EXCEPT
+     SELECT x ->> 'commit', x ->> 'tbl' FROM jsonb_array_elements(b -> 'trees') x)
+  ) z;
+
+  IF missing > 0 THEN
+    RAISE EXCEPTION 'pgit: this bundle is inconsistent, % table(s) have a tree without a shape or a shape without a tree',
+      missing
+      USING HINT = 'a table needs both to be restorable; the bundle was altered in transit';
+  END IF;
+
+  SELECT count(*) INTO missing
+  FROM jsonb_each_text(COALESCE(b -> 'refs', '{}'::jsonb)) r
+  WHERE NOT EXISTS (SELECT 1 FROM pgit.commits c WHERE c.sha = decode(r.value, 'hex'));
+
+  IF missing > 0 THEN
+    RAISE EXCEPTION 'pgit: this bundle has % ref(s) pointing at commits it does not carry', missing
       USING HINT = 'it was truncated or altered in transit; ask for it again rather than storing it';
   END IF;
 
