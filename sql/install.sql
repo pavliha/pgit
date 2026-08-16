@@ -2877,7 +2877,15 @@ BEGIN
     WHERE tg.tgname NOT LIKE 'grove_journal%'
   LOOP
     saved := saved || jsonb_build_object('tbl', r.tbl, 'tg', r.tgname, 'en', r.tgenabled);
-    EXECUTE format('ALTER TABLE %s DISABLE TRIGGER %I', r.tbl, r.tgname);
+
+    BEGIN
+      EXECUTE format('ALTER TABLE %s DISABLE TRIGGER %I', r.tbl, r.tgname);
+    EXCEPTION WHEN insufficient_privilege THEN
+      RAISE EXCEPTION 'grove: cannot pause trigger % on % while replaying history', r.tgname, r.tbl
+        USING HINT = 'restoring rows must not fire your own triggers, and turning one off needs '
+                     'ownership of the table; run this as the table owner, or as a superuser, '
+                     'where grove uses session_replication_role and does not touch your triggers';
+    END;
   END LOOP;
 
   RETURN jsonb_build_object('mode', 'triggers', 'saved', saved);

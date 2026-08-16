@@ -1413,6 +1413,19 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   rewritten to share `nothing_to_commit`, which compares trees. A journal-based `is_dirty`, which was
   the tempting simplification at the time and which I rejected for a different reason, would have
   reported this table clean and quietly lost the change at the next checkout.
+- **a non-owner role hit a bare "must be owner of table" and no explanation.** `rds_test.sh` covers a
+  non-superuser, but that role owns its database, so the non-owner case was untested. It matters
+  because separating the application role from the migration role is ordinary practice.
+  Committing works. Checkout works too, until the table has a trigger of its own. `replay_begin` tries
+  `session_replication_role` first, which only a superuser may set, and falls back to turning each
+  non-grove trigger off around the replay, which requires ownership. So the failure is conditional on
+  the table having a trigger, and my first probe missed it entirely because the test table had none,
+  the same shape as the composite-key restore probe that sailed past its guard.
+  Refusing is right: replaying rows must not run application logic against data being put back. What
+  was wrong is that the user saw PostgreSQL's bare owner error from inside a checkout with nothing
+  connecting it to triggers. grove now names the trigger it could not pause and says ownership or
+  superuser. Documented, and covered by a new `ownership_test.sh` that asserts the role is neither
+  owner nor superuser first, so the refusals afterwards are about what they claim to be about.
 
 ## Reference
 

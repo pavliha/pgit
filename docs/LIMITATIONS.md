@@ -127,6 +127,18 @@ session whose `search_path` made the name bare, `t`, then a later session withou
 path cannot find the table at all, and `checkout` will say so by name. Tracking with a qualified
 name, `grove.track('app.t')`, avoids the question entirely.
 
+## Replaying history needs the table, or the server
+
+Restoring rows must not fire the table's own triggers, or a checkout would run application logic
+against data that is merely being put back. A superuser gets this for free: grove sets
+`session_replication_role` and no trigger is touched. Everyone else has their triggers turned off and
+restored around the replay, and turning a trigger off requires owning the table.
+
+So a role that is neither a superuser nor the owner can commit, but cannot check out a table that has
+any trigger of its own. It can check out tables that have none. grove says which trigger it could not
+pause rather than leaving PostgreSQL's bare "must be owner of table" to be interpreted. Give the role
+ownership, or run checkouts as the owner.
+
 ## One database holds one branch at a time
 
 A checkout materialises a branch into your tables, exactly like git's working tree. Two branches
