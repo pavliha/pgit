@@ -21,11 +21,31 @@ SELECT grove.grant_admin('dba');        -- and track, gc, prune, reset, unbundle
 types are validated through `to_regtype` before any DDL is interpolated. A bundle claiming a type of
 `text); DROP TABLE users; --` is rejected rather than executed.
 
-Two checks run on receipt, and both refuse rather than store. Every node is verified to hash to its
-own content, so an altered node is rejected. And the bundle has to be **complete**: if any node
-references a child the bundle does not carry, or any recorded tree has no root node in it, the whole
-receipt is refused. Per-node hashing alone would not catch a bundle that was simply truncated, and a
-truncated bundle produces a database that looks fine until you run `fsck`.
+Three checks run on receipt, and all of them refuse rather than store.
+
+**Each node must hash to its content.** A node's hash covers the vector of its children's hashes, so
+altering the structure is caught.
+
+**The bundle must be complete.** If any node references a child the bundle does not carry, or a
+recorded tree has no root node in it, the receipt is refused. Hashing alone would not catch a bundle
+that was simply truncated, and a truncated one produces a database that looks healthy until you run
+`fsck`.
+
+**The rows must hash to the tree.** This is the subtle one. A node's hash covers the *row hashes*,
+not the cached row *images* beside them, so an attacker who edits an image and leaves its hash alone
+produces a bundle where every node still hashes correctly. `clone_from` therefore rebuilds each
+materialised table and refuses if it does not reproduce the root the bundle claims.
+
+That last check runs on `clone_from`, which materialises. `receive` and `fetch` do not materialise,
+so a bundle taken through them is verified for structure and completeness but its row images are not
+proved against the tree until you check the branch out. If you receive from somewhere you do not
+trust, run the invariant afterwards:
+
+```sql
+SELECT t.tbl FROM grove.trees t
+WHERE t.commit_sha = grove.resolve(grove.head())
+  AND grove.write_tree(t.tbl::regclass) IS DISTINCT FROM t.root_hash;
+```
 
 Treat a bundle like any other untrusted file: it decides what tables get created in the database you
 unbundle it into.

@@ -4028,9 +4028,10 @@ END $$;
 CREATE OR REPLACE FUNCTION grove.clone_from(b jsonb, branch text DEFAULT 'main') RETURNS int
 LANGUAGE plpgsql SET client_min_messages = warning AS $$
 DECLARE
-  tip  bytea;
-  t    record;
-  made int := 0;
+  tip    bytea;
+  t      record;
+  made   int := 0;
+  forged text;
   started timestamptz := clock_timestamp();
 BEGIN
   IF EXISTS (SELECT 1 FROM grove.commits) THEN
@@ -4060,6 +4061,18 @@ BEGIN
   VALUES (branch, NULL, tip, 'clone', grove.actor());
 
   PERFORM grove.reset(encode(tip, 'hex'), 'hard');
+
+  SELECT string_agg(x.tbl, ', ') INTO forged
+  FROM grove.trees x
+  WHERE x.commit_sha = tip
+    AND grove.write_tree(x.tbl::regclass) IS DISTINCT FROM x.root_hash;
+
+  IF forged IS NOT NULL THEN
+    RAISE EXCEPTION 'grove: the rows in this bundle do not hash to the tree it carries (%)', forged
+      USING HINT = 'a row image was altered in transit; the tree records what the data should be '
+                   'and the data does not match it, so nothing here is trustworthy';
+  END IF;
+
   PERFORM grove.emit('clone_from', started, jsonb_build_object(
     'branch', branch, 'tables', made, 'tip', grove.short_sha(tip)));
 

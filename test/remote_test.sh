@@ -142,6 +142,18 @@ is "remote: a bundle whose trees are missing is refused rather than cloning an e
 is "remote: a bundle whose schemas are missing is refused rather than cloning no table at all" \
    "$(mal noschemas | grep -c 'tree without a shape or a shape without a tree')" "1"
 
+python3 - <<'PY4'
+import json
+b = json.load(open('/tmp/grove_b1.json'))
+leaf = next(n for n in b['nodes'] if n.get('level') == 0 and n.get('entries'))
+leaf['entries'][0]['v'] = {k: ('ATTACKER' if isinstance(v, str) else v)
+                           for k, v in leaf['entries'][0]['v'].items()}
+json.dump(b, open('/tmp/grove_mal_datatamper.json', 'w'))
+PY4
+
+is "remote: a bundle whose row images were altered is refused, even though every node still hashes" \
+   "$(mal datatamper | grep -c 'do not hash to the tree it carries')" "1"
+
 psql "$ADMIN" -X -q -c "DROP DATABASE IF EXISTS grove_virgin" -c "CREATE DATABASE grove_virgin" >/dev/null 2>&1
 V="postgresql://postgres:grove@${GROVE_HOST:-localhost:5460}/grove_virgin"
 psql "$V" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" >/dev/null 2>&1
@@ -203,4 +215,4 @@ is "octopus: both branches' rows survived the transfer" \
 for d in grove_origin grove_clone grove_bad grove_short grove_mal grove_virgin grove_oct; do psql "$ADMIN" -X -q -c "DROP DATABASE $d" >/dev/null; done
 rm -f /tmp/grove_b*.json
 
-suite_end REMOTE 37
+suite_end REMOTE 38

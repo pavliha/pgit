@@ -1042,6 +1042,24 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   runs. Most likely my own file swapping, since proving tests red means copying `sql/install.sql`
   back and forth while roundtrip installs it into fresh databases. Noted as unexplained rather than
   dismissed.
+- **a bundle could carry altered rows past every check** — the worst finding of the campaign, and it
+  came from asking what the node hash actually covers rather than trusting the sentence in
+  `SECURITY.md`.
+  A bundle node is `{hash, level, entries}`, and each entry is `{k, h, v}`: the key, the row's hash,
+  and the row's **image**. `unbundle` computes the node hash from the `h` fields and compares. The
+  `v` field is stored and never checked against its own `h`. So editing a row image while leaving its
+  hash alone produces a bundle where **every node still hashes correctly**.
+  Demonstrated end to end: `clone_from` returned success, row 212 read `ATTACKER-CONTROLLED` instead
+  of `safe-value-212`, and **fsck reported 0 problems**. The claim "every node is verified to hash to
+  its own content, so an altered node is rejected" was true of the structure and false of the data.
+  Fixed with machinery that already existed rather than new crypto: a tampered image materialises to
+  a row whose canonical hash differs, so `clone_from` now rebuilds each table after materialising and
+  refuses if it does not reproduce the root the bundle claims.
+  Stated rather than glossed: this protects `clone_from`, which materialises. `receive` and `fetch`
+  do not materialise, so images taken through them are unproved until checkout. `SECURITY.md` now
+  says exactly that and gives the invariant query to run after receiving from an untrusted source.
+  The general shape, for the third time in this campaign: a hash proves what it covers and nothing
+  else, and the interesting question is always what sits just outside it.
 
 ## Reference
 
