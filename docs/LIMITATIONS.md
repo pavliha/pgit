@@ -99,6 +99,21 @@ does not version DDL and cannot replay it.
 
 Migrations own DDL. grove works alongside them; it does not replace them.
 
+## Renaming a tracked table strands the history before it
+
+History records a table by name. Renaming `t` to `u` and committing is supported, and
+`grove.table_renames` will pair the two across the commits, but the commits made before the rename
+still name `t` while the ones after name `u`. Checking out across that boundary needs both names to
+exist as tables at the same time, and a rename leaves you with one.
+
+So the working recovery is to put the other name back yourself: rename the table to what the commit
+you are moving to calls it, and create an empty table under the name the commit you are leaving
+calls it. `checkout` names the table it is missing so you can do that, rather than failing with a
+bare `relation "t" does not exist` from somewhere inside the diff.
+
+Doing this properly needs a stable table identity in `grove.trees` rather than a text name, which
+would change the bundle format.
+
 ## One database holds one branch at a time
 
 A checkout materialises a branch into your tables, exactly like git's working tree. Two branches

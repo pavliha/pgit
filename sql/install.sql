@@ -1485,10 +1485,22 @@ DECLARE
   r       record;
   applied int := 0;
   guard   jsonb;
+  gone    text;
   started timestamptz := clock_timestamp();
 BEGIN
   IF tgt IS NULL THEN
     RAISE EXCEPTION 'grove: unknown branch %', branch_name;
+  END IF;
+
+  SELECT string_agg(DISTINCT x.tbl, ', ') INTO gone
+  FROM grove.trees x
+  WHERE x.commit_sha IN (cur, tgt) AND to_regclass(x.tbl) IS NULL;
+
+  IF gone IS NOT NULL THEN
+    RAISE EXCEPTION 'grove: this checkout needs a table called %, which this database does not have',
+      gone
+      USING HINT = 'history records a table by name, so a table renamed or dropped since then cannot '
+                   'be restored into; recreate it under that name, or rename it back';
   END IF;
 
   PERFORM grove.assert_live_schema(tgt);

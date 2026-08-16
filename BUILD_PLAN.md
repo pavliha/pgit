@@ -1236,6 +1236,23 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   explicit non-vacuity assertion that the pending edits really moved the tree. This is the invariant
   most likely to be broken by a future optimisation of the incremental path, and until now the suite
   checked two combinations of it.
+- **renaming a tracked table strands earlier history, and I got the fix wrong first.** The oid in
+  `grove.tracked` follows a rename while the text name in `grove.trees` does not, which looked like
+  another two-sources-of-truth bug, so I made `commit` refuse and had `fsck` report it. The suite said
+  no: `renames_01_detection.sql` renames two tracked tables, commits, and expects
+  `grove.table_renames` to pair them. Renaming is a designed feature and my guard contradicted it.
+  Reverted.
+  What is actually broken is narrower. Commits before the rename name `t`, commits after name `u`, and
+  checking out across that boundary needs both names to exist at once, which a rename cannot give you.
+  Established by running it rather than reasoning about it: renaming back is not enough either,
+  because then the commit being left behind names the other one. With `t` restored and an empty `u`
+  created, the checkout runs and brings all 200 rows back.
+  So the fix is a diagnosis, not a guard: `checkout` names the table it is missing, on both sides of
+  the move, instead of failing with a bare `relation "t" does not exist` from inside the diff. Written
+  up in LIMITATIONS.md, including that fixing it properly needs a stable table identity in
+  `grove.trees` instead of a text name, which changes the bundle format.
+  Worth keeping in mind: the codebase told me my first fix was wrong within one test run. Reading the
+  existing tests for a feature before guarding against it would have been quicker.
 
 ## Reference
 
