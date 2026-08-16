@@ -114,6 +114,19 @@ bare `relation "t" does not exist` from somewhere inside the diff.
 Doing this properly needs a stable table identity in `grove.trees` rather than a text name, which
 would change the bundle format.
 
+## History records the table name your session renders
+
+A commit stores each table by name, and PostgreSQL renders a table's name relative to the session's
+`search_path`: the same table is `t` from a session that has its schema on the path and `public.t`
+or `app.t` from one that does not. grove now fixes the name at the first commit and reuses it for
+every commit after, and resolves it back to a table when it needs to match history against what is
+live, so a repository committed from one session behaves the same from another.
+
+What it cannot do is resolve a name that does not resolve. If the first commit was made from a
+session whose `search_path` made the name bare, `t`, then a later session without that schema on its
+path cannot find the table at all, and `checkout` will say so by name. Tracking with a qualified
+name, `grove.track('app.t')`, avoids the question entirely.
+
 ## One database holds one branch at a time
 
 A checkout materialises a branch into your tables, exactly like git's working tree. Two branches

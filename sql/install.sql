@@ -810,7 +810,8 @@ BEGIN
        SELECT 1 FROM grove.tracked tr
        WHERE grove.schema_fingerprint(tr.tbl) IS DISTINCT FROM
              (SELECT sc.fingerprint FROM grove.schemas sc
-              WHERE sc.commit_sha = parent AND sc.tbl = tr.tbl::text));
+              WHERE sc.commit_sha = parent
+                AND sc.tbl = grove.recorded_name(tr.tbl, parent)));
 END $$;
 
 CREATE OR REPLACE FUNCTION grove.drifted_keys() RETURNS TABLE (tbl text)
@@ -1277,7 +1278,7 @@ CREATE OR REPLACE FUNCTION grove.replay_tables(shas bytea[]) RETURNS TABLE (tbl 
 LANGUAGE sql STABLE AS $$
   SELECT DISTINCT t.tbl FROM grove.trees t
   WHERE t.commit_sha = ANY (shas)
-    AND EXISTS (SELECT 1 FROM grove.tracked tr WHERE tr.tbl::text = t.tbl)
+    AND EXISTS (SELECT 1 FROM grove.tracked tr WHERE tr.tbl = to_regclass(t.tbl))
 $$;
 
 DROP FUNCTION IF EXISTS grove.apply_diff(regclass, bytea, bytea);
@@ -2154,7 +2155,11 @@ ALTER TABLE grove.schemas ADD COLUMN IF NOT EXISTS pk_cols text[];
 CREATE OR REPLACE FUNCTION grove.record_schemas(new_sha bytea) RETURNS void
 LANGUAGE sql AS $$
   INSERT INTO grove.schemas (commit_sha, tbl, fingerprint, columns, pk_cols)
-  SELECT new_sha, x.tbl::text, grove.schema_fingerprint(x.tbl), grove.schema_columns(x.tbl), x.pk_cols
+  SELECT new_sha,
+         COALESCE((SELECT tr.tbl FROM grove.trees tr
+                   WHERE tr.commit_sha = new_sha AND to_regclass(tr.tbl) = x.tbl LIMIT 1),
+                  x.tbl::text),
+         grove.schema_fingerprint(x.tbl), grove.schema_columns(x.tbl), x.pk_cols
   FROM grove.tracked x
   ON CONFLICT DO NOTHING
 $$;
@@ -2629,6 +2634,14 @@ BEGIN
   RETURN n;
 END $$;
 
+CREATE OR REPLACE FUNCTION grove.recorded_name(target regclass, parent bytea) RETURNS text
+LANGUAGE sql STABLE AS $$
+  SELECT COALESCE(
+    (SELECT x.tbl FROM grove.trees x
+     WHERE x.commit_sha = parent AND to_regclass(x.tbl) = target LIMIT 1),
+    target::text)
+$$;
+
 CREATE OR REPLACE FUNCTION grove.snapshot_trees(parent bytea) RETURNS jsonb
 LANGUAGE plpgsql SET client_min_messages = warning AS $$
 DECLARE
@@ -2636,6 +2649,7 @@ DECLARE
   root_val bytea;
   prev     bytea;
   prev_fp  bytea;
+  nm       text;
   roots    jsonb := '{}'::jsonb;
 BEGIN
   IF EXISTS (SELECT 1 FROM grove.missing_tracked()) THEN
@@ -2646,11 +2660,13 @@ BEGIN
   END IF;
 
   FOR r IN SELECT t.tbl FROM grove.tracked t ORDER BY t.tbl::text LOOP
+    nm := grove.recorded_name(r.tbl, parent);
+
     SELECT x.root_hash INTO prev FROM grove.trees x
-    WHERE x.commit_sha = parent AND x.tbl = r.tbl::text;
+    WHERE x.commit_sha = parent AND x.tbl = nm;
 
     SELECT sc.fingerprint INTO prev_fp FROM grove.schemas sc
-    WHERE sc.commit_sha = parent AND sc.tbl = r.tbl::text;
+    WHERE sc.commit_sha = parent AND sc.tbl = nm;
 
     IF prev IS NOT NULL AND prev_fp IS DISTINCT FROM grove.schema_fingerprint(r.tbl) THEN
       root_val := grove.write_tree(r.tbl);
@@ -2658,7 +2674,7 @@ BEGIN
       root_val := grove.write_tree_incremental(r.tbl, prev);
     END IF;
 
-    roots := roots || jsonb_build_object(r.tbl::text, encode(root_val, 'hex'));
+    roots := roots || jsonb_build_object(nm, encode(root_val, 'hex'));
   END LOOP;
 
   RETURN roots;
@@ -3386,7 +3402,7 @@ BEGIN
               AND split_part(split_part(pathspec, ':', 1), '.', 1) <> t.tbl::text;
 
     SELECT x.root_hash INTO hroot FROM grove.trees x
-    WHERE x.commit_sha = h AND x.tbl = t.tbl::text;
+    WHERE x.commit_sha = h AND x.tbl = grove.recorded_name(t.tbl, h);
 
     lroot := grove.write_tree(t.tbl);
 
@@ -4007,8 +4023,10 @@ BEGIN
   SET CONSTRAINTS ALL DEFERRED;
 
   FOR r IN SELECT x.tbl FROM grove.tracked x LOOP
-    SELECT y.root_hash INTO aroot FROM grove.trees y WHERE y.commit_sha = parent AND y.tbl = r.tbl::text;
-    SELECT y.root_hash INTO broot FROM grove.trees y WHERE y.commit_sha = snap   AND y.tbl = r.tbl::text;
+    SELECT y.root_hash INTO aroot FROM grove.trees y
+    WHERE y.commit_sha = parent AND y.tbl = grove.recorded_name(r.tbl, parent);
+    SELECT y.root_hash INTO broot FROM grove.trees y
+    WHERE y.commit_sha = snap AND y.tbl = grove.recorded_name(r.tbl, snap);
     n := n + grove.apply_tree_diff(r.tbl, aroot, broot);
   END LOOP;
 

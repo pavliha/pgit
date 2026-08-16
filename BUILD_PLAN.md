@@ -1383,6 +1383,25 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   check when there is a differing row, so restoring one row of a composite-key table returns zero
   when there is nothing to do and refuses when there is. My first version of the assertion set up no
   difference and so passed through the guard without touching it. Recorded in the docs.
+- **the recorded table name depended on the session's search_path.** PostgreSQL renders a table name
+  relative to `search_path`, so the same table is `t` from one session and `public.t` from another,
+  and grove stored that rendering in `grove.trees`, `grove.schemas` and compared against it later by
+  text. A repository committed with a qualified name reported itself dirty from an ordinary session
+  with nothing changed, refused nothing as empty, and worst of all `checkout` ran, returned success,
+  and restored nothing, because `replay_tables` found no table whose rendered name matched.
+  Fixed by making the name sticky: `grove.recorded_name` looks up what the parent commit called this
+  table and reuses it, so identity is fixed at the first commit rather than re-derived per session,
+  and every place that matches history to a live table resolves the recorded name with `to_regclass`
+  instead of comparing text. Five joins in total, in `snapshot_trees`, `nothing_to_commit`,
+  `replay_tables`, the working-tree diff and the stash path.
+  Deliberately not fixed: rewriting old repositories to store qualified names. The table name is part
+  of the commit summary that `commit_sha` covers, so changing it would invalidate every commit sha in
+  the repository. A name that never resolved from this session still cannot, and `checkout` says which
+  one it wants. Written up in LIMITATIONS.md.
+  My first test passed against the unfixed code, which meant it reproduced nothing: both sessions were
+  the same session, so both renderings agreed. The rewrite records from a session with `search_path =
+  pg_catalog` and asserts from the default one, and the second assertion pins the divergence itself so
+  the case cannot quietly stop being a case.
 
 ## Reference
 
