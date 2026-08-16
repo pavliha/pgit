@@ -1268,6 +1268,20 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   Non-vacuity mattered here: the test asserts the older commit still records the table and that the
   diff still reads it as 100 deletions, so the passes afterwards mean the replay declined to act
   rather than having nothing to act on.
+- **revert is the one replay path with no schema assertion, and nothing tested what saves it.** checkout,
+  merge, cherry-pick and octopus all call `assert_live_schema` or `assert_same_schema`. `revert` calls
+  neither, so on paper it can replay row images from before a column existed into the table as it is
+  now. In practice it refuses, because adding a column changes every row's canonical hash, so its
+  conflict pre-check sees the rows as changed since the commit and stops. The protection is real but
+  incidental, and `grep` found no test anywhere for "refusing to revert".
+  Resisted the urge to add an assertion. `assert_live_schema` compares fingerprints, so it would also
+  refuse a widening like int to bigint, which changes the fingerprint but not the canonical form and
+  reverts correctly today. That would turn working behaviour into a refusal, which is a regression
+  wearing a fix's clothes.
+  What was missing was the test. `replay_08_revert_refusals.sql` pins all three: a clean revert
+  succeeds, a row edited by hand since stops it with nothing applied on the way, and a commit from
+  before an added column is refused so the column is not blanked by replaying old images. The first
+  assertion exists to keep the other two from passing vacuously.
 
 ## Reference
 
