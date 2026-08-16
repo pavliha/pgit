@@ -956,6 +956,16 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   Fuzz surface now: insert, update, delete, add/drop column, branch, checkout, prune, repack, merge
   with resolve and abort, octopus, revert, cherry-pick, rebase. Still absent: stash, bisect, tag,
   notes, and restore.
+- **bisect had one example behind it, now it has an oracle** — the only bisect assertion in the suite
+  converged on `c6` in a single fixed 8 commit history. Bisect is precisely the algorithm where
+  off-by-one errors hide at the ends, and neither end was covered.
+  `bisect_01_oracle.sql` runs every history length from 4 to 9 with the bad value introduced at every
+  position from the second commit to the tip: **33 histories**, each bisected to convergence, each
+  asserted to land on exactly the commit that introduced it. All 33 pass, including both boundaries,
+  so bisect is correct rather than merely untested. No bug found, which is worth stating plainly.
+  The test also asserts that both sides of every comparison name a real commit, because an oracle
+  that compares two nulls passes for the wrong reason. Two of tonight's false findings came from
+  exactly that class of mistake, so it is cheaper to assert non-vacuity than to trust it.
 
 ## Reference
 
