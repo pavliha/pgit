@@ -1636,22 +1636,25 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   While reading reset I found two more of the search_path joins from the earlier fix, in `reset` and
   `restore`, that I had missed. I said five at the time and it was seven. Both now resolve the
   recorded name.
-- **OPEN, diagnosed: the incremental build splits the last group off the end of the tree.** Found by
-  random fuzz seed 0.677189 at op 131, a bulk `DELETE ... WHERE id % n = 0`. It fails against earlier
-  code too, so it is older than this campaign's changes.
-  Diagnosed by making a copy of the fuzzer record the divergence instead of raising, so the broken
-  state survived for inspection. The two trees hold **exactly the same rows**: same keys, same row
-  hashes, no key in one and not the other. The leaf layer is identical, 45 chunks with identical
-  sizes. They differ one level up. The incremental build produced seven level-1 nodes where a rebuild
-  produces six, and the difference is the tail: incremental emits `4 children from id=#3:399` plus a
-  lone node holding the final leaf `id=#4:1962`, where the rebuild puts all five in one group.
-  `grove.is_boundary('id=#4:1962|')` is false at `chunk_target = 8`, so that leaf must not start a
-  node and the rebuild is the canonical answer. The upper-level assembly is closing a run at the end
-  of a touched range instead of letting it continue into the leaves that follow, which is the same
-  family as the rebuilt-range defect fixed earlier in this campaign. Suspects are
-  `rebuild_touched_ranges` and `assemble_above_leaves`.
-  Still not in REGRESSION_SEEDS, so it does not hold later commits red. Add it with the fix.
-  Reproduce: FUZZ_SEED=0.677189 FUZZ_ROUNDS=1 FUZZ_OPS=150 ./test/fuzz_test.sh
+- **the incremental build rebuilt part of a run and left the rest, so the tree stopped being canonical.**
+  Found by fuzz seed 0.677189 at op 131, a bulk delete. Both trees held exactly the same rows, same
+  keys and same row hashes, and the leaf layer was identical down to all 45 chunk sizes. They differed
+  one level up: seven level-1 nodes where a rebuild makes six, the extra one holding the final leaf
+  alone. `is_boundary` on that leaf's key is false, so it must not start a node, and the rebuild was
+  right.
+  The cause is a boundary that the change removes. Level 1 groups leaves into runs, each starting at a
+  boundary key, and `assemble_above_leaves` regroups only the leaves of the level-1 nodes it decided
+  were touched, splicing the untouched ones back verbatim. `build_one_level` always opens a group at
+  the first row it is given. So if the touched set starts or ends in the middle of a run, the pieces
+  cannot be regrouped into what a full rebuild would produce, and a node survives whose first key is
+  no longer a boundary.
+  The hit set is now closed over runs before anything is rebuilt: a node that starts mid-run is pulled
+  in with its predecessor, repeatedly, until the set is stable. That makes the regrouped region begin
+  at a boundary and end just before one, which is the only shape that can reproduce the canonical
+  grouping. Widening by one neighbour, which the delete path already did, is not enough, because a
+  merge can cascade past a single node.
+  Seed 0.677189 is in REGRESSION_SEEDS now, red without the change and green with it, and all eight
+  seeds pass 1200 operations.
 
 ## Reference
 

@@ -2372,6 +2372,21 @@ BEGIN
       AND h.rn + d NOT IN (SELECT rn FROM grove_l1hit);
   END IF;
 
+  LOOP
+    INSERT INTO grove_l1hit
+    SELECT p.rn FROM grove_l1 p
+    WHERE p.rn NOT IN (SELECT rn FROM grove_l1hit)
+      AND (
+        (NOT grove.is_boundary(decode(p.k, 'hex'))
+         AND p.rn - 1 IN (SELECT rn FROM grove_l1hit))
+        OR EXISTS (SELECT 1 FROM grove_l1 q
+                   JOIN grove_l1hit h ON h.rn = q.rn
+                   WHERE q.rn = p.rn + 1
+                     AND NOT grove.is_boundary(decode(q.k, 'hex')))
+      );
+    EXIT WHEN NOT FOUND;
+  END LOOP;
+
   TRUNCATE grove_old;
   INSERT INTO grove_old
     SELECT i.k, i.ch,
