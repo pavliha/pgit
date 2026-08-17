@@ -68,4 +68,19 @@ is "upgrade: the read role is still barred from every write and admin verb" \
            AND (p.proname = ANY (grove.write_verbs()) OR p.proname = ANY (grove.admin_only_verbs()))
            AND has_function_privilege('$RO', p.oid, 'EXECUTE')")" "0"
 
-suite_end UPGRADE 10
+# The pre-packed refusal used to name grove.write_tree as the way out, but install.sql
+# drops that function 100 lines before the check ran, so the instruction was
+# unfollowable and the database was left half migrated. The guard runs before anything
+# is dropped or altered now, which is what these two assertions pin.
+psql "$U" -X -q -c "ALTER TABLE grove.nodes DROP CONSTRAINT IF EXISTS nodes_stored_or_delta" \
+                -c "UPDATE grove.nodes SET keys = NULL WHERE entries IS NOT NULL" >/dev/null 2>&1
+
+PRE=$(psql "$U" -X -q -v ON_ERROR_STOP=1 -f "$DIR/sql/install.sql" 2>&1)
+like "upgrade: a pre-packed store is refused rather than silently half migrated" \
+     "$PRE" "pre-packed format"
+
+is "upgrade: and the refusal leaves the functions intact, so the database is still usable" \
+   "$(q "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname = 'grove' AND p.proname = 'write_tree'")" "1"
+
+suite_end UPGRADE 12

@@ -200,6 +200,33 @@ BEGIN
 
   RETURN e;
 END $$;
+CREATE OR REPLACE FUNCTION grove.assert_readable_format() RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+  stale boolean;
+BEGIN
+  IF to_regclass('grove.nodes') IS NULL THEN RETURN; END IF;
+
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_schema = 'grove' AND table_name = 'nodes'
+               AND column_name = 'keys') THEN
+    SELECT EXISTS (SELECT 1 FROM grove.nodes
+                   WHERE keys IS NULL AND entries IS NOT NULL) INTO stale;
+  ELSE
+    SELECT EXISTS (SELECT 1 FROM grove.nodes) INTO stale;
+  END IF;
+
+  IF stale THEN
+    RAISE EXCEPTION 'grove: this database holds nodes from the pre-packed format, which '
+      'this version cannot read, and there is no in-place upgrade between format versions. '
+      'DROP SCHEMA grove CASCADE, install again, then track and commit. Your tables are '
+      'untouched and are the source of truth, so the data survives even though the '
+      'recorded history does not.';
+  END IF;
+END $$;
+
+DO $$ BEGIN PERFORM grove.assert_readable_format(); END $$;
+
 DROP FUNCTION IF EXISTS grove.row_hashes(regclass);
 DROP FUNCTION IF EXISTS grove.write_tree(regclass);
 DROP FUNCTION IF EXISTS grove.tree_root(regclass);
@@ -301,15 +328,6 @@ END $$;
 
 INSERT INTO grove.meta (key, value) VALUES ('delta_format', '2')
   ON CONFLICT (key) DO UPDATE SET value = '2';
-
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM grove.nodes WHERE keys IS NULL AND entries IS NOT NULL LIMIT 1) THEN
-    RAISE EXCEPTION 'grove: this database holds nodes from the pre-packed format. '
-      'Rebuild them before upgrading: your tables are the source of truth, so '
-      'SELECT grove.write_tree(tbl) FROM grove.tracked reproduces every tree.';
-  END IF;
-END $$;
 
 DO $$
 BEGIN

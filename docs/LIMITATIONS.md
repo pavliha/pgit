@@ -259,7 +259,7 @@ Octopus merges exist but follow git in refusing to resolve conflicts at all.
 
 ## Status
 
-Pre-alpha. 1077 checks pass from an empty database on Postgres 16, 17 and 18, with 19 more against a
+Pre-alpha. 1085 checks pass from an empty database on Postgres 16, 17 and 18, with 19 more against a
 real 63-table application schema when you supply the dump, but nothing here has run in production and
 the on-disk format has changed twice this month.
 There is no upgrade path between format versions other than rebuilding from your tables, which is

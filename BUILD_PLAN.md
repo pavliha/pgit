@@ -2073,6 +2073,53 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   always were. LIMITATIONS had said "1096 checks pass ... including 19 against a real 63-table
   application schema"; leaving the word "including" while changing the number would have made the
   sentence quietly false in a new way.
+- **the pre-packed upgrade refusal destroyed the recovery it told you to run, and named the wrong one
+  anyway.** `install.sql` refuses to upgrade a store from the old node format and tells the operator
+  `SELECT grove.write_tree(tbl) FROM grove.tracked reproduces every tree`. But
+  `DROP FUNCTION IF EXISTS grove.write_tree(regclass)` runs about a hundred lines earlier and
+  autocommits, and the install then aborts at the check. Following the instruction gives
+  `function grove.write_tree(regclass) does not exist`. Every re-run refuses at the same line, so the
+  operator is stuck holding a half-migrated database whose only named way out has been deleted by the
+  script that named it. The same shape as bugs 35, 36 and 38: the escape hatch does not work.
+  Fixing the ordering exposed that the instruction was wrong on its own terms. With `write_tree`
+  callable, running it rebuilds the *current* tree into correct nodes but leaves every stale historical
+  node in place, so the guard still refuses and `fsck` reports 18 problems. Rebuilding cannot reproduce
+  the trees of past commits, so there was never an in-place recovery to describe.
+  `docs/LIMITATIONS.md` already said the true answer: there is no upgrade path between format versions
+  other than rebuilding from your tables. Verified that it works — `DROP SCHEMA grove CASCADE`, install,
+  track, commit, and the user's 300 rows are untouched with `fsck` clean. The message says that now, and
+  says plainly that the recorded history does not survive, which the old wording implied it would.
+  The guard moved ahead of the first `DROP FUNCTION` so nothing is mutated before it runs. It had been
+  sitting after `ALTER TABLE grove.nodes ADD COLUMN IF NOT EXISTS keys` for a reason — on a genuinely old
+  database that column does not exist, so the check cannot reference it — which the moved version handles
+  by asking `information_schema` first and treating any node at all as stale when the column is absent.
+  It is a function, `grove.assert_readable_format()`, rather than an inline `DO` block, so it can be
+  tested at all; the old block was unreachable from SQL.
+  Two test layers, because neither covers the whole fix. `upgrade_01_prepacked_guard.sql` pins the
+  function's behaviour and its message, including that an empty node store is not mistaken for an old
+  one. The ordering can only be tested by actually re-running `install.sql`, which pgTAP cannot do, so
+  `upgrade_test.sh` gained two assertions and its count went to 12: that a pre-packed store is refused,
+  and that `grove.write_tree` still exists afterwards. That second one is the whole defect in one line,
+  and it reads 0 against a copy with the guard back in its old place.
+- **the `parent2_sha` migration is faithful, and here is how to re-check it.** This was the strongest
+  remaining upgrade-path lead: a `DO` block in `install.sql` that converts `commits.parent2_sha` into
+  `grove.commit_parent` rows and then `DROP COLUMN`s it. Nothing exercised it, and it is destructive, so
+  a silent rot there would only be discovered by an operator upgrading a genuinely old database.
+  It is testable without an old copy of the file, because the migration is reversible. On a store with a
+  real two-parent merge, snapshot `commit_parent`, then add `parent2_sha` back, copy the `ord = 2` parent
+  into it, delete the `commit_parent` rows, and re-run `install.sql`. The migration ran clean, dropped
+  the column again, and restored `commit_parent` identically — a symmetric `EXCEPT` between the snapshot
+  and the result returns nothing. `parents_of` still reports two parents.
+  The assertion that actually matters is `fsck` afterwards, and it is 0. `recomputed_commit_sha` takes
+  its octopus path for any commit with two or more parents, building the list as
+  `ARRAY[parent_sha] || commit_parent ordered by ord`. Had the old on-disk formula differed from that, or
+  had the migration inserted the parent at the wrong ordinal, every migrated merge commit would fail
+  fsck's "commit does not hash to its own content". It does not, so the conversion preserves the one
+  property that cannot be reconstructed later.
+  No test added. It passes without a fix, and the rule against that has been applied consistently in
+  this campaign — to the non-default fuzz shapes and to the reverse direction of the `obs_05` audit list.
+  The reproduction is written down instead, which is what makes it cheap to redo if that block is ever
+  touched.
 
 ## Reference
 
