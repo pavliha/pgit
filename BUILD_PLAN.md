@@ -1957,6 +1957,33 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   therefore the collision are deterministic, and the non-vacuity assertion is what will fail loudly if a
   future change to the sha computation makes the collision disappear, rather than the file quietly
   passing on a prefix that is no longer ambiguous.
+- **a schema qualified pathspec never matched its table, so `restore` reported zero rows and did
+  nothing.** Three places parsed a pathspec, each with its own copy of
+  `split_part(split_part(pathspec, ':', 1), '.', 1)`: `diff`, `diff_working` and `restore`. That splits
+  on the first dot to separate a table from a column, which is right for `t.price` and wrong for every
+  qualified name. `docs/LIMITATIONS.md` documents that a table tracked as `app.t` records that name, so
+  `restore(sha, 'app.t')` looked for a tracked table called `app`, found none, ran its loop zero times
+  and returned 0. The row was never written and nothing said so.
+  Found by sweeping adversarial rev specs, which turned up nothing wrong, and then asking the same
+  question of the neighbouring parser. The spec sweep is worth recording as a negative: `HEAD~0`,
+  `HEAD^^`, `HEAD~1~1` and `@~1` all resolve correctly, and an empty spec, leading or trailing
+  whitespace, lowercase `head`, `HEAD;DROP TABLE t`, unicode and a bare `0` are all refused. The only
+  blemish is that `HEAD~2147483648` surfaces a raw `value out of range for type integer` rather than a
+  `grove:` message; it still refuses, so that is cosmetic and left alone.
+  Fixed with one `grove.parse_pathspec(pathspec, candidates)` used by all three call sites. It takes the
+  candidate table names from its caller, because `diff` matches against the names recorded in
+  `grove.trees` while `diff_working` and `restore` match live tracked tables, and picks the longest
+  candidate the pathspec either equals or extends with a dot. So `app.t` is a table, `app.t.a` is that
+  table's column, `t.a` still splits the old way, and a pathspec matching no candidate keeps its own
+  text so a caller can reject it.
+  `restore` now does reject it. It used to return 0 for `nosuchtable`, which reads like "nothing needed
+  restoring" rather than "you typed the wrong table". `log` and `diff` still return no rows for an
+  unknown table, which is defensible for a read: you asked about a table with no history. A write verb
+  quietly doing nothing is not.
+  Four of the eleven assertions in `paths_01_qualified_pathspec.sql` change behaviour with the fix. The
+  first seven exercise the parser directly and pass against a copy that keeps the parser but reverts the
+  three call sites, which is how the wiring was isolated from the new function; against the real
+  pre-fix code the parser does not exist at all, so they would fail there too.
 
 ## Reference
 

@@ -130,6 +130,10 @@ session whose `search_path` made the name bare, `t`, then a later session withou
 path cannot find the table at all, and `checkout` will say so by name. Tracking with a qualified
 name, `grove.track('app.t')`, avoids the question entirely.
 
+Pathspecs accept the qualified name. `app.t`, `app.t.price` and `app.t:42` all resolve, because the
+table part of a pathspec is matched against the tables grove knows about rather than split on its
+first dot. Splitting first would read `app.t` as table `app`, column `t`.
+
 ## Replaying history needs the table, or the server
 
 Restoring rows must not fire the table's own triggers, or a checkout would run application logic
@@ -255,7 +259,7 @@ Octopus merges exist but follow git in refusing to resolve conflicts at all.
 
 ## Status
 
-Pre-alpha. 1072 checks pass from an empty database, including 19 against a real 63-table application
+Pre-alpha. 1083 checks pass from an empty database, including 19 against a real 63-table application
 schema, but nothing here has run in production and the on-disk format has changed twice this month.
 There is no upgrade path between format versions other than rebuilding from your tables, which is
 always possible because your tables are the source of truth — grove never becomes the only copy.

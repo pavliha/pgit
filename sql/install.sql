@@ -1152,20 +1152,39 @@ BEGIN
   RETURN image ->> cols[1] = want;
 END $$;
 
+CREATE OR REPLACE FUNCTION grove.parse_pathspec(pathspec text, candidates text[])
+RETURNS TABLE (tbl text, col text, row_k text)
+LANGUAGE sql IMMUTABLE AS $$
+  WITH head AS (
+    SELECT NULLIF(split_part(pathspec, ':', 1), '') AS h,
+           NULLIF(split_part(pathspec, ':', 2), '') AS rk
+  ),
+  pick AS (
+    SELECT c AS t FROM unnest(candidates) c, head
+    WHERE head.h = c OR head.h LIKE c || '.%'
+    ORDER BY length(c) DESC
+    LIMIT 1
+  )
+  SELECT COALESCE(p.t, NULLIF(split_part(h.h, '.', 1), '')),
+         CASE WHEN p.t IS NOT NULL THEN NULLIF(substr(h.h, length(p.t) + 2), '')
+              ELSE NULLIF(split_part(h.h, '.', 2), '') END,
+         h.rk
+  FROM head h LEFT JOIN pick p ON true
+$$;
+
 DROP FUNCTION IF EXISTS grove.diff(bytea, bytea);
 
 CREATE OR REPLACE FUNCTION grove.diff(a_sha bytea, b_sha bytea, pathspec text DEFAULT NULL)
 RETURNS TABLE (tbl text, k text, op text, before jsonb, after jsonb)
 LANGUAGE sql STABLE AS $$
-  WITH spec AS (
-    SELECT NULLIF(split_part(split_part(pathspec, ':', 1), '.', 1), '') AS want_tbl,
-           NULLIF(split_part(split_part(pathspec, ':', 1), '.', 2), '') AS want_col,
-           NULLIF(split_part(pathspec, ':', 2), '')                     AS want_row
-  ),
-  tables AS (
+  WITH tables AS (
     SELECT t.tbl FROM grove.trees t WHERE t.commit_sha = a_sha
     UNION
     SELECT t.tbl FROM grove.trees t WHERE t.commit_sha = b_sha
+  ),
+  spec AS (
+    SELECT s.tbl AS want_tbl, s.col AS want_col, s.row_k AS want_row
+    FROM grove.parse_pathspec(pathspec, ARRAY(SELECT tables.tbl FROM tables)) s
   ),
   wanted AS (
     SELECT tables.tbl FROM tables, spec
@@ -3539,7 +3558,9 @@ DECLARE
 BEGIN
   FOR t IN SELECT x.tbl FROM grove.tracked x ORDER BY x.tbl::text LOOP
     CONTINUE WHEN pathspec IS NOT NULL
-              AND split_part(split_part(pathspec, ':', 1), '.', 1) <> t.tbl::text;
+              AND (SELECT s.tbl FROM grove.parse_pathspec(
+                     pathspec, ARRAY(SELECT x.tbl::text FROM grove.tracked x)) s)
+                  IS DISTINCT FROM t.tbl::text;
 
     SELECT x.root_hash INTO hroot FROM grove.trees x
     WHERE x.commit_sha = h AND x.tbl = grove.recorded_name(t.tbl, h);
@@ -4062,7 +4083,8 @@ CREATE OR REPLACE FUNCTION grove.restore(spec text, pathspec text) RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
   target bytea := grove.rev(spec);
-  want   text  := NULLIF(split_part(split_part(pathspec, ':', 1), '.', 1), '');
+  want   text  := (SELECT s.tbl FROM grove.parse_pathspec(
+                     pathspec, ARRAY(SELECT x.tbl::text FROM grove.tracked x)) s);
   row_k  text  := NULLIF(split_part(pathspec, ':', 2), '');
   r      record;
   d      record;
@@ -4072,6 +4094,10 @@ DECLARE
   started timestamptz := clock_timestamp();
 BEGIN
   IF want IS NULL THEN RAISE EXCEPTION 'grove: restore needs a pathspec naming a table'; END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM grove.tracked x WHERE x.tbl::text = want) THEN
+    RAISE EXCEPTION 'grove: % is not a tracked table, so there is nothing to restore into', want;
+  END IF;
 
   PERFORM grove.assert_live_schema(target, 'restore', want);
 
