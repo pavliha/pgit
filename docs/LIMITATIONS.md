@@ -255,7 +255,7 @@ Octopus merges exist but follow git in refusing to resolve conflicts at all.
 
 ## Status
 
-Pre-alpha. 1043 checks pass from an empty database, including 19 against a real 63-table application
+Pre-alpha. 1055 checks pass from an empty database, including 19 against a real 63-table application
 schema, but nothing here has run in production and the on-disk format has changed twice this month.
 There is no upgrade path between format versions other than rebuilding from your tables, which is
 always possible because your tables are the source of truth — grove never becomes the only copy.

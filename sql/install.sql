@@ -4296,7 +4296,17 @@ BEGIN
   CREATE TEMP TABLE IF NOT EXISTS grove_alive (sha bytea PRIMARY KEY) ON COMMIT DROP;
   TRUNCATE grove_alive;
 
-  FOR r IN SELECT name, sha FROM grove.refs UNION SELECT name, sha FROM grove.tags LOOP
+  FOR r IN SELECT name, sha FROM grove.refs
+           UNION SELECT name, sha FROM grove.tags
+           UNION SELECT 'bisect good', b.good      FROM grove.bisect b
+           UNION SELECT 'bisect bad',  b.bad       FROM grove.bisect b
+           UNION SELECT 'bisect origin', b.orig_sha FROM grove.bisect b WHERE b.orig_sha IS NOT NULL
+           UNION SELECT 'rebase origin', s.original_sha FROM grove.rebase_state s
+           UNION SELECT 'rebase onto',   s.onto_sha     FROM grove.rebase_state s
+           UNION SELECT 'merge ours',   m.ours_sha   FROM grove.merges m
+           UNION SELECT 'merge theirs', m.theirs_sha FROM grove.merges m
+           UNION SELECT 'merge base',   m.base_sha   FROM grove.merges m
+  LOOP
     INSERT INTO grove_alive
     SELECT l.sha FROM grove.log(r.sha) l WHERE l.at >= before_at
     ON CONFLICT DO NOTHING;

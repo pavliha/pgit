@@ -1859,6 +1859,35 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   corruption does to lookups and that fsck re-reads the store rather than caching a verdict, and those
   hold either way. `docs/USAGE.md` described fsck as verifying every hash, ref, chain and tree, which
   was exactly untrue for the metadata the hashes do not cover; it now says so.
+- **prune deleted the newest commits on a branch someone was bisecting, and fsck called it clean.**
+  `prune` builds its reachable set from `grove.refs` and `grove.tags`. `bisect_next` moves the current
+  branch to the midpoint with a hard reset, so for the duration of a bisect the branch does not point at
+  its own tip: the tip is named only by `grove.bisect.bad` and `orig_sha`, and prune does not look
+  there. Bisecting a five-commit history and then pruning at a cutoff that should have kept three
+  commits kept one. The two newest commits, including the tip the user started from, were gone. fsck
+  reported clean, correctly, because nothing was structurally broken — the commits had simply been
+  removed. `bisect_reset`, whose entire promise is putting the branch back, then raised a missing commit
+  and left the branch parked on the midpoint with the live table holding the midpoint's data.
+  That is silent, irreversible loss of the newest history, caused by a verb the RUNBOOK schedules
+  weekly. Rather than guess the extent, enumerated every `bytea` column in the schema and checked which
+  ones prune protects. Three transient tables hold commit shas that nothing else keeps alive:
+  `grove.bisect`, `grove.rebase_state`, and `grove.merges`. All three are cleared when their operation
+  finishes or is abandoned, and `health()` already counts them, so treating them as roots cannot defeat
+  prune — it only keeps what an in-progress operation needs to unwind. That is also what git does, since
+  its equivalents are refs. `notes.commit_sha` has no foreign key either and is left orphaned by prune,
+  but no consequence was demonstrated for that, so it is recorded here and not fixed.
+  The merge case took two attempts to test honestly. The obvious fixture passed without the fix, because
+  an open merge normally has `ours` and `theirs` sitting on live branch tips, so refs already protect
+  them. Deleting the merged branch while the merge is open is what orphans it: with the old prune, that
+  plus a prune removed both `theirs_sha` and `base_sha` while the merge stayed recorded as open. Fixtures
+  too clean, again — the most repeated mistake of this campaign.
+  `tools_04_prune_spares_work_in_progress.sql` covers all three states; six of its twelve assertions go
+  red without the fix and the other six are setup and non-vacuity, including that prune still removes
+  something so the test cannot pass by prune becoming a no-op. Two assertions were rewritten after they
+  turned out to pass either way: `grove.diff` across deleted commits returns empty rather than raising,
+  so `lives_ok` proved nothing and became a count comparison. The bare `bisect_reset()` call also became
+  a `lives_ok`, because as a bare statement its exception aborted the whole file and only four of eleven
+  assertions ever ran.
 
 ## Reference
 

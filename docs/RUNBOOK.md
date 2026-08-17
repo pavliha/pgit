@@ -148,6 +148,10 @@ incident. It costs a full rebuild per table, so schedule it rather than polling 
 | the invariant query above | daily | expensive, and the only complete check |
 | `SELECT grove.prune(now() - interval 'N days');` | weekly | bounds history; it is a retention policy, so pick N deliberately |
 
+`prune` is safe to schedule against a repository someone is working in. It treats an open bisect,
+a parked rebase and an unfinished merge as roots, so the commits those need to unwind are kept even
+when a branch no longer points at them. It does not refuse; it keeps a little more than asked.
+
 ## Backup
 
 `pg_dump` and `pg_restore` round-trip a tracked database whole — triggers, the canonical key index,
