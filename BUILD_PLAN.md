@@ -2047,6 +2047,32 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   which is exactly the standing false alarm that was checked for and avoided when the shape-drift row was
   added. An informational row in `health()` would be defensible, but it is a new feature with no defect
   behind it and a test for it would pass the moment it was written, so it is left undone on purpose.
+- **the published test count was guarded only by a run nobody automated, and I am the one who built it
+  that way.** Set out to check a claim rather than a behaviour: `docs/LIMITATIONS.md` says Postgres 16,
+  17 and 18 are all in CI. That is true — `.github/workflows/ci.yml` has `matrix: pg: ["16","17","18"]`
+  with `fail-fast: false` and runs the whole suite on each. But reading it surfaced something worse next
+  door.
+  CI runs `./test/all.sh` with no `DUMP`, so the real-schema suite is skipped and CI counts 1077 of the
+  1096 checks that were published. The count check I added two iterations ago sat behind
+  `elif [ -n "${DUMP:-}" ]`, which is exactly what CI does not have, so the only automated runner never
+  executed it. The published number was verified only when a developer ran the suite locally with a
+  private application dump — a fixture that by definition cannot be in the repository. A number nothing
+  automated can confirm is not much of a claim.
+  Fixed by making the published number the one the default configuration produces. `run_suite` already
+  parses each suite's count, so it now records the last one into `LAST_N`, the real-schema branch keeps
+  it as `REAL_N`, and the check compares the published figure against `TOTAL - REAL_N`. That is the same
+  number whether or not a dump was supplied: CI counts 1077 and compares against 1077; a local run with
+  the dump counts 1096, subtracts the 19, and compares against 1077 too. No constant is duplicated
+  anywhere, so the two cannot drift.
+  The gate on `DUMP` is gone, which means the check now runs on every push across three PostgreSQL
+  majors. That exposed a second latent problem in my own code: with the check no longer gated,
+  `./test/all.sh <suite>` would have reported a spurious mismatch, because a filtered run legitimately
+  counts less. It now skips with a reason, and that was verified by running `./test/all.sh ownership`
+  and reading the skip line rather than assuming it printed.
+  README and LIMITATIONS now describe the 19 as conditional rather than included, which is what they
+  always were. LIMITATIONS had said "1096 checks pass ... including 19 against a real 63-table
+  application schema"; leaving the word "including" while changing the number would have made the
+  sentence quietly false in a new way.
 
 ## Reference
 

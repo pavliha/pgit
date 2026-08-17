@@ -5,6 +5,8 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
 ONLY="${1:-}"
 TOTAL=0
+LAST_N=0
+REAL_N=0
 FAILED_SUITES=()
 SKIPPED=()
 
@@ -29,7 +31,8 @@ run_suite() {
 
   local n
   n=$(printf '%s' "$line" | grep -oE '\(([0-9]+) checks\)' | grep -oE '[0-9]+' || true)
-  TOTAL=$((TOTAL + ${n:-0}))
+  LAST_N=${n:-0}
+  TOTAL=$((TOTAL + LAST_N))
   [ $rc -ne 0 ] && FAILED_SUITES+=("$label")
   return 0
 }
@@ -51,21 +54,25 @@ run_suite "ownership    " "$DIR/ownership_test.sh"
 
 if [ -n "${DUMP:-}" ]; then
   run_suite "real-schema  " "$ROOT/bench/realworld_app.sh"
+  REAL_N=$LAST_N
 else
   SKIPPED+=("real-schema (set DUMP=/path/to/app.dump to include it)")
 fi
 
 TUNED="${FUZZ_ROUNDS:-}${FUZZ_OPS:-}${FUZZ_SEED:-}${FUZZ_ROWS:-}${FUZZ_CHUNK:-}"
-if [ -n "$TUNED" ]; then
+BASE=$((TOTAL - REAL_N))
+if [ -n "$ONLY" ]; then
+  SKIPPED+=("published counts (only one suite was asked for, so the count is not the published one)")
+elif [ -n "$TUNED" ]; then
   SKIPPED+=("published counts (the fuzz settings were tuned, so the count is not the published one)")
-elif [ -n "${DUMP:-}" ]; then
+else
   CLAIMS=$( { grep -ohE 'tests-[0-9]+%20green' "$ROOT/README.md" \
                 | sed -E 's/tests-([0-9]+)%20green/\1/'
               grep -ohE '[0-9]+ checks (green|pass)' \
                 "$ROOT/README.md" "$ROOT/docs/LIMITATIONS.md" | grep -oE '^[0-9]+'; } )
   for claimed in $CLAIMS; do
-    if [ "$claimed" != "$TOTAL" ]; then
-      FAILED_SUITES+=("published count $claimed does not match the $TOTAL this run counted")
+    if [ "$claimed" != "$BASE" ]; then
+      FAILED_SUITES+=("published count $claimed does not match the $BASE this run counted")
     fi
   done
 fi
