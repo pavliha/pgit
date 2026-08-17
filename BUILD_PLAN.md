@@ -1815,6 +1815,27 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   Branch creation and deletion still write no reflog at all. That is not the same defect: a ref with
   no history cannot disagree with its history, and the oracle correctly excludes it. Whether creation
   should be recorded the way git records it is a separate question, left open.
+- **fuzzed four tree geometries instead of one, and found nothing — but the harness gap is real.**
+  Every fuzz defect in this campaign came from chunk boundary handling, and the harness has only ever
+  run one shape: `FUZZ_CHUNK` defaults to 8 and nothing had ever overridden it. Ran six configurations
+  at 150 ops each, `CHUNK=3` and `CHUNK=2` for deep trees, `CHUNK=32` for a flat one, and `ROWS=3000`
+  for a larger table. All six held every invariant.
+  Before treating that as coverage, checked that the knob does anything, because six runs of the same
+  shape would be a meaningless green. It does, and the effect is not subtle. Same 400 rows, same data,
+  only `chunk_target` changed:
+
+  | `chunk_target` | nodes | depth |
+  | --- | --- | --- |
+  | 2 | 506 | 11 |
+  | 3 | 227 | 5 |
+  | 8 (default) | 60 | 3 |
+  | 32 | 14 | 2 |
+
+  So an 11-level tree really was exercised, against the 3 levels the suite normally sees. The gap left
+  open is that the standing harness still only fuzzes `chunk_target = 8`. Not closing it by adding a
+  round: no defect earned the extra suite time yet, and a shape only becomes a regression seed once it
+  has caught something. Worth rerunning with fresh seeds at `CHUNK=2` and `CHUNK=32` between other
+  probes, since deep trees are where the boundary logic has the most room to be wrong.
 
 ## Reference
 
