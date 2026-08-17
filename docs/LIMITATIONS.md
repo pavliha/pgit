@@ -92,8 +92,11 @@ does not version DDL and cannot replay it.
 
 - a commit after `ADD COLUMN` is a full rebuild, because every row's canonical form changed and no
   node can be reused
-- `checkout`, `merge` and `cherry-pick` **refuse** across a schema change rather than guess, naming
-  the table and both column lists
+- every verb that writes live rows from a recorded tree **refuses** across a schema change rather
+  than guess, naming the table, itself, and both column lists: `checkout`, `reset --hard`,
+  `restore`, `stash pop`, `rebase`, `rebase abort`, `merge` and `cherry-pick`. A soft reset is
+  exempt, since it moves the ref and writes no rows. A refusal leaves the thing you would need to
+  retry it, so a stash still holds its rows and a parked rebase is still parked
 - a renamed table is **detected** by content similarity and refused with both names and a match
   percentage — detected, not followed
 
@@ -246,12 +249,13 @@ version.
 | signed commits | needs key management and a trust model that nothing else here has |
 | `filter-branch` | history rewriting; `prune` truncates, but scrubbing a column out of the past means recomputing every tree forward of the rewrite point |
 | following a table rename through a merge | detection exists; following means mapping old to new across the diff, conflict and journal paths |
+| `rebase --continue` | a rebase that conflicts can only be aborted; resuming means replaying the rest of the range on top of a resolution, and nothing tracks where it stopped |
 
 Octopus merges exist but follow git in refusing to resolve conflicts at all.
 
 ## Status
 
-Pre-alpha. 621 checks pass from an empty database, including 19 against a real 63-table application
+Pre-alpha. 1026 checks pass from an empty database, including 19 against a real 63-table application
 schema, but nothing here has run in production and the on-disk format has changed twice this month.
 There is no upgrade path between format versions other than rebuilding from your tables, which is
 always possible because your tables are the source of truth — grove never becomes the only copy.

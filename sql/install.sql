@@ -1519,7 +1519,7 @@ BEGIN
                    'be restored into; recreate it under that name, or rename it back';
   END IF;
 
-  PERFORM grove.assert_live_schema(tgt);
+  PERFORM grove.assert_live_schema(tgt, 'checkout');
 
   IF NOT force AND grove.is_dirty() THEN
     RAISE EXCEPTION 'grove: uncommitted changes present, refusing to checkout %', branch_name;
@@ -2067,13 +2067,15 @@ BEGIN
   RETURN 0;
 END $$;
 
-CREATE OR REPLACE FUNCTION grove.materialise(from_sha bytea, to_sha bytea) RETURNS int
+DROP FUNCTION IF EXISTS grove.materialise(bytea, bytea);
+CREATE OR REPLACE FUNCTION grove.materialise(from_sha bytea, to_sha bytea, verb text) RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
   r       record;
   guard   jsonb;
   applied int := 0;
 BEGIN
+  PERFORM grove.assert_live_schema(to_sha, verb);
   guard := grove.replay_begin(true);
   SET CONSTRAINTS ALL DEFERRED;
   FOR r IN SELECT y.tbl FROM grove.replay_tables(ARRAY[from_sha, to_sha]) y LOOP
@@ -2118,7 +2120,7 @@ BEGIN
   VALUES (cur_branch, ours, onto)
   ON CONFLICT (branch) DO UPDATE SET original_sha = EXCLUDED.original_sha, onto_sha = EXCLUDED.onto_sha;
 
-  PERFORM grove.materialise(ours, onto);
+  PERFORM grove.materialise(ours, onto, 'rebase');
   PERFORM grove.advance_ref(cur_branch, ours, onto);
 
   FOR r IN SELECT sha FROM grove_replay ORDER BY depth DESC LOOP
@@ -2153,7 +2155,7 @@ BEGIN
     RAISE EXCEPTION 'grove: no rebase in progress on %', grove.head();
   END IF;
 
-  PERFORM grove.materialise(grove.resolve(grove.head()), st.original_sha);
+  PERFORM grove.materialise(grove.resolve(grove.head()), st.original_sha, 'rebase abort');
   UPDATE grove.refs SET sha = st.original_sha WHERE name = st.branch;
   PERFORM grove.emit('rebase_abort', started, jsonb_build_object(
     'branch', st.branch, 'back_to', grove.short_sha(st.original_sha)), false);
@@ -2801,7 +2803,9 @@ BEGIN
   RETURN NULL;
 END $$;
 
-CREATE OR REPLACE FUNCTION grove.assert_live_schema(target_sha bytea) RETURNS void
+DROP FUNCTION IF EXISTS grove.assert_live_schema(bytea);
+CREATE OR REPLACE FUNCTION grove.assert_live_schema(target_sha bytea, verb text,
+                                                    only_tbl text DEFAULT NULL) RETURNS void
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
   bad record;
@@ -2812,13 +2816,14 @@ BEGIN
   FROM grove.schemas s
   WHERE s.commit_sha = target_sha
     AND to_regclass(s.tbl) IS NOT NULL
+    AND (only_tbl IS NULL OR s.tbl = only_tbl)
     AND s.fingerprint <> grove.schema_fingerprint(to_regclass(s.tbl))
   LIMIT 1;
 
   IF bad.name IS NOT NULL THEN
     RAISE EXCEPTION
-      'grove: % has a different shape now than in that commit, and checkout restores data but not shape. Now %, then %',
-      bad.name, bad.live::text, bad.recorded::text;
+      'grove: % has a different shape now than in that commit, and % restores data but not shape. Now %, then %',
+      bad.name, verb, bad.live::text, bad.recorded::text;
   END IF;
 END $$;
 
@@ -3479,6 +3484,7 @@ BEGIN
   END IF;
 
   IF mode = 'hard' THEN
+    PERFORM grove.assert_live_schema(tgt, 'reset --hard');
     guard := grove.replay_begin();
     SET CONSTRAINTS ALL DEFERRED;
 
@@ -4049,6 +4055,8 @@ DECLARE
 BEGIN
   IF want IS NULL THEN RAISE EXCEPTION 'grove: restore needs a pathspec naming a table'; END IF;
 
+  PERFORM grove.assert_live_schema(target, 'restore', want);
+
   guard := grove.replay_begin();
   SET CONSTRAINTS ALL DEFERRED;
 
@@ -4130,6 +4138,8 @@ BEGIN
 
   snap := grove.resolve(pick);
   SELECT c.parent_sha INTO parent FROM grove.commits c WHERE c.sha = snap;
+
+  PERFORM grove.assert_live_schema(snap, 'stash pop');
 
   guard := grove.replay_begin();
   SET CONSTRAINTS ALL DEFERRED;

@@ -1728,6 +1728,73 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   per-row upsert, and a tracking ref is derived state that another fetch re-derives.
   No new test. The stash round trip already proves the compare and set names the right expected value,
   because a wrong one would fail every ordinary stash rather than only a racing one.
+- **the published test counts had drifted, and nothing was checking two of the three.** The badge in the
+  README is self-checking: `all.sh` compares it against the count the run actually produced. Two other
+  places make the same claim in prose and neither was checked, so both had gone stale while the badge
+  stayed current. `README.md` said 679 checks in about 90 seconds and `docs/LIMITATIONS.md` said 621.
+  The real number is 1014, and the real time is about sixteen minutes, two thirds of it fuzzing. Both
+  updated, and the timing claim replaced with one I measured suite by suite rather than one nobody had
+  rerun since the suite was a third of its current size. The count in `docs/DESIGN-STORAGE.md` is a
+  dated checkpoint record of what passed at the time, so it stays at 532 on purpose.
+  The check in `all.sh` now covers all three claims instead of just the badge. Writing it turned up a
+  trap worth recording: extracting numbers from the badge line with a single `grep -oE '[0-9]+'` reads
+  `tests-1014%20green` as two numbers, 1014 and 20, because the URL encodes its space as `%20`. The
+  first version of the check would have failed every run with a complaint about a claim of 20 that
+  exists nowhere in the file. The badge number is pulled out with its own pattern now. Verified by
+  running the extraction against the current files, which finds exactly three claims of 1014, and
+  against a hypothetical total of 1015, where all three go red.
+- **rebase cannot be resumed, only abandoned, and that was not written down anywhere.** Went looking for
+  what happens when a rebase stops mid-range and found there is no verb for continuing one. `rebase`
+  and `rebase_abort` are the whole surface. `health()` is honest about the state, reporting the rebase
+  in progress alongside the conflicts waiting on a decision, so nothing is hidden at runtime, but a
+  user reading the docs would reasonably expect the git-shaped `--continue` to exist. Recorded in the
+  missing-verbs table in `docs/LIMITATIONS.md` rather than fixed: resuming means replaying the rest of
+  the range on top of a resolution, and nothing currently tracks where the range stopped, so it is a
+  feature and not a defect.
+- **four verbs that overwrite live rows from a recorded tree skipped the shape guard.**
+  Started on the untouched ground of a column added mid-history and then dropped again, and the
+  merkle property held exactly as it should: the root hash after the drop is byte-identical to the
+  root before the add, and fsck is clean across all three commits. So the tree layer is fine. The
+  restore layer is not.
+  `checkout` refuses to restore a commit whose recorded shape no longer matches the live table, via a
+  purpose-built `grove.assert_live_schema`, and `ddl_02_checkout_shape.sql` pins that behaviour. That
+  function had exactly one caller. `reset --hard`, `restore` and `stash pop` all write live rows from
+  a recorded tree too, and none of them called it. Each reported success while quietly dropping the
+  columns the target commit has and the table no longer does.
+  The worst of the three is `stash pop`. Stash a change, drop the stashed column, pop: it applied what
+  it could, said it wrote the rows, and then deleted the stash ref, so the stashed values were gone
+  with no verb left that could reach them. `reset --hard` is the clearest contract violation, because
+  it is the one verb whose whole promise is that the working state now equals the target: it returned
+  200 rows written and left `is_dirty()` true, with `diff(target, live)` showing all 200 rows still
+  different. Two answers to the same question disagreeing, which is the question that has found the
+  most defects in this campaign. `restore` is the mildest, silently skipping the missing column.
+  Fixed by giving `assert_live_schema` the verb name and an optional table scope, then calling it from
+  all four. The verb name matters because the old message was hardcoded to say "checkout restores data
+  but not shape", which would have been actively misleading coming out of a stash pop. The table scope
+  matters because `restore` writes one table named by a pathspec, so failing it for an unrelated
+  table's shape change would be wrong. A soft reset is deliberately left exempt: it moves the ref and
+  writes no rows.
+  Then grepped for the rest of the family rather than stopping at three, which turned up a fourth in
+  `rebase_abort` and is the worst of the set. Both rebase verbs write live rows through
+  `grove.materialise`, so the guard went there once rather than into each caller. `rebase` itself was
+  already safe by accident: it does the unguarded materialise first but then refuses inside
+  `cherry_pick`, and because the whole rebase is one statement the mangled intermediate state rolls
+  back with it. `rebase_abort` has no such backstop. Park a rebase on a conflict, drop a column, abort:
+  it succeeded, left the table dirty, and deleted the `rebase_state` row on the way out, so the escape
+  hatch was spent and there was no second abort to try. The guard now refuses and, critically, leaves
+  the parked rebase parked, so putting the column back and aborting again works.
+  Two things looked like the same defect and are not, so they are left alone. `revert` never calls
+  either guard, but it compares every touched row's live hash against the recorded one first, and a
+  shape change moves every hash, so it refuses anyway. Its message blames changed rows rather than the
+  shape, which is a misleading diagnosis rather than a correctness problem. `merge` and `cherry_pick`
+  guard commit-against-commit with `assert_same_schema`, which is the right check for them.
+  `ddl_08_shape_guard_on_every_restore_verb.sql` covers all four verbs. Nine of its twelve assertions
+  go red with the call sites removed and the guard functions left in place, which isolates the fix
+  rather than the refactor. The three that stay green are the non-vacuity ones: a soft reset is still
+  allowed, and both a hard reset and a stash pop still work once the shape matches again.
+  `docs/LIMITATIONS.md` claimed only checkout, merge and cherry-pick refuse across a schema change; it
+  now names all eight, the soft-reset exemption, and the promise that a refusal leaves behind whatever
+  you would need to retry.
 
 ## Reference
 

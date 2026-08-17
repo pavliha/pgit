@@ -55,12 +55,19 @@ else
   SKIPPED+=("real-schema (set DUMP=/path/to/app.dump to include it)")
 fi
 
-BADGE=$(grep -oE 'tests-[0-9]+%20green' "$ROOT/README.md" | grep -oE '[0-9]+' | head -1)
 TUNED="${FUZZ_ROUNDS:-}${FUZZ_OPS:-}${FUZZ_SEED:-}${FUZZ_ROWS:-}${FUZZ_CHUNK:-}"
 if [ -n "$TUNED" ]; then
-  SKIPPED+=("readme-badge (the fuzz settings were tuned, so the count is not the published one)")
-elif [ -n "${DUMP:-}" ] && [ -n "$BADGE" ] && [ "$BADGE" != "$TOTAL" ]; then
-  FAILED_SUITES+=("readme-badge (says $BADGE, suite runs $TOTAL)")
+  SKIPPED+=("published counts (the fuzz settings were tuned, so the count is not the published one)")
+elif [ -n "${DUMP:-}" ]; then
+  CLAIMS=$( { grep -ohE 'tests-[0-9]+%20green' "$ROOT/README.md" \
+                | sed -E 's/tests-([0-9]+)%20green/\1/'
+              grep -ohE '[0-9]+ checks (green|pass)' \
+                "$ROOT/README.md" "$ROOT/docs/LIMITATIONS.md" | grep -oE '^[0-9]+'; } )
+  for claimed in $CLAIMS; do
+    if [ "$claimed" != "$TOTAL" ]; then
+      FAILED_SUITES+=("published count $claimed does not match the $TOTAL this run counted")
+    fi
+  done
 fi
 
 echo
