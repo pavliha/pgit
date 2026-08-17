@@ -1677,6 +1677,22 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   That is evidence rather than proof. It says the fix holds beyond the single seed that exposed the
   bug, which is the thing worth knowing after changing tree assembly. None of them are added to
   REGRESSION_SEEDS: seeds earn a place there by reproducing a defect, and these reproduce nothing.
+- **a negative chunk_target built a tree and said nothing.** Fourteen more fuzz seeds across chunk
+  targets of 2, 4 and 32 found no defect, but a broken shell loop of mine passed the whole string
+  "2 0.30011" as FUZZ_CHUNK, and the harness's complaint about that led somewhere real.
+  `chunk_target` is a canonical setting: it decides where every boundary falls and it travels in every
+  bundle. Garbage in it behaved three different ways. A non-numeric value failed on a cast, zero
+  surfaced as a bare division by zero thrown from inside `write_tree` with nothing to connect it to a
+  setting, and a negative value quietly worked, building a different and perfectly valid-looking tree
+  keyed to a number nobody intended. `meta_guard` requires a positive whole number now, alongside the
+  existing checks on hash_algo and canon_version.
+  The seeds themselves were clean: 0.11117, 0.24685, 0.38402, 0.51993, 0.63118, 0.87724 at the default
+  shape, 0.20481, 0.44902, 0.71355, 0.93017 at chunk 4, and 0.30011, 0.58822 at chunk 2, plus the
+  regression seed re-run at chunk 2. Every fuzz defect so far came from chunk boundary handling, so
+  reshaping the tree was the obvious place to look, and it holds.
+  Worth recording that four of my own "failures" this round were a zsh word-splitting mistake, not the
+  code. `set -- $var` does not split in zsh, so the seed was empty and the chunk target was nonsense.
+  I checked before reporting them.
 
 ## Reference
 

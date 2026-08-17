@@ -28,6 +28,13 @@ BEGIN
                    'difference that is not there';
   END IF;
 
+  IF NEW.key = 'chunk_target'
+     AND (NEW.value !~ '^[0-9]+$' OR NEW.value::bigint < 1) THEN
+    RAISE EXCEPTION 'grove: chunk_target must be a positive whole number, not %', NEW.value
+      USING HINT = 'it decides where every chunk boundary falls and travels in every bundle, so a '
+                   'value that is not one builds a tree nothing else can reproduce';
+  END IF;
+
   IF NEW.key = 'canon_version' AND NEW.value <> '1' THEN
     RAISE EXCEPTION 'grove: canon_version % is not implemented, this build writes canonical form 1',
       NEW.value
