@@ -3406,6 +3406,7 @@ DECLARE
   ops  text[] := '{}';
   m    text;
   cur  bytea;
+  hits bytea[];
   i    int;
   n    int;
 BEGIN
@@ -3425,11 +3426,17 @@ BEGIN
   ELSIF EXISTS (SELECT 1 FROM grove.tags t WHERE t.name = base) THEN
     SELECT t.sha INTO cur FROM grove.tags t WHERE t.name = base;
   ELSIF base ~ '^[0-9a-fA-F]{4,64}$' THEN
-    SELECT c.sha INTO cur FROM grove.commits c
+    SELECT array_agg(c.sha ORDER BY c.sha) INTO hits FROM grove.commits c
     WHERE encode(c.sha, 'hex') LIKE lower(base) || '%';
-    IF cur IS NULL THEN
+    IF hits IS NULL THEN
       RAISE EXCEPTION 'grove: no commit matching %', base;
     END IF;
+    IF array_length(hits, 1) > 1 THEN
+      RAISE EXCEPTION 'grove: % is ambiguous, it matches % commits: %',
+        base, array_length(hits, 1),
+        (SELECT string_agg(encode(h, 'hex'), ', ') FROM unnest(hits) h);
+    END IF;
+    cur := hits[1];
   ELSE
     RAISE EXCEPTION 'grove: cannot resolve %', spec;
   END IF;

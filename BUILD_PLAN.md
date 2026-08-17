@@ -1933,6 +1933,30 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   uncompared. `diff_03_journal_oracle.sql` already runs a thousand random operations over fifty-one
   commits and does a symmetric `EXCEPT ALL` between `grove.diff` and `grove.diff_journal` on forty random
   commit pairs, with its own non-vacuity check.
+- **an abbreviated commit sha that matched two commits silently resolved to one of them, and
+  `reset --hard` aimed at it discarded history at an arbitrary target.** `grove.rev` accepts a hex
+  prefix of four or more characters and resolved it with `SELECT c.sha INTO cur ... WHERE
+  encode(c.sha,'hex') LIKE lower(base) || '%'`. In plpgsql a `SELECT INTO` that matches several rows
+  takes the first one and says nothing, unlike a scalar subquery, which would at least have raised.
+  There was no ambiguity check at all, where git refuses outright.
+  Four hex characters is sixteen bits, so this needs only a few hundred commits to be reachable rather
+  than a theoretical collision. A deterministic 401-commit fixture produced exactly one shared prefix.
+  With that prefix, `rev` returned c304 while c392 matched equally well, and `reset --hard` on the same
+  spec moved the branch to c304 and rewrote the live table to its data, throwing away everything after
+  it, with nothing to indicate the spec had been ambiguous. A destructive verb choosing between two
+  possible targets by planner order.
+  Fixed in `rev` alone, which a grep confirmed is the only place a prefix is ever resolved, so one fix
+  covers every verb that takes a spec. It now collects the matches and refuses when there is more than
+  one, listing the full shas so the prefix can be lengthened. Deliberately built with `array_agg` and
+  `array_length` rather than `min(bytea)`: that aggregate exists only on PostgreSQL 18 and this project
+  has already been broken once by using it, which `docs/LIMITATIONS.md` records.
+  Four of the nine assertions in `rev_01_ambiguous_prefix.sql` go red without the fix. The rest are the
+  guards that keep it honest: that the fixture really did produce a colliding prefix, that the prefix
+  really matches more than one commit, and that a full sha, a longer unique prefix and a prefix matching
+  nothing all still behave as before. The fixture uses explicit commit timestamps so the shas and
+  therefore the collision are deterministic, and the non-vacuity assertion is what will fail loudly if a
+  future change to the sha computation makes the collision disappear, rather than the file quietly
+  passing on a prefix that is no longer ambiguous.
 
 ## Reference
 
