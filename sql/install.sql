@@ -1485,12 +1485,50 @@ BEGIN
   RETURN NOT grove.nothing_to_commit(h, grove.snapshot_trees(h));
 END $$;
 
+CREATE OR REPLACE FUNCTION grove.check_ref_name(kind text, name text) RETURNS void
+LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN
+  IF name IS NULL OR name = '' THEN
+    RAISE EXCEPTION 'grove: a % name cannot be empty', kind;
+  END IF;
+
+  IF name IN ('HEAD', '@') THEN
+    RAISE EXCEPTION 'grove: % is reserved, rev reads it as the current head, so a % by that name could never be resolved',
+      name, kind;
+  END IF;
+
+  IF name ~ '[~^:?*\[\\]' THEN
+    RAISE EXCEPTION 'grove: a % name cannot contain ~ ^ : ? * [ or a backslash, because rev reads those as revision syntax: %',
+      kind, name;
+  END IF;
+
+  IF name ~ '\s' THEN
+    RAISE EXCEPTION 'grove: a % name cannot contain whitespace: %', kind, name;
+  END IF;
+
+  IF name LIKE '%..%' OR name LIKE '/%' OR name LIKE '%/' OR name LIKE '%//%'
+     OR name LIKE '%.' OR name LIKE '%.lock' OR name LIKE '-%' THEN
+    RAISE EXCEPTION 'grove: % is not a usable % name', name, kind;
+  END IF;
+
+  IF kind = 'remote' THEN
+    IF name LIKE '%/%' THEN
+      RAISE EXCEPTION 'grove: a remote name cannot contain a slash, it becomes part of remotes/<name>/<branch>: %', name;
+    END IF;
+  ELSIF name LIKE 'stash/%' OR name LIKE 'remotes/%' THEN
+    RAISE EXCEPTION 'grove: %/ is reserved for grove''s own refs, so a % cannot live there: %',
+      split_part(name, '/', 1), kind, name;
+  END IF;
+END $$;
+
 CREATE OR REPLACE FUNCTION grove.branch(branch_name text, at_sha bytea DEFAULT NULL) RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
   target bytea := COALESCE(at_sha, grove.resolve(grove.head()));
   started timestamptz := clock_timestamp();
 BEGIN
+  PERFORM grove.check_ref_name('branch', branch_name);
+
   IF target IS NULL THEN
     RAISE EXCEPTION 'grove: nothing committed yet, cannot branch';
   END IF;
@@ -3584,6 +3622,8 @@ LANGUAGE plpgsql AS $$
 DECLARE
   started timestamptz := clock_timestamp();
 BEGIN
+  PERFORM grove.check_ref_name('remote', remote_name);
+
   INSERT INTO grove.remotes (name, url) VALUES (remote_name, remote_url)
   ON CONFLICT (name) DO UPDATE SET url = EXCLUDED.url;
 
@@ -4054,6 +4094,8 @@ DECLARE
   target bytea := grove.rev(spec);
   started timestamptz := clock_timestamp();
 BEGIN
+  PERFORM grove.check_ref_name('tag', tag_name);
+
   IF target IS NULL THEN RAISE EXCEPTION 'grove: cannot resolve %', spec; END IF;
 
   IF EXISTS (SELECT 1 FROM grove.tags t WHERE t.name = tag_name) AND NOT force THEN

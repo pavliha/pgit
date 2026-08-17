@@ -1984,6 +1984,43 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   first seven exercise the parser directly and pass against a copy that keeps the parser but reverts the
   three call sites, which is how the wiring was isolated from the new function; against the real
   pre-fix code the parser does not exist at all, so they would fail there too.
+- **a branch could be named anything, including names no verb could ever resolve and one that stash pop
+  would delete.** `grove.branch` accepted every name tried: `main^`, `HEAD~1`, `HEAD`, `@`, `feature:x`,
+  `a~b`, one with a space, one with a tab, the empty string, `..`, `-dash` and `stash/9`. Three of those
+  have real consequences.
+  A branch named `main^` points wherever it was created, but `rev('main^')` strips the caret before
+  looking anything up, so it returns main's parent instead. Every verb that takes a spec rather than a
+  branch name — reset, restore, diff, revert, cherry-pick, tag — silently targets a different commit
+  than the branch the user named. A branch named `HEAD` is permanently shadowed by the keyword and can
+  never be resolved at all. The destructive one is `stash/9`: `stash_list` matches
+  `name LIKE 'stash/%'`, so an ordinary branch created in that namespace is reported as a stash, and
+  `stash_pop` applied its diff and deleted the ref. A branch consumed by an unrelated verb.
+  Fixed with one `grove.check_ref_name(kind, name)` called from the three verbs that take a
+  user-supplied name: `branch`, `tag` and `remote_add`. The rules follow `git check-ref-format`, plus
+  grove's own two reserved prefixes. A remote name additionally cannot contain a slash, because it
+  becomes the middle of `remotes/<name>/<branch>`.
+  The important part of this fix is what it does *not* validate. `stash_push` builds its slot from
+  `nextval('grove.merge_seq')` and legitimately writes into `stash/`; `clone_from` and `fetch` insert
+  into `remotes/` directly rather than through `branch()`. Validating those would have turned the fix
+  into a new bug, so the reserved-namespace rule is scoped to the user-facing verbs and the stash round
+  trip is asserted explicitly to prove it.
+  `refs/heads/x` is still allowed, deliberately. grove's ref namespace is flat and does not use git's
+  `refs/` prefixes, so there is nothing to collide with and refusing it would be over-reach.
+  Eleven of the thirteen assertions in `refs_01_hostile_names.sql` go red without the fix. The two that
+  hold either way are the rationale and the guard: that `rev('main^')` really does resolve to something
+  other than main, which is why the name has to be refused, and that stash push and pop still work.
+- **checked two things the ref-name work put in reach, and both are already right.** A column name
+  containing a dot works: `t.a.b` parses to table `t`, column `a.b`, and the diff really does scope to
+  `{"a.b": "dot0"}`. That falls out of the pathspec parser taking everything after the matched table
+  verbatim and the caller using it as a jsonb key rather than parsing it again, so `t.a.b:1` also picks
+  up the row key correctly. A column named `a:b` is not addressable, because the colon is the row
+  separator, so `t.a:b` means column `a` of row `b`. That is a syntax limit rather than a defect: it
+  returns nothing instead of the wrong thing, and any unquoted separator has the same property.
+  The CLI surfaces the new refusals properly, which was worth checking because the ref-name validator
+  added a class of error the CLI had never had to report. `grove branch 'main^'` exits 1 with the reason
+  on stderr, and `grove branch good-name` exits 0. `test/cli_test.sh` already captures `rc=$?` directly
+  rather than through a pipe, so its existing exit-code assertions are trustworthy — worth noting since
+  reading an exit code through a pipe is a mistake made earlier in this campaign.
 
 ## Reference
 

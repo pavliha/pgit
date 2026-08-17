@@ -111,6 +111,18 @@ grove checkout pricing
 working tree. Checking out materialises that branch's data into your tables. It refuses if you have
 uncommitted changes.
 
+Branch, tag and remote names are checked, the way `git check-ref-format` checks them. A name cannot
+contain `~ ^ : ? * [` or a backslash, because a revision spec reads those as syntax and the ref would
+be unreachable. It cannot be `HEAD` or `@`, cannot be empty or contain whitespace, and cannot live
+under `stash/` or `remotes/`, which grove uses for its own refs. Slashes are fine in the middle, so
+`feature/pricing` works.
+
+```bash
+grove branch feature/pricing    # fine
+grove branch main^              # refused: rev would read the caret as syntax
+grove branch stash/9            # refused: stash pop would treat it as a stash
+```
+
 This is the part that most needs thinking about before you adopt it: while you are on `pricing`, your
 application sees `pricing`'s data. That is fine for a single-tenant workflow — a data migration you
 want to review, a bulk edit you want to be able to abandon — and wrong for anything where two
