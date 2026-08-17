@@ -2120,6 +2120,35 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   this campaign — to the non-default fuzz shapes and to the reverse direction of the `obs_05` audit list.
   The reproduction is written down instead, which is what makes it cheap to redo if that block is ever
   touched.
+- **the headline performance claim is true, and I nearly retired it on a bad measurement.** README line 37
+  says "Diffing 10 changed rows 10,000 commits apart takes 163 ms. One commit apart takes the same." No
+  automated check covers it: `bench/gate.sh`, which CI runs, gates four other rows at a 200k fixture and
+  never touches the long-range number.
+  A single full `bench/run.sh` gave far 511 ms and near 188 ms, which looked like the published figure
+  being 3x optimistic and, worse, like the second sentence being false — near and far differing by 2.7x
+  would contradict the O(changed) rather than O(history) promise the whole design rests on. Both
+  suspicions were wrong.
+  Taking seven interleaved paired readings on one machine in one database: near 190, 120, 129, 129, 122,
+  124, 140, median 129 ms; far 129, 126, 125, 125, 126, 125, 132, median 126 ms. Ratio 0.98. The second
+  sentence is not merely defensible, it is precise. And the published 163 ms is conservative against a
+  126 ms warm median.
+  The 511 was a cold reading. `bench/longrange.sql` measures the long-range diff immediately after
+  committing 10,000 commits inside one transaction, so it traverses a store whose buffers are dirty and
+  whose new nodes have never been read. The warm-up is visible in the first `near` reading of 190 against
+  a 120-140 band after it. Both numbers are honest about different things, and the bench's is the
+  pessimistic one.
+  Two process notes, because the discipline is the point. The first attempt at this measurement printed
+  0 ms for all fourteen readings: `clock_timestamp()` twice inside one query evaluates both at
+  effectively the same instant instead of bracketing the work, which is exactly why `bench/diffs.sql`
+  assigns `t0` as its own statement inside a `DO` block. A measurement returning a suspiciously perfect
+  value is a broken instrument, not a fast system. And refusing to edit the README on one sample is what
+  stopped a correct published claim from being retired on noise — `gate.sh` already encodes that rule by
+  refusing to judge on fewer than three runs.
+  One thing left open rather than changed. The bench labels `diff_10_rows_of_1m` as
+  "AC-PERF-01 target < 100 ms" and it reads 129 ms warm, 188 cold, so an in-repo acceptance target is
+  missed and nothing enforces it; the same holds for AC-PERF-02 on the long-range row. Either gate them
+  or retire the targets, but tightening what CI fails on is a judgement about shared-runner noise
+  tolerance rather than a defect to fix unilaterally.
 
 ## Reference
 
