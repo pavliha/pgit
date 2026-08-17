@@ -1591,6 +1591,59 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   empty input by itself and it is the last command in the pipe. The tests are worth keeping, they
   would catch a clone that silently did nothing, but they do not guard pipefail and I am not going to
   claim they do.
+- **restoring rows left every identity sequence behind, so the next insert collided.** grove never
+  called setval anywhere. pg_dump emits one for exactly this reason. Clone 500 rows into a table whose
+  identity sequence sits at 1 and the application's next insert fails with duplicate key (id)=(1).
+  It is on the path the documentation recommends. LIMITATIONS.md says migrations own DDL, and
+  `clone_from` only creates a table that is not already there, so the intended workflow is to run your
+  migrations first and clone into the result. That is precisely the case that breaks: the table keeps
+  its identity, the rows arrive, and the sequence does not move.
+  `grove.sync_sequences` now runs from `replay_end`, which every guarded replay path already calls, so
+  one place covers checkout, clone, revert, cherry-pick, merge and materialise. It only ever advances.
+  Winding a sequence back would hand out ids that rows already hold, and a checkout to an older commit
+  must not do that, so the test asserts a sequence set to 9999 stays at 9999.
+  Worth separating what is a defect from what is documented: a cloned table that grove creates itself
+  has no identity, no defaults and no constraints, only names, types and a primary key. That is the
+  documented position, grove versions rows and not DDL, and it is why the supported path is to bring
+  your own table.
+- **the fuzzer caught garbage collection deleting a kept node's children.** A run failed on a fresh seed,
+  0.34356, at op 14. First question was whether it was mine: the same seed fails without the sequence
+  change from the previous commit, so it is older than today.
+  Narrowed it to thirteen operations then one prune by hand. The surviving node is level 1, so it has
+  children, is itself stored as a delta, is not a tree root, and is not reachable from any surviving
+  tree root. It stayed only because it is the base of a node that was kept. `gc_nodes` walks
+  reachability from the tree roots, then adds delta bases in a loop, and never walks the children of
+  the bases it adds. So a kept internal node ended up pointing at two collected children. Prune left
+  the store broken and fsck said so.
+  The loop now adds the reachable set of everything it keeps, each round, until neither step adds
+  anything. Prune keeps 520 nodes on that seed instead of 518, and the two extra are the children.
+  I wrote a deterministic test for it and then deleted it, because it passed without the fix. Getting
+  an internal delta base that no surviving root reaches needs the particular shape the fuzzer found,
+  and a test named for a defect it cannot reproduce is worse than no test. The real guard is seed
+  0.34356 in REGRESSION_SEEDS, which is red without the change and green with it.
+- **a forced checkout half discarded your work.** `checkout` applies the diff from the commit it thinks
+  you are on to the one you asked for, which assumes the live table matches that first commit. Being
+  dirty is exactly the case where it does not, and force is exactly the flag for being dirty.
+  So a forced checkout produced a working tree that belonged to neither branch: edits to rows that
+  differ between the two were silently thrown away, edits to rows that do not differ silently followed
+  you across. Afterwards the table did not match the branch it claimed to be on, and grove reported
+  dirty without being able to say why. Forcing onto the branch you are already on did nothing at all,
+  because that diff is empty, so the one command a user would reach for to clean up could not.
+  `reset --hard` had this right all along: it diffs from `write_tree`, the tree that is actually there,
+  rather than from a commit it assumes. The force path in checkout does the same now. The
+  non-forced path is untouched, because when nothing is pending the two are the same walk and the
+  cheap one is fine.
+  While reading reset I found two more of the search_path joins from the earlier fix, in `reset` and
+  `restore`, that I had missed. I said five at the time and it was seven. Both now resolve the
+  recorded name.
+- **OPEN: seed 0.677189 leaves a tree disagreeing with a rebuild.** Found by a random fuzz seed while
+  verifying other work. Op 131 is a bulk `DELETE ... WHERE id % n = 0`, and after it the stored root
+  for one table no longer equals a full rebuild, which is the invariant the whole incremental path
+  exists to preserve. Replayed against the code before the forced-checkout change and it fails there
+  too, so it is not mine and not new.
+  Not yet diagnosed and deliberately not added to REGRESSION_SEEDS, because that would hold every
+  later commit red behind it. It is recorded here instead so it does not get lost: reproduce with
+  FUZZ_SEED=0.677189 FUZZ_ROUNDS=1 FUZZ_OPS=150 ./test/fuzz_test.sh.
 
 ## Reference
 

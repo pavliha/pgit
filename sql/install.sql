@@ -1494,6 +1494,7 @@ DECLARE
   applied int := 0;
   guard   jsonb;
   gone    text;
+  troot   bytea;
   started timestamptz := clock_timestamp();
 BEGIN
   IF tgt IS NULL THEN
@@ -1520,9 +1521,19 @@ BEGIN
   guard := grove.replay_begin();
   SET CONSTRAINTS ALL DEFERRED;
 
-  FOR r IN SELECT x.tbl FROM grove.replay_tables(ARRAY[cur, tgt]) x LOOP
-    applied := applied + grove.apply_diff(r.tbl::regclass, cur, tgt, r.tbl);
-  END LOOP;
+  IF force THEN
+    FOR r IN SELECT x.tbl FROM grove.replay_tables(ARRAY[cur, tgt]) x LOOP
+      SELECT y.root_hash INTO troot FROM grove.trees y
+      WHERE y.commit_sha = tgt AND y.tbl = grove.recorded_name(r.tbl::regclass, tgt);
+
+      applied := applied + grove.apply_tree_diff(r.tbl::regclass,
+                                                 grove.write_tree(r.tbl::regclass), troot);
+    END LOOP;
+  ELSE
+    FOR r IN SELECT x.tbl FROM grove.replay_tables(ARRAY[cur, tgt]) x LOOP
+      applied := applied + grove.apply_diff(r.tbl::regclass, cur, tgt, r.tbl);
+    END LOOP;
+  END IF;
 
   SET CONSTRAINTS ALL IMMEDIATE;
   PERFORM grove.replay_end(guard);
@@ -2916,6 +2927,38 @@ BEGIN
   RETURN jsonb_build_object('mode', 'triggers', 'saved', saved);
 END $$;
 
+CREATE OR REPLACE FUNCTION grove.sync_sequences() RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE
+  r   record;
+  seq text;
+  hi  bigint;
+  cur bigint;
+  n   int := 0;
+BEGIN
+  FOR r IN
+    SELECT t.tbl, a.attname
+    FROM grove.tracked t
+    JOIN pg_attribute a ON a.attrelid = t.tbl AND a.attnum > 0 AND NOT a.attisdropped
+    WHERE EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = t.tbl)
+  LOOP
+    seq := pg_get_serial_sequence(r.tbl::text, r.attname);
+    CONTINUE WHEN seq IS NULL;
+
+    EXECUTE format('SELECT max(%I) FROM %s', r.attname, r.tbl::text) INTO hi;
+    CONTINUE WHEN hi IS NULL;
+
+    EXECUTE format('SELECT last_value FROM %s', seq) INTO cur;
+
+    IF hi > cur THEN
+      PERFORM setval(seq, hi, true);
+      n := n + 1;
+    END IF;
+  END LOOP;
+
+  RETURN n;
+END $$;
+
 CREATE OR REPLACE FUNCTION grove.replay_end(st jsonb) RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -2928,6 +2971,8 @@ BEGIN
   IF st ->> 'mode' = 'nested' THEN
     RETURN;
   END IF;
+
+  PERFORM grove.sync_sequences();
 
   IF st ->> 'mode' = 'session' THEN
     PERFORM set_config('session_replication_role', 'origin', true);
@@ -3417,7 +3462,7 @@ BEGIN
 
     FOR r IN SELECT x.tbl FROM grove.tracked x LOOP
       SELECT y.root_hash INTO troot FROM grove.trees y
-      WHERE y.commit_sha = tgt AND y.tbl = r.tbl::text;
+      WHERE y.commit_sha = tgt AND y.tbl = grove.recorded_name(r.tbl, tgt);
       applied := applied + grove.apply_tree_diff(r.tbl, grove.write_tree(r.tbl), troot);
     END LOOP;
 
@@ -3995,7 +4040,7 @@ BEGIN
 
   FOR r IN SELECT x.tbl FROM grove.tracked x WHERE x.tbl::text = want LOOP
     SELECT y.root_hash INTO troot FROM grove.trees y
-    WHERE y.commit_sha = target AND y.tbl = r.tbl::text;
+    WHERE y.commit_sha = target AND y.tbl = grove.recorded_name(r.tbl, target);
 
     FOR d IN SELECT * FROM grove.diff_tree(grove.write_tree(r.tbl), troot) LOOP
       CONTINUE WHEN row_k IS NOT NULL
@@ -4179,7 +4224,8 @@ END $$;
 CREATE OR REPLACE FUNCTION grove.gc_nodes() RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
-  n int;
+  n    int;
+  grew int;
 BEGIN
   CREATE TEMP TABLE IF NOT EXISTS grove_keep (h bytea PRIMARY KEY) ON COMMIT DROP;
   TRUNCATE grove_keep;
@@ -4196,7 +4242,16 @@ BEGIN
     WHERE n2.base_hash IS NOT NULL
       AND NOT EXISTS (SELECT 1 FROM grove_keep k2 WHERE k2.h = n2.base_hash)
     ON CONFLICT DO NOTHING;
-    EXIT WHEN NOT FOUND;
+    GET DIAGNOSTICS n = ROW_COUNT;
+
+    INSERT INTO grove_keep
+    SELECT DISTINCT r.h
+    FROM grove.reachable_nodes(ARRAY(SELECT k.h FROM grove_keep k)) r
+    WHERE NOT EXISTS (SELECT 1 FROM grove_keep k2 WHERE k2.h = r.h)
+    ON CONFLICT DO NOTHING;
+    GET DIAGNOSTICS grew = ROW_COUNT;
+
+    EXIT WHEN n = 0 AND grew = 0;
   END LOOP;
 
   DELETE FROM grove.nodes WHERE hash NOT IN (SELECT h FROM grove_keep);
