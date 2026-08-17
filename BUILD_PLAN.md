@@ -1636,14 +1636,22 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   While reading reset I found two more of the search_path joins from the earlier fix, in `reset` and
   `restore`, that I had missed. I said five at the time and it was seven. Both now resolve the
   recorded name.
-- **OPEN: seed 0.677189 leaves a tree disagreeing with a rebuild.** Found by a random fuzz seed while
-  verifying other work. Op 131 is a bulk `DELETE ... WHERE id % n = 0`, and after it the stored root
-  for one table no longer equals a full rebuild, which is the invariant the whole incremental path
-  exists to preserve. Replayed against the code before the forced-checkout change and it fails there
-  too, so it is not mine and not new.
-  Not yet diagnosed and deliberately not added to REGRESSION_SEEDS, because that would hold every
-  later commit red behind it. It is recorded here instead so it does not get lost: reproduce with
-  FUZZ_SEED=0.677189 FUZZ_ROUNDS=1 FUZZ_OPS=150 ./test/fuzz_test.sh.
+- **OPEN, diagnosed: the incremental build splits the last group off the end of the tree.** Found by
+  random fuzz seed 0.677189 at op 131, a bulk `DELETE ... WHERE id % n = 0`. It fails against earlier
+  code too, so it is older than this campaign's changes.
+  Diagnosed by making a copy of the fuzzer record the divergence instead of raising, so the broken
+  state survived for inspection. The two trees hold **exactly the same rows**: same keys, same row
+  hashes, no key in one and not the other. The leaf layer is identical, 45 chunks with identical
+  sizes. They differ one level up. The incremental build produced seven level-1 nodes where a rebuild
+  produces six, and the difference is the tail: incremental emits `4 children from id=#3:399` plus a
+  lone node holding the final leaf `id=#4:1962`, where the rebuild puts all five in one group.
+  `grove.is_boundary('id=#4:1962|')` is false at `chunk_target = 8`, so that leaf must not start a
+  node and the rebuild is the canonical answer. The upper-level assembly is closing a run at the end
+  of a touched range instead of letting it continue into the leaves that follow, which is the same
+  family as the rebuilt-range defect fixed earlier in this campaign. Suspects are
+  `rebuild_touched_ranges` and `assemble_above_leaves`.
+  Still not in REGRESSION_SEEDS, so it does not hold later commits red. Add it with the fix.
+  Reproduce: FUZZ_SEED=0.677189 FUZZ_ROUNDS=1 FUZZ_OPS=150 ./test/fuzz_test.sh
 
 ## Reference
 
