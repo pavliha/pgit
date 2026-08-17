@@ -1795,6 +1795,26 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   `docs/LIMITATIONS.md` claimed only checkout, merge and cherry-pick refuse across a schema change; it
   now names all eight, the soft-reset exemption, and the promise that a refusal leaves behind whatever
   you would need to retry.
+- **rebase abort moved a branch and told the reflog nothing, so the reflog named a position the branch
+  had left.** Built this as an oracle rather than a probe, because the question generalises: for every
+  ref that has any reflog history, the newest entry must name the sha the ref actually holds. Ran it
+  after each verb in a sweep. Everything was consistent through commit, branch creation, checkout and
+  a rebase that stops on a conflict, and then `rebase_abort` broke it and nothing repaired it
+  afterwards, so every later check in the sweep stayed red on the same stranded branch.
+  Only three places write `grove.reflog`: `advance_ref`, `reset`, and `clone_from`. `rebase_abort`
+  moves the branch with a bare UPDATE, which is deliberate and stays that way, because a compare and
+  set there would make abort fail in exactly the situation someone reaches for it. What it was missing
+  is the hand-written reflog row that `reset` already writes for the same reason. It emits an audit
+  event, so the move was not invisible, but the reflog is the thing that answers where a branch was
+  before, and an abort is precisely when that gets asked. Worse than silence: the newest entry looked
+  like a legitimate final position, naming the tip the rebase had moved the branch to.
+  `obs_06_reflog_agrees_with_refs.sql` keeps the oracle rather than a rebase-abort special case, so a
+  future verb that moves a ref without logging is caught by the same assertion. Five of its nine
+  assertions go red without the fix. The last one is the non-vacuity check, because an oracle counting
+  mismatches passes trivially against an empty reflog.
+  Branch creation and deletion still write no reflog at all. That is not the same defect: a ref with
+  no history cannot disagree with its history, and the oracle correctly excludes it. Whether creation
+  should be recorded the way git records it is a separate question, left open.
 
 ## Reference
 

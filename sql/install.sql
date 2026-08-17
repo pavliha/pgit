@@ -2147,6 +2147,7 @@ CREATE OR REPLACE FUNCTION grove.rebase_abort() RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
   st record;
+  cur bytea;
   started timestamptz := clock_timestamp();
 BEGIN
   SELECT * INTO st FROM grove.rebase_state s WHERE s.branch = grove.head();
@@ -2155,8 +2156,11 @@ BEGIN
     RAISE EXCEPTION 'grove: no rebase in progress on %', grove.head();
   END IF;
 
-  PERFORM grove.materialise(grove.resolve(grove.head()), st.original_sha, 'rebase abort');
+  cur := grove.resolve(grove.head());
+  PERFORM grove.materialise(cur, st.original_sha, 'rebase abort');
   UPDATE grove.refs SET sha = st.original_sha WHERE name = st.branch;
+  INSERT INTO grove.reflog (ref, old_sha, new_sha, action, actor)
+  VALUES (st.branch, cur, st.original_sha, 'rebase abort', grove.actor());
   PERFORM grove.emit('rebase_abort', started, jsonb_build_object(
     'branch', st.branch, 'back_to', grove.short_sha(st.original_sha)), false);
 

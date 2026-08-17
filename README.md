@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="#run-the-tests"><img alt="tests" src="https://img.shields.io/badge/tests-1026%20green-brightgreen"></a>
+  <a href="#run-the-tests"><img alt="tests" src="https://img.shields.io/badge/tests-1035%20green-brightgreen"></a>
   <a href=".github/workflows/ci.yml"><img alt="postgres" src="https://img.shields.io/badge/postgres-16%20%7C%2017%20%7C%2018-blue"></a>
   <a href="#why-this-exists"><img alt="dependencies" src="https://img.shields.io/badge/extensions%20required-none-success"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-black"></a>
@@ -196,7 +196,7 @@ in. Which is what buys the 163 ms at the top of this page.
 
 Pre-alpha. The whole verb set works and is measured.
 
-**1026 checks green** from an empty database in about sixteen minutes, two thirds of that the
+**1035 checks green** from an empty database in about sixteen minutes, two thirds of that the
 randomised fuzzing, covering pgTAP, the CLI, crash-safety, non-superuser portability, remote and
 clone, and 19 against a real 63-table application schema. CI runs Postgres 16, 17 and 18, and requires bit-identical root hashes
 across all three.
