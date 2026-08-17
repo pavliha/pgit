@@ -1669,6 +1669,14 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   a tuned run says so.
   Default runs still enforce the count. Verified suite by suite at 1006, and a tuned run reports 1004,
   which is the two random seeds it did not run.
+- **six fresh seeds after the run-closure fix, all clean.** The fuzzer had found a real defect on each
+  of its last two unseeded runs, so it was worth asking whether the incremental assembly had more of
+  the same family. Six new seeds at 150 operations each, run one at a time: 0.11117, 0.24685, 0.38402,
+  0.51993, 0.63118, 0.87724. Nine hundred operations, no invariant violation, no tree disagreeing with
+  a rebuild, no fsck problem.
+  That is evidence rather than proof. It says the fix holds beyond the single seed that exposed the
+  bug, which is the thing worth knowing after changing tree assembly. None of them are added to
+  REGRESSION_SEEDS: seeds earn a place there by reproducing a defect, and these reproduce nothing.
 
 ## Reference
 
