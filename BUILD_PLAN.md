@@ -1655,6 +1655,20 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   merge can cascade past a single node.
   Seed 0.677189 is in REGRESSION_SEEDS now, red without the change and green with it, and all eight
   seeds pass 1200 operations.
+- **the badge check made the suite's own quick mode unusable.** Adding the two regression seeds took
+  `fuzz_test.sh` to ten minutes and fifteen seconds, so full runs stopped fitting in my 600 second
+  tool cap. That cap is mine, not the project's, and ten minutes is unremarkable for CI, so the suite
+  is not the thing to change and the fuzz harness stays a plain sequential loop: it is reliable and it
+  has found two real defects in two runs.
+  The knob for a quick pass already existed, `FUZZ_ROUNDS=1`, and my own badge check broke it. Fewer
+  seeds means fewer assertions, so a tuned run could never match the published count and failed on
+  arithmetic it had no way to satisfy. The check now stands down whenever any fuzz setting is tuned.
+  The first attempt at that was itself wrong: it appended to `SKIPPED` after the loop that prints
+  `SKIPPED` had already run, so a tuned run quietly skipped the check with nothing said, which is the
+  exact silence the check exists to prevent. The decision now happens before the list is printed, and
+  a tuned run says so.
+  Default runs still enforce the count. Verified suite by suite at 1006, and a tuned run reports 1004,
+  which is the two random seeds it did not run.
 
 ## Reference
 

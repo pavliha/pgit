@@ -55,13 +55,17 @@ else
   SKIPPED+=("real-schema (set DUMP=/path/to/app.dump to include it)")
 fi
 
+BADGE=$(grep -oE 'tests-[0-9]+%20green' "$ROOT/README.md" | grep -oE '[0-9]+' | head -1)
+TUNED="${FUZZ_ROUNDS:-}${FUZZ_OPS:-}${FUZZ_SEED:-}${FUZZ_ROWS:-}${FUZZ_CHUNK:-}"
+if [ -n "$TUNED" ]; then
+  SKIPPED+=("readme-badge (the fuzz settings were tuned, so the count is not the published one)")
+elif [ -n "${DUMP:-}" ] && [ -n "$BADGE" ] && [ "$BADGE" != "$TOTAL" ]; then
+  FAILED_SUITES+=("readme-badge (says $BADGE, suite runs $TOTAL)")
+fi
+
 echo
 echo "─────────────────────────────────────────────"
 for s in "${SKIPPED[@]:-}"; do [ -n "$s" ] && echo "skipped: $s"; done
-BADGE=$(grep -oE 'tests-[0-9]+%20green' "$ROOT/README.md" | grep -oE '[0-9]+' | head -1)
-if [ -n "${DUMP:-}" ] && [ -n "$BADGE" ] && [ "$BADGE" != "$TOTAL" ]; then
-  FAILED_SUITES+=("readme-badge (says $BADGE, suite runs $TOTAL)")
-fi
 
 if [ ${#FAILED_SUITES[@]} -eq 0 ]; then
   echo "ALL GREEN — $TOTAL checks"
