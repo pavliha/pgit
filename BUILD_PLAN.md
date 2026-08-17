@@ -2021,6 +2021,32 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   on stderr, and `grove branch good-name` exits 0. `test/cli_test.sh` already captures `rc=$?` directly
   rather than through a pipe, so its existing exit-code assertions are trustworthy — worth noting since
   reading an exit code through a pipe is a mistake made earlier in this campaign.
+- **four candidates checked, no defect in any of them.** Recording the reasoning, because "we looked and
+  it is fine" is only worth anything if the argument is written down.
+  `grove.nodes.seq` is a bigserial read in exactly one place, `repack`'s `ORDER BY n.seq DESC`, which
+  chooses which node in a group becomes the delta base. It is a heuristic for chain shape, not a derived
+  value with a second source. Duplicate or non-monotonic values after a restore would change which node
+  is picked and therefore storage and read cost, but not correctness, because the chain resolves from
+  whichever base was recorded and `fsck` re-derives the hashes either way.
+  `grove.events` is purely observational. `emit` writes it, `metrics` reads it for the commit
+  percentiles, `log_rotate` trims it, and nothing else touches it, so rotation cannot drop something a
+  verb still needs. Worth noting the tooling error that nearly sent this the wrong way: an `awk` sweep
+  attributed the events table definition to `grove.resolve`, because the definition immediately follows
+  that function and the script tracks the last function name it saw. `resolve` reads only `grove.refs`.
+  Checked rather than assumed.
+  Concurrent `unbundle` and `commit` on one store, which had been on the untouched list for a while, is
+  safe by construction rather than by luck. `unbundle` writes no refs at all — ref movement lives in
+  `receive`, which goes through `advance_ref`, and in `fetch`, which upserts derived tracking refs one
+  row at a time. All six of `unbundle`'s inserts are `ON CONFLICT DO NOTHING` on a content-addressed or
+  natural key. There is no mutable shared state for the two to fight over, which is a better answer than
+  a probabilistic race test could have given.
+  Stashes stay out of `needs_attention()`, deliberately. They are the only transient state `health()`
+  does not report, so it looked like the same omission as the shape drift fixed earlier, but it is not.
+  `docs/RUNBOOK.md` tells operators to alert on any non-empty `needs_attention()`, and a stash is
+  intentional, normal and can sit around for days. Reporting it would page someone for using a feature,
+  which is exactly the standing false alarm that was checked for and avoided when the shape-drift row was
+  added. An informational row in `health()` would be defensible, but it is a new feature with no defect
+  behind it and a test for it would pass the moment it was written, so it is left undone on purpose.
 
 ## Reference
 
