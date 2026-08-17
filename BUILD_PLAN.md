@@ -2149,6 +2149,24 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   missed and nothing enforces it; the same holds for AC-PERF-02 on the long-range row. Either gate them
   or retire the targets, but tightening what CI fails on is a judgement about shared-runner noise
   tolerance rather than a defect to fix unilaterally.
+- **six fresh seeds green, and that closes this campaign.** Three at the default shape (0.13579, 0.27183,
+  0.31415) and three at the deep shapes that had only ever seen one operation order each — `chunk_target`
+  2 with 0.46692 and 0.57721, and 3 with 0.86602. A depth-11 tree explored by three new orderings rather
+  than one, and every invariant held.
+  That is three consecutive iterations without a defect: the `nodes.seq` / `events` / `unbundle` / stash
+  batch, the long-range performance claim which turned out conservative rather than wrong, and this. The
+  fuzzer was the last mechanism with a real track record — two defects found by unseeded runs — and it is
+  now quiet across eighteen distinct seeds and five tree geometries.
+  Stopping here rather than re-probing swept ground. What remains on the untried list is genuinely lower
+  yield and was judged so before being skipped, not after: the git comparison table needs expensive
+  fixtures and the one performance claim actually measured came out conservative, so the others plausibly
+  do too; the surviving `ALTER TABLE IF NOT EXISTS` ladders are additive, unlike `parent2_sha` which was
+  destructive and was checked; and crash safety, non-superuser DDL and the bundle format all have
+  existing suites, so the marginal probe there is worth less than the last few were.
+  The honest boundary on all of it: every local verification in this campaign ran on PostgreSQL 18.4.
+  Versions 16 and 17 are covered only by the CI matrix, which was confirmed to exist and to run the whole
+  suite on each, but which cannot be reached from here. Nothing claimed about portability rests on a
+  measurement I took.
 
 ## Reference
 
