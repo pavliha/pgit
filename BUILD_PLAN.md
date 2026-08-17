@@ -1711,6 +1711,23 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   Postgres aborts the receive on the concurrent update instead, so the lost update only exists under
   READ COMMITTED with the read landing first. Worth keeping anyway, since nothing else exercises the
   path at all.
+- **grepped for siblings of the receive defect and found one in stash_push.** The lesson from earlier in
+  this campaign is that a fix touching a family of call sites should be followed by grepping the
+  pattern again, so: every place that writes `grove.refs` outside `advance_ref`. Four turned up, and
+  they are not all the same thing.
+  `stash_push` is the same defect. It calls `commit`, which safely advances the branch to the stash
+  snapshot, and then moves the branch back to the parent with a bare UPDATE. A commit landing in
+  between would be overwritten. It knows exactly what it expects the ref to hold, the snapshot it just
+  made, so it uses `advance_ref(branch, snap, parent, 'stash')` now, which also replaces the
+  hand-written reflog row.
+  `reset` is not the same. Its target comes from the user, not from a value it read, so moving the ref
+  is the operation rather than a lost update. `rebase_abort` restores a sha stored in `rebase_state`
+  and deliberately discards whatever the rebase built; a compare and set there would make abort fail
+  in exactly the situation someone reaches for it. Both left alone, on purpose.
+  `fetch` was checked too and is fine: it writes only `remotes/<name>/<branch>` with an atomic
+  per-row upsert, and a tracking ref is derived state that another fetch re-derives.
+  No new test. The stash round trip already proves the compare and set names the right expected value,
+  because a wrong one would fail every ordinary stash rather than only a racing one.
 
 ## Reference
 

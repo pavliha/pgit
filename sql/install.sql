@@ -4093,9 +4093,7 @@ BEGIN
   slot := 'stash/' || nextval('grove.merge_seq');
 
   INSERT INTO grove.refs (name, sha) VALUES (slot, snap);
-  UPDATE grove.refs SET sha = parent WHERE name = branch;
-  INSERT INTO grove.reflog (ref, old_sha, new_sha, action, actor)
-  VALUES (branch, snap, parent, 'stash', grove.actor());
+  PERFORM grove.advance_ref(branch, snap, parent, 'stash');
 
   PERFORM grove.reset(encode(parent, 'hex'), 'hard');
   PERFORM grove.emit('stash_push', started, jsonb_build_object('slot', slot, 'msg', msg));
