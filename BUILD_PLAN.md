@@ -1693,6 +1693,24 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   Worth recording that four of my own "failures" this round were a zsh word-splitting mistake, not the
   code. `set -- $var` does not split in zsh, so the seed was empty and the chunk target was nonsense.
   I checked before reporting them.
+- **receive discarded a commit that had just succeeded.** The concurrency suite covers racing commits
+  thoroughly, but nothing covered a receive racing one, which is the case where two different code
+  paths move the same ref. Ran them overlapping and the reflog told the story plainly: `update
+  fe9240bd -> 15b04ea0` from the commit, then `receive fe9240bd -> 4d3a6c8d` from a receive that had
+  read the ref before the commit landed and wrote anyway. The local commit was left unreachable, its
+  row sitting in the table with nothing pointing at it, and fsck saw nothing wrong because nothing was
+  structurally broken.
+  `commit` has always moved refs through `grove.advance_ref`, which is a compare and set that refuses
+  when the ref moved, and that is why racing commits are safe. `receive` did the fast-forward check
+  against a value it had read and then issued a bare UPDATE. It goes through advance_ref now, so the
+  loser is told the ref moved instead of the winner's work vanishing.
+  The regression test is honest about being probabilistic: it runs the race five times and asserts a
+  commit that reported success is always reachable, but it only catches the old behaviour in about one
+  run in three, because the timing on this machine usually lets the receive read after the commit
+  lands. Making it deterministic would need a pause inside receive itself; under REPEATABLE READ
+  Postgres aborts the receive on the concurrent update instead, so the lost update only exists under
+  READ COMMITTED with the read landing first. Worth keeping anyway, since nothing else exercises the
+  path at all.
 
 ## Reference
 

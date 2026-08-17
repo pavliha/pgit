@@ -3985,15 +3985,7 @@ BEGIN
       RAISE EXCEPTION 'grove: push to % is not a fast forward, it would drop commits', k;
     END IF;
 
-    IF cur IS NULL THEN
-      INSERT INTO grove.refs (name, sha) VALUES (k, incoming);
-      INSERT INTO grove.reflog (ref, old_sha, new_sha, action, actor)
-      VALUES (k, NULL, incoming, 'receive', grove.actor());
-    ELSE
-      UPDATE grove.refs SET sha = incoming WHERE name = k;
-      INSERT INTO grove.reflog (ref, old_sha, new_sha, action, actor)
-      VALUES (k, cur, incoming, 'receive', grove.actor());
-    END IF;
+    PERFORM grove.advance_ref(k, cur, incoming, 'receive');
   END LOOP;
 
   PERFORM grove.emit('receive', started, jsonb_build_object('commits', n, 'forced', force));
