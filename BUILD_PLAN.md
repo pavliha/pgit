@@ -1888,6 +1888,24 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   so `lives_ok` proved nothing and became a count comparison. The bare `bisect_reset()` call also became
   a `lives_ok`, because as a bare statement its exception aborted the whole file and only four of eleven
   assertions ever ran.
+- **checked the two nearest siblings of the prune defect and both are sound.** Worth recording, because
+  the reasoning is what makes them safe rather than luck.
+  `gc_nodes` runs at the end of `prune`, so if it derived reachability from refs it would delete the
+  nodes belonging to the commits prune had just gone out of its way to keep. It does not: it roots from
+  every row of `grove.trees`, and prune keeps the trees of every commit it keeps, so the two agree by
+  construction rather than by having the same root list copied twice. Bug 38's own test already proves
+  this end to end, since restoring the bisect returns the tip's data and that needs those nodes.
+  `grove.rerere` keys a remembered resolution on `hash(tbl | base | ours | theirs)`, and `grove.conflicts`
+  also carries a `col` that the signature omits. That looked like the classic case of a key that does not
+  cover what it is keying, where a resolution learned for one column would replay into another. It is
+  not, for two reasons that had to be checked rather than assumed. `base`, `ours` and `theirs` are full
+  row images, not per-column scalars, so the conflicting column is derivable from them; and
+  `merge_plan` emits one conflict row per row, naming only the first conflicting column, so a row with
+  two conflicting columns still produces a single signature. `resolve_conflict` then looks the conflict
+  up by table and key and resolves at row level, taking a whole image for ours, theirs, base, delete or
+  custom. So `col` is advisory, and the signature covers everything the resolution depends on. Omitting
+  the row key `k` is deliberate and correct in the same way git's rerere ignores file position: reusing
+  a resolution across rows with the same conflict shape is the entire feature.
 
 ## Reference
 
