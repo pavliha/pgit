@@ -4727,6 +4727,20 @@ LANGUAGE sql STABLE AS $$
   FROM grove.nodes n CROSS JOIN LATERAL grove.node_items(n.hash) i
   WHERE n.level > 0
     AND NOT EXISTS (SELECT 1 FROM grove.nodes c WHERE c.hash = decode(i.ch, 'hex'))
+
+  UNION ALL
+  SELECT 'node key does not match the child it points at', encode(n.hash, 'hex') || ' ' || i.k
+  FROM grove.nodes n CROSS JOIN LATERAL grove.node_items(n.hash) i
+  WHERE n.level > 0
+    AND EXISTS (SELECT 1 FROM grove.nodes c WHERE c.hash = decode(i.ch, 'hex'))
+    AND i.k IS DISTINCT FROM (SELECT c.keys[1] FROM grove.node_cols(decode(i.ch, 'hex')) c)
+
+  UNION ALL
+  SELECT 'node level does not match its children', encode(n.hash, 'hex')
+  FROM grove.nodes n CROSS JOIN LATERAL grove.node_items(n.hash) i
+  WHERE n.level > 0
+    AND EXISTS (SELECT 1 FROM grove.nodes c WHERE c.hash = decode(i.ch, 'hex'))
+    AND grove.node_level(decode(i.ch, 'hex')) IS DISTINCT FROM n.level - 1
 $$;
 
 CREATE OR REPLACE FUNCTION grove.merge_octopus(branch_names text[], msg text DEFAULT NULL)

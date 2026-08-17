@@ -1836,6 +1836,29 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   round: no defect earned the extra suite time yet, and a shape only becomes a regression seed once it
   has caught something. Worth rerunning with fresh seeds at `CHUNK=2` and `CHUNK=32` between other
   probes, since deep trees are where the boundary logic has the most room to be wrong.
+- **fsck reported a clean store while every keyed lookup failed.** A node's hash covers the concatenated
+  child hashes and nothing else — not its `level`, not its `keys` vector. That is deliberate and is what
+  makes structural sharing work, but it means both of those columns are stored values that nothing ever
+  re-derives, which is the shape that has produced most of this campaign's defects. fsck had seventeen
+  checks and neither of them was covered: it verified that `keys` is non-null and that its length
+  agrees with the byte length of `hashes`, so arity, but never that `keys[i]` is actually the first key
+  under child `i`.
+  Reversed one level-1 node's key vector, leaving `hashes` untouched so the node still hashes to itself.
+  fsck said clean. Then checked whether that mattered rather than assuming it: all twenty probed keys
+  resolved through the tree before, and none of them resolved after. So a store can be pronounced
+  healthy while `blame`, `log` with a `table:row` pathspec, `restore` with a `table:row` pathspec and
+  revert's conflict check — everything that descends by key through `grove.lookup` — silently finds
+  nothing. A wrong `level` was invisible in the same way.
+  fsck now re-derives both: a parent's key must equal its child's first key, and a parent's level must
+  be one above its children's. Both are scoped to children that exist, since a missing child is already
+  its own check and reporting it twice would only add noise. A clean store still reports zero, which is
+  the assertion that matters most for a new fsck check.
+  `tools_03_fsck_checks_routing.sql` proves the corruption is consequential before proving it is
+  detected, so the checks are pinned to a real failure rather than to their own message text. Only two
+  of its eight assertions go red without the fix, which is correct: the other six describe what the
+  corruption does to lookups and that fsck re-reads the store rather than caching a verdict, and those
+  hold either way. `docs/USAGE.md` described fsck as verifying every hash, ref, chain and tree, which
+  was exactly untrue for the metadata the hashes do not cover; it now says so.
 
 ## Reference
 

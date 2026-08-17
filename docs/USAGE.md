@@ -152,7 +152,8 @@ time it appears.
 ## Housekeeping
 
 ```bash
-grove fsck                      # verify every hash, ref, chain and tree
+grove fsck                      # verify every hash, ref, chain, tree, and the
+                                # routing metadata the hashes do not cover
 grove gc                        # pack old node versions as deltas
 grove gc --depth 50             # more aggressive
 grove prune --before 2026-01-01 # truncate history, then collect what is unreachable
