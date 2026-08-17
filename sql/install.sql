@@ -2807,6 +2807,18 @@ BEGIN
   RETURN NULL;
 END $$;
 
+CREATE OR REPLACE FUNCTION grove.drifted_shapes(target_sha bytea DEFAULT NULL,
+                                               only_tbl text DEFAULT NULL)
+RETURNS TABLE (tbl text, recorded jsonb, live jsonb)
+LANGUAGE sql STABLE AS $$
+  SELECT s.tbl, s.columns, grove.schema_columns(to_regclass(s.tbl))
+  FROM grove.schemas s
+  WHERE s.commit_sha = COALESCE(target_sha, grove.resolve(grove.head()))
+    AND to_regclass(s.tbl) IS NOT NULL
+    AND (only_tbl IS NULL OR s.tbl = only_tbl)
+    AND s.fingerprint <> grove.schema_fingerprint(to_regclass(s.tbl))
+$$;
+
 DROP FUNCTION IF EXISTS grove.assert_live_schema(bytea);
 CREATE OR REPLACE FUNCTION grove.assert_live_schema(target_sha bytea, verb text,
                                                     only_tbl text DEFAULT NULL) RETURNS void
@@ -2814,14 +2826,9 @@ LANGUAGE plpgsql STABLE AS $$
 DECLARE
   bad record;
 BEGIN
-  SELECT s.tbl AS name, s.columns AS recorded,
-         grove.schema_columns(to_regclass(s.tbl)) AS live
+  SELECT d.tbl AS name, d.recorded, d.live
   INTO bad
-  FROM grove.schemas s
-  WHERE s.commit_sha = target_sha
-    AND to_regclass(s.tbl) IS NOT NULL
-    AND (only_tbl IS NULL OR s.tbl = only_tbl)
-    AND s.fingerprint <> grove.schema_fingerprint(to_regclass(s.tbl))
+  FROM grove.drifted_shapes(target_sha, only_tbl) d
   LIMIT 1;
 
   IF bad.name IS NOT NULL THEN
@@ -4966,6 +4973,10 @@ LANGUAGE sql STABLE AS $$
   UNION ALL SELECT 'rebase in progress',
                    COALESCE((SELECT r.branch FROM grove.rebase_state r LIMIT 1), 'no'),
                    EXISTS (SELECT 1 FROM grove.rebase_state)
+  UNION ALL SELECT 'tracked shapes changed since head',
+                   COALESCE((SELECT string_agg(d.tbl, ', ' ORDER BY d.tbl)
+                             FROM grove.drifted_shapes() d), 'none'),
+                   EXISTS (SELECT 1 FROM grove.drifted_shapes())
 $$;
 
 CREATE OR REPLACE FUNCTION grove.needs_attention() RETURNS TABLE (metric text, value text)

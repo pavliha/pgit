@@ -1906,6 +1906,33 @@ Newest last. One line per completed item: what was built, assertion count, anyth
   custom. So `col` is advisory, and the signature covers everything the resolution depends on. Omitting
   the row key `k` is deliberate and correct in the same way git's rerere ignores file position: reusing
   a resolution across rows with the same conflict shape is the entire feature.
+- **the repository could be in a state where three verbs refuse and `needs_attention()` reported nothing.**
+  `docs/RUNBOOK.md` tells operators that no rows from `needs_attention()` is the green state, to poll it
+  and alert on non-empty. Bug 35 added a guard that makes `checkout`, `reset --hard`, `restore`,
+  `stash pop`, `rebase` and `rebase abort` refuse when a tracked table's live shape no longer matches the
+  one recorded at the commit being restored. Nothing taught the health surface about that condition, so a
+  single `ADD COLUMN` put the repository into a state where three of those verbs refused outright while
+  the documented green check stayed green.
+  `health()` already reports every other blocking state: a merge in progress, conflicts awaiting
+  resolution, a bisect, a rebase, tracked tables that have gone missing. Shape drift was the one
+  omission, and it was the condition that blocks the most verbs.
+  Fixed by extracting the guard's query into `grove.drifted_shapes(target_sha, only_tbl)`, defaulting to
+  head, and having both `assert_live_schema` and `health()` read it. That is the point rather than an
+  incidental tidy-up: a report and a refusal computed by two separate queries are exactly the
+  two-sources-of-truth shape that has produced most of this campaign's defects, so the report now cannot
+  disagree with the refusal.
+  Checked that this does not create a standing false alarm for anyone doing an ordinary migration, since
+  the RUNBOOK asks operators to alert on it. It does not: the row appears between the `ALTER` and the
+  commit that records the new shape, and clears as soon as that commit lands. That window is precisely
+  when the restore verbs refuse, so the signal is exact.
+  Two of the eight assertions in `ops_04_health_reports_shape_drift.sql` go red without the fix. The other
+  six are context that should hold either way, including that a healthy repository needs no attention and
+  that the same drift really does make checkout throw, so the new row is pinned to an observable refusal
+  rather than to its own wording.
+  Also corrected a note I had carried into this iteration: the journal against tree pairing is not
+  uncompared. `diff_03_journal_oracle.sql` already runs a thousand random operations over fifty-one
+  commits and does a symmetric `EXCEPT ALL` between `grove.diff` and `grove.diff_journal` on forty random
+  commit pairs, with its own non-vacuity check.
 
 ## Reference
 
